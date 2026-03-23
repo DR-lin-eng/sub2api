@@ -1676,9 +1676,62 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 }
 
+func buildOpenAIUpstreamFailoverError(account *Account, statusCode int, upstreamMsg string, respBody []byte) *UpstreamFailoverError {
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           respBody,
+		RetryableOnSameAccount: account != nil && account.IsPoolMode() && (isPoolModeRetryableStatus(statusCode) || isOpenAITransientProcessingError(statusCode, upstreamMsg, respBody)),
+	}
+	if statusCode == http.StatusUnauthorized {
+		failoverErr.RetryableOnSameAccount = false
+		if strings.EqualFold(strings.TrimSpace(extractUpstreamErrorCode(respBody)), "token_invalidated") {
+			failoverErr.TempUnscheduleFor = 20 * time.Minute
+			failoverErr.TempUnscheduleReason = "openai token invalidated (auto temp-unschedule 20m)"
+		}
+	}
+	return failoverErr
+}
+
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	s.syncAccountRuntimeStateToSchedulerCache(ctx, account)
+}
+
+func (s *OpenAIGatewayService) syncAccountRuntimeStateToSchedulerCache(ctx context.Context, account *Account) {
+	if s == nil || s.schedulerSnapshot == nil || account == nil || account.ID <= 0 {
+		return
+	}
+	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	if err != nil || latest == nil {
+		return
+	}
+	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, latest); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] sync scheduler cache failed: account=%d err=%v", account.ID, err)
+	}
+}
+
+func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
+	if s == nil || s.accountRepo == nil || failoverErr == nil || accountID <= 0 {
+		return
+	}
+	if failoverErr.TempUnscheduleFor <= 0 {
+		return
+	}
+
+	until := time.Now().Add(failoverErr.TempUnscheduleFor)
+	reason := strings.TrimSpace(failoverErr.TempUnscheduleReason)
+	if reason == "" {
+		reason = "openai auto temp-unschedule"
+	}
+	if err := s.accountRepo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] temp unschedule failed: account=%d err=%v", accountID, err)
+		return
+	}
+	logger.LegacyPrintf("service.openai_gateway", "[OpenAI] temp unscheduled account=%d until=%s reason=%q", accountID, until.Format(time.RFC3339), reason)
+	if latest, err := s.accountRepo.GetByID(ctx, accountID); err == nil && latest != nil {
+		s.syncAccountRuntimeStateToSchedulerCache(ctx, latest)
+	}
 }
 
 // Forward forwards request to OpenAI API
@@ -2260,11 +2313,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				})
 
 				s.handleFailoverSideEffects(ctx, resp, account)
-				return nil, &UpstreamFailoverError{
-					StatusCode:             resp.StatusCode,
-					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-				}
+				return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body)
 		}
@@ -3098,11 +3147,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, body)
 	}
 
 	// Return appropriate error response
@@ -3235,11 +3280,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, body)
 	}
 
 	// Map status code to error type and write response

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OpsErrorDetail } from '@/api/admin/ops'
-import { resolvePrimaryResponseBody, resolveUpstreamPayload } from '../errorDetailResponse'
+import { parseUpstreamEventsPayload, resolvePrimaryResponseBody, resolveUpstreamPayload } from '../errorDetailResponse'
 
 function makeDetail(overrides: Partial<OpsErrorDetail>): OpsErrorDetail {
   return {
@@ -93,7 +93,7 @@ describe('errorDetailResponse', () => {
       upstream_error_detail: '',
       upstream_errors: '[{"message":"event payload"}]',
       upstream_error_message: 'message payload'
-    }))).toBe('[{"message":"event payload"}]')
+    }))).toBe('message payload')
 
     expect(resolveUpstreamPayload(makeDetail({
       upstream_error_detail: '',
@@ -134,5 +134,35 @@ describe('errorDetailResponse', () => {
       upstream_errors: '',
       upstream_error_message: 'fallback message'
     }))).toBe('fallback message')
+  })
+
+  it('parses upstream event arrays into split event cards', () => {
+    const events = parseUpstreamEventsPayload(
+      JSON.stringify([
+        {
+          kind: 'failover',
+          message: 'token invalidated',
+          detail: '{"error":{"code":"token_invalidated"}}',
+          platform: 'openai',
+          account_id: 101,
+          account_name: 'acc-101',
+          upstream_request_id: 'req_1',
+          upstream_status_code: 401,
+          at_unix_ms: 1774276963911
+        }
+      ])
+    )
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      kind: 'failover',
+      message: 'token invalidated',
+      platform: 'openai',
+      accountId: 101,
+      accountName: 'acc-101',
+      requestId: 'req_1',
+      statusCode: 401,
+    })
+    expect(events[0].occurredAt).toContain('T')
   })
 })

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +154,8 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d SaveResult error: %v", plan.ID, err)
 	}
 
+	s.applyFailureSideEffects(ctx, plan, result)
+
 	// Auto-recover account if test succeeded and auto_recover is enabled.
 	if result.Status == "success" && plan.AutoRecover {
 		s.tryRecoverAccount(ctx, plan.AccountID, plan.ID)
@@ -167,6 +171,36 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 	}
 }
 
+func (s *ScheduledTestRunnerService) applyFailureSideEffects(ctx context.Context, plan *ScheduledTestPlan, result *ScheduledTestResult) {
+	if s == nil || plan == nil || result == nil || result.Status == "success" {
+		return
+	}
+	if s.rateLimitSvc == nil || s.accountTestSvc == nil || s.accountTestSvc.accountRepo == nil {
+		return
+	}
+
+	statusCode, body, ok := extractScheduledTestHTTPStatusAndBody(result.ErrorMessage)
+	if !ok {
+		return
+	}
+	if statusCode != http.StatusUnauthorized {
+		return
+	}
+
+	account, err := s.accountTestSvc.accountRepo.GetByID(ctx, plan.AccountID)
+	if err != nil || account == nil {
+		return
+	}
+	shouldDisable := s.rateLimitSvc.HandleUpstreamError(ctx, account, statusCode, http.Header{}, body)
+	logger.LegacyPrintf(
+		"service.scheduled_test_runner",
+		"[ScheduledTestRunner] plan=%d applied 401 side effects: account=%d should_disable=%v",
+		plan.ID,
+		plan.AccountID,
+		shouldDisable,
+	)
+}
+
 func shouldPauseScheduledTestImmediately(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if reason == "" {
@@ -175,6 +209,29 @@ func shouldPauseScheduledTestImmediately(reason string) bool {
 	return strings.Contains(reason, "account not found") ||
 		strings.Contains(reason, "token_invalidated") ||
 		strings.Contains(reason, "authentication token has been invalidated")
+}
+
+func extractScheduledTestHTTPStatusAndBody(reason string) (int, []byte, bool) {
+	const prefix = "api returned "
+	trimmed := strings.TrimSpace(reason)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, prefix) {
+		return 0, nil, false
+	}
+
+	rest := strings.TrimSpace(trimmed[len(prefix):])
+	colon := strings.Index(rest, ":")
+	if colon <= 0 {
+		return 0, nil, false
+	}
+
+	statusCode, err := strconv.Atoi(strings.TrimSpace(rest[:colon]))
+	if err != nil || statusCode <= 0 {
+		return 0, nil, false
+	}
+
+	body := strings.TrimSpace(rest[colon+1:])
+	return statusCode, []byte(body), true
 }
 
 func buildScheduledTestRunUpdate(plan *ScheduledTestPlan, result *ScheduledTestResult, finishedAt time.Time) (ScheduledTestRunUpdate, error) {

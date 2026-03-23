@@ -105,7 +105,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
+	maxAccountSwitches := failoverPolicy.MaxSwitches
+	if maxAccountSwitches != h.maxAccountSwitches || !failoverPolicy.AllowSameAccountRetry {
+		reqLog.Info("openai_chat_completions.streaming_failover_policy_applied",
+			zap.Int("body_bytes", len(body)),
+			zap.Bool("stream", reqStream),
+			zap.Int("effective_max_switches", maxAccountSwitches),
+			zap.Bool("allow_same_account_retry", failoverPolicy.AllowSameAccountRetry),
+		)
+	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
@@ -200,9 +209,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// Pool mode: retry on the same account
-				if failoverErr.RetryableOnSameAccount {
+				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
@@ -220,6 +231,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						continue
 					}
 				}
+				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr

@@ -100,33 +100,33 @@
         <div v-else class="mt-4 space-y-3">
           <div
             v-for="(ev, idx) in correlatedUpstreamErrors"
-            :key="ev.id"
+            :key="getUpstreamEventKey(ev, idx)"
             class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
           >
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="text-xs font-black text-gray-900 dark:text-white">
                 #{{ idx + 1 }}
-                <span v-if="ev.type" class="ml-2 rounded-md bg-gray-100 px-2 py-0.5 font-mono text-[10px] font-bold text-gray-700 dark:bg-dark-700 dark:text-gray-200">{{ ev.type }}</span>
+                <span v-if="getUpstreamEventKind(ev)" class="ml-2 rounded-md bg-gray-100 px-2 py-0.5 font-mono text-[10px] font-bold text-gray-700 dark:bg-dark-700 dark:text-gray-200">{{ getUpstreamEventKind(ev) }}</span>
               </div>
               <div class="flex items-center gap-2">
                 <div class="font-mono text-xs text-gray-500 dark:text-gray-400">
-                  {{ ev.status_code ?? '—' }}
+                  {{ getUpstreamEventStatus(ev) ?? '—' }}
                 </div>
                 <button
                   type="button"
                   class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[10px] font-bold text-primary-700 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-60 dark:text-primary-200 dark:hover:bg-dark-700"
                   :disabled="!getUpstreamResponsePreview(ev)"
                   :title="getUpstreamResponsePreview(ev) ? '' : t('common.noData')"
-                  @click="toggleUpstreamDetail(ev.id)"
+                  @click="toggleUpstreamDetail(getUpstreamEventKey(ev, idx))"
                 >
                   <Icon
-                    :name="expandedUpstreamDetailIds.has(ev.id) ? 'chevronDown' : 'chevronRight'"
+                    :name="expandedUpstreamDetailIds.has(getUpstreamEventKey(ev, idx)) ? 'chevronDown' : 'chevronRight'"
                     size="xs"
                     :stroke-width="2"
                   />
                   <span>
                     {{
-                      expandedUpstreamDetailIds.has(ev.id)
+                      expandedUpstreamDetailIds.has(getUpstreamEventKey(ev, idx))
                         ? t('admin.ops.errorDetail.responsePreview.collapse')
                         : t('admin.ops.errorDetail.responsePreview.expand')
                     }}
@@ -137,19 +137,27 @@
 
             <div class="mt-3 grid grid-cols-1 gap-2 text-xs text-gray-600 dark:text-gray-300 sm:grid-cols-2">
               <div>
+                <span class="text-gray-400">{{ t('admin.ops.errorDetail.account') }}:</span>
+                <span class="ml-1 font-mono">{{ getUpstreamEventAccountLabel(ev) }}</span>
+              </div>
+              <div>
                 <span class="text-gray-400">{{ t('admin.ops.errorDetail.upstreamEvent.status') }}:</span>
-                <span class="ml-1 font-mono">{{ ev.status_code ?? '—' }}</span>
+                <span class="ml-1 font-mono">{{ getUpstreamEventStatus(ev) ?? '—' }}</span>
               </div>
               <div>
                 <span class="text-gray-400">{{ t('admin.ops.errorDetail.upstreamEvent.requestId') }}:</span>
-                <span class="ml-1 font-mono">{{ ev.request_id || ev.client_request_id || '—' }}</span>
+                <span class="ml-1 font-mono">{{ getUpstreamEventRequestId(ev) || '—' }}</span>
+              </div>
+              <div>
+                <span class="text-gray-400">{{ t('admin.ops.errorDetail.time') }}:</span>
+                <span class="ml-1 font-mono">{{ getUpstreamEventTime(ev) }}</span>
               </div>
             </div>
 
-            <div v-if="ev.message" class="mt-3 break-words text-sm font-medium text-gray-900 dark:text-white">{{ ev.message }}</div>
+            <div v-if="getUpstreamEventMessage(ev)" class="mt-3 break-words text-sm font-medium text-gray-900 dark:text-white">{{ getUpstreamEventMessage(ev) }}</div>
 
             <pre
-              v-if="expandedUpstreamDetailIds.has(ev.id)"
+              v-if="expandedUpstreamDetailIds.has(getUpstreamEventKey(ev, idx))"
               class="mt-3 max-h-[240px] overflow-auto rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-100"
             ><code>{{ prettyJSON(getUpstreamResponsePreview(ev)) }}</code></pre>
           </div>
@@ -167,7 +175,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { useAppStore } from '@/stores'
 import { opsAPI, type OpsErrorDetail } from '@/api/admin/ops'
 import { formatDateTime } from '@/utils/format'
-import { resolvePrimaryResponseBody, resolveUpstreamPayload } from '../utils/errorDetailResponse'
+import { parseUpstreamEventsPayload, resolvePrimaryResponseBody, resolveUpstreamPayload, type ParsedUpstreamEvent } from '../utils/errorDetailResponse'
 
 interface Props {
   show: boolean
@@ -216,17 +224,75 @@ function isUpstreamError(d: OpsErrorDetail | null): boolean {
 const correlatedUpstream = ref<OpsErrorDetail[]>([])
 const correlatedUpstreamLoading = ref(false)
 
-const correlatedUpstreamErrors = computed<OpsErrorDetail[]>(() => correlatedUpstream.value)
+type UpstreamEventRow = OpsErrorDetail | ParsedUpstreamEvent
 
-const expandedUpstreamDetailIds = ref(new Set<number>())
+const inlineUpstreamErrors = computed<ParsedUpstreamEvent[]>(() => {
+  if (!detail.value?.upstream_errors) return []
+  return parseUpstreamEventsPayload(detail.value.upstream_errors)
+})
 
-function getUpstreamResponsePreview(ev: OpsErrorDetail): string {
+const correlatedUpstreamErrors = computed<UpstreamEventRow[]>(() => {
+  if (correlatedUpstream.value.length > 0) return correlatedUpstream.value
+  return inlineUpstreamErrors.value
+})
+
+const expandedUpstreamDetailIds = ref(new Set<string>())
+
+function isInlineUpstreamEvent(ev: UpstreamEventRow): ev is ParsedUpstreamEvent {
+  return !('id' in ev)
+}
+
+function getUpstreamEventKey(ev: UpstreamEventRow, idx: number): string {
+  if (isInlineUpstreamEvent(ev)) {
+    return `inline:${ev.accountId ?? 'na'}:${ev.requestId || idx}:${idx}`
+  }
+  return `detail:${ev.id}`
+}
+
+function getUpstreamEventKind(ev: UpstreamEventRow): string {
+  return isInlineUpstreamEvent(ev) ? ev.kind : String(ev.type || '').trim()
+}
+
+function getUpstreamEventStatus(ev: UpstreamEventRow): number | null {
+  return isInlineUpstreamEvent(ev) ? ev.statusCode : (ev.status_code ?? null)
+}
+
+function getUpstreamEventRequestId(ev: UpstreamEventRow): string {
+  return isInlineUpstreamEvent(ev)
+    ? ev.requestId
+    : String(ev.request_id || ev.client_request_id || '').trim()
+}
+
+function getUpstreamEventMessage(ev: UpstreamEventRow): string {
+  return isInlineUpstreamEvent(ev) ? ev.message : String(ev.message || '').trim()
+}
+
+function getUpstreamEventAccountLabel(ev: UpstreamEventRow): string {
+  if (isInlineUpstreamEvent(ev)) {
+    if (ev.accountName) return ev.accountName
+    if (ev.accountId != null) return String(ev.accountId)
+    return '—'
+  }
+  return ev.account_name || (ev.account_id != null ? String(ev.account_id) : '—')
+}
+
+function getUpstreamEventTime(ev: UpstreamEventRow): string {
+  if (isInlineUpstreamEvent(ev)) {
+    return ev.occurredAt ? formatDateTime(ev.occurredAt) : '—'
+  }
+  return ev.created_at ? formatDateTime(ev.created_at) : '—'
+}
+
+function getUpstreamResponsePreview(ev: UpstreamEventRow): string {
+  if (isInlineUpstreamEvent(ev)) {
+    return ev.detail || ev.upstreamRequestBody || ev.message || ''
+  }
   const upstreamPayload = resolveUpstreamPayload(ev)
   if (upstreamPayload) return upstreamPayload
   return String(ev.error_body || '').trim()
 }
 
-function toggleUpstreamDetail(id: number) {
+function toggleUpstreamDetail(id: string) {
   const next = new Set(expandedUpstreamDetailIds.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)

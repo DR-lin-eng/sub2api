@@ -54,3 +54,15 @@ func TestShouldPauseScheduledTestImmediately(t *testing.T) {
 	require.True(t, shouldPauseScheduledTestImmediately("API returned 401: token_invalidated"))
 	require.False(t, shouldPauseScheduledTestImmediately("Request failed: socks connect tcp EOF"))
 }
+
+func TestExtractScheduledTestHTTPStatusAndBody(t *testing.T) {
+	statusCode, body, ok := extractScheduledTestHTTPStatusAndBody(`API returned 401: {"error":{"code":"token_invalidated"}}`)
+	require.True(t, ok)
+	require.Equal(t, 401, statusCode)
+	require.JSONEq(t, `{"error":{"code":"token_invalidated"}}`, string(body))
+
+	statusCode, body, ok = extractScheduledTestHTTPStatusAndBody(`Request failed: context canceled`)
+	require.False(t, ok)
+	require.Equal(t, 0, statusCode)
+	require.Nil(t, body)
+}

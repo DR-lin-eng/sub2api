@@ -22,6 +22,22 @@ const fallbackRows = computed(() =>
     .slice(0, 4)
 )
 
+const hasAnyRuntimeData = computed(() => {
+  const current = runtime.value
+  if (!current) return false
+  return (
+    current.acquire_total > 0 ||
+    current.reuse_total > 0 ||
+    current.create_total > 0 ||
+    current.queue_wait_ms_total > 0 ||
+    current.conn_pick_ms_total > 0 ||
+    current.scale_up_total > 0 ||
+    current.scale_down_total > 0 ||
+    current.prewarm_success_total > 0 ||
+    current.prewarm_fallback_total > 0
+  )
+})
+
 const reuseRate = computed(() => {
   const current = runtime.value
   if (!current || current.acquire_total <= 0) return null
@@ -87,21 +103,56 @@ onMounted(fetchData)
       </div>
     </div>
 
+    <div class="mt-4 grid grid-cols-2 gap-3 text-sm xl:grid-cols-4">
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Acquire</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.acquire_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Reuse / Create</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.reuse_total) }} / {{ formatInt(runtime?.create_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Scale</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">+{{ formatInt(runtime?.scale_up_total) }} / -{{ formatInt(runtime?.scale_down_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Retry</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.retry?.retry_attempts_total) }}</div>
+      </div>
+    </div>
+
     <div class="mt-4 min-h-0 flex-1 overflow-auto">
       <div v-if="loading" class="flex h-full items-center justify-center text-sm text-gray-400">{{ t('common.loading') }}</div>
-      <EmptyState
-        v-else-if="fallbackRows.length === 0"
-        :title="t('common.noData')"
-        description="No WS fallback reasons recorded yet."
-      />
-      <div v-else class="space-y-2">
+      <div v-else class="space-y-4">
         <div
-          v-for="[reason, count] in fallbackRows"
-          :key="reason"
-          class="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2 text-xs dark:bg-dark-700"
+          class="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-dark-700 dark:bg-dark-700 dark:text-gray-300"
         >
-          <span class="truncate pr-3 text-gray-600 dark:text-gray-300">{{ reason }}</span>
-          <span class="font-semibold text-gray-900 dark:text-white">{{ formatInt(count) }}</span>
+          <template v-if="hasAnyRuntimeData">
+            Showing current OpenAI WebSocket pool activity. Fallback reasons appear below when they occur.
+          </template>
+          <template v-else>
+            No OpenAI WS runtime activity recorded yet.
+          </template>
+        </div>
+
+        <div>
+          <div class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Fallback Reasons</div>
+          <EmptyState
+            v-if="fallbackRows.length === 0"
+            :title="t('common.noData')"
+            description="No WS fallback reasons recorded yet."
+          />
+          <div v-else class="space-y-2">
+            <div
+              v-for="[reason, count] in fallbackRows"
+              :key="reason"
+              class="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2 text-xs dark:bg-dark-700"
+            >
+              <span class="truncate pr-3 text-gray-600 dark:text-gray-300">{{ reason }}</span>
+              <span class="font-semibold text-gray-900 dark:text-white">{{ formatInt(count) }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>

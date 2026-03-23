@@ -37,6 +37,20 @@ type OpenAIGatewayHandler struct {
 	cfg                     *config.Config
 }
 
+const (
+	openAIStreamLargeBodyThresholdBytes    = 64 * 1024
+	openAIStreamXLargeBodyThresholdBytes   = 256 * 1024
+	openAIStreamHugeBodyThresholdBytes     = 1024 * 1024
+	openAIStreamProxyFailureCooldown       = 20 * time.Minute
+	openAIStreamAccountNetworkCooldown     = 12 * time.Minute
+	openAIStreamLongContextTimeoutCooldown = 6 * time.Minute
+)
+
+type openAIFailoverPolicy struct {
+	MaxSwitches           int
+	AllowSameAccountRetry bool
+}
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -45,6 +59,104 @@ func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackMode
 		return ""
 	}
 	return strings.TrimSpace(apiKey.Group.DefaultMappedModel)
+}
+
+func clampOpenAIMaxSwitches(limit, cap int) int {
+	if limit < 0 {
+		limit = 0
+	}
+	if cap < 0 {
+		cap = 0
+	}
+	if limit == 0 || cap == 0 {
+		return 0
+	}
+	if limit < cap {
+		return limit
+	}
+	return cap
+}
+
+func (h *OpenAIGatewayHandler) resolveOpenAIFailoverPolicy(body []byte, reqStream bool) openAIFailoverPolicy {
+	limit := h.maxAccountSwitches
+	policy := openAIFailoverPolicy{
+		MaxSwitches:           limit,
+		AllowSameAccountRetry: true,
+	}
+	if !reqStream {
+		return policy
+	}
+
+	bodySize := len(body)
+	switch {
+	case bodySize >= openAIStreamHugeBodyThresholdBytes:
+		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 0)
+		policy.AllowSameAccountRetry = false
+	case bodySize >= openAIStreamXLargeBodyThresholdBytes:
+		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 1)
+		policy.AllowSameAccountRetry = false
+	case bodySize >= openAIStreamLargeBodyThresholdBytes:
+		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 2)
+		policy.AllowSameAccountRetry = false
+	}
+	return policy
+}
+
+func adjustOpenAIFailoverForLargeStreamingRequest(
+	failoverErr *service.UpstreamFailoverError,
+	body []byte,
+	reqStream bool,
+) *service.UpstreamFailoverError {
+	if failoverErr == nil || !reqStream {
+		return failoverErr
+	}
+	bodySize := len(body)
+	if bodySize < openAIStreamLargeBodyThresholdBytes {
+		return failoverErr
+	}
+
+	adjusted := *failoverErr
+	adjusted.RetryableOnSameAccount = false
+	if adjusted.TempUnscheduleFor <= 0 {
+		switch {
+		case bodySize >= openAIStreamHugeBodyThresholdBytes:
+			adjusted.TempUnscheduleFor = openAIStreamLongContextTimeoutCooldown
+		case bodySize >= openAIStreamXLargeBodyThresholdBytes:
+			adjusted.TempUnscheduleFor = 4 * time.Minute
+		default:
+			adjusted.TempUnscheduleFor = 2 * time.Minute
+		}
+		if strings.TrimSpace(adjusted.TempUnscheduleReason) == "" {
+			adjusted.TempUnscheduleReason = "openai streaming long-context failover cooldown"
+		}
+	}
+	return &adjusted
+}
+
+func adjustOpenAINetworkFailoverCooldown(
+	failoverErr *service.UpstreamFailoverError,
+) *service.UpstreamFailoverError {
+	if failoverErr == nil {
+		return nil
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(failoverErr.Error())), "failover") {
+		return failoverErr
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason)), "proxy") &&
+		!strings.Contains(strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason)), "network") {
+		return failoverErr
+	}
+	adjusted := *failoverErr
+	if adjusted.FailedProxyID > 0 || strings.TrimSpace(adjusted.FailedProxyURL) != "" {
+		adjusted.TempUnscheduleFor = openAIStreamProxyFailureCooldown
+		adjusted.TempUnscheduleReason = "upstream request failed via proxy/network (auto temp-unschedule 20m)"
+		return &adjusted
+	}
+	if adjusted.TempUnscheduleFor < openAIStreamAccountNetworkCooldown {
+		adjusted.TempUnscheduleFor = openAIStreamAccountNetworkCooldown
+		adjusted.TempUnscheduleReason = "upstream request failed via network (auto temp-unschedule 12m)"
+	}
+	return &adjusted
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -220,7 +332,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
+	maxAccountSwitches := failoverPolicy.MaxSwitches
+	if maxAccountSwitches != h.maxAccountSwitches || !failoverPolicy.AllowSameAccountRetry {
+		reqLog.Info("openai.streaming_failover_policy_applied",
+			zap.Int("body_bytes", len(body)),
+			zap.Bool("stream", reqStream),
+			zap.Int("effective_max_switches", maxAccountSwitches),
+			zap.Bool("allow_same_account_retry", failoverPolicy.AllowSameAccountRetry),
+		)
+	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
@@ -300,9 +421,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// 池模式：同账号重试
-				if failoverErr.RetryableOnSameAccount {
+				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
@@ -320,6 +443,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						continue
 					}
 				}
+				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
@@ -589,7 +713,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 	}
 
-	maxAccountSwitches := h.maxAccountSwitches
+	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
+	maxAccountSwitches := failoverPolicy.MaxSwitches
+	if maxAccountSwitches != h.maxAccountSwitches || !failoverPolicy.AllowSameAccountRetry {
+		reqLog.Info("openai_messages.streaming_failover_policy_applied",
+			zap.Int("body_bytes", len(body)),
+			zap.Bool("stream", reqStream),
+			zap.Int("effective_max_switches", maxAccountSwitches),
+			zap.Bool("allow_same_account_retry", failoverPolicy.AllowSameAccountRetry),
+		)
+	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
@@ -688,9 +821,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// 池模式：同账号重试
-				if failoverErr.RetryableOnSameAccount {
+				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
@@ -708,6 +843,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						continue
 					}
 				}
+				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr

@@ -453,6 +453,13 @@ export interface OpenAIWSRuntimeResponse {
   prewarm_success_total: number
   prewarm_fallback_total: number
   fallback_reason_counts: Record<string, number>
+  retry?: {
+    retry_attempts_total?: number
+    retry_backoff_ms_total?: number
+    retry_exhausted_total?: number
+    non_retryable_fast_fallback_total?: number
+  }
+  transport?: Record<string, any>
   timestamp: string
 }
 
