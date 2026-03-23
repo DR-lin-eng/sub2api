@@ -1,0 +1,120 @@
+name: Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Full image name, e.g. ghcr.io/acme/sub2api or docker.io/acme/sub2api'
+        required: false
+        type: string
+      image_tag:
+        description: 'Primary tag to publish'
+        required: false
+        default: ''
+        type: string
+      push_latest:
+        description: 'Also publish latest tag'
+        required: false
+        default: false
+        type: boolean
+      platforms:
+        description: 'Comma-separated target platforms'
+        required: false
+        default: 'linux/amd64'
+        type: string
+      dockerfile:
+        description: 'Dockerfile path'
+        required: false
+        default: 'Dockerfile'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve image settings
+        id: image
+        shell: bash
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          IMAGE_NAME="${{ github.event.inputs.image_name }}"
+          if [ -z "$IMAGE_NAME" ]; then
+            IMAGE_NAME="ghcr.io/${OWNER_LOWER}/sub2api"
+          fi
+
+          IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$IMAGE_TAG" ]; then
+            IMAGE_TAG="${GITHUB_SHA::12}"
+          fi
+
+          REGISTRY=$(echo "$IMAGE_NAME" | cut -d/ -f1)
+          if [[ "$IMAGE_NAME" != *"/"* ]] || [[ "$REGISTRY" != *"."* && "$REGISTRY" != *":"* && "$REGISTRY" != "localhost" ]]; then
+            REGISTRY="docker.io"
+          fi
+
+          TAGS="${IMAGE_NAME}:${IMAGE_TAG}"
+          if [ "${{ github.event.inputs.push_latest }}" = "true" ]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE_NAME}:latest"
+          fi
+
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build timestamp
+        id: build_time
+        shell: bash
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: ${{ steps.image.outputs.registry == 'ghcr.io' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to custom registry
+        if: ${{ steps.image.outputs.registry != 'ghcr.io' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ github.event.inputs.dockerfile || 'Dockerfile' }}
+          push: true
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+          tags: ${{ steps.image.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.image.outputs.image_tag }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.build_time.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "Published image(s):"
+          echo "${{ steps.image.outputs.tags }}"
