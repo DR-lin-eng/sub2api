@@ -77,6 +77,46 @@ func clampOpenAIMaxSwitches(limit, cap int) int {
 	return cap
 }
 
+func deriveOpenAIStreamingFallbackSeed(c *gin.Context, apiKey *service.APIKey, userID int64, reqModel string) string {
+	if apiKey == nil || userID <= 0 {
+		return ""
+	}
+
+	groupID := int64(0)
+	if apiKey.GroupID != nil {
+		groupID = *apiKey.GroupID
+	}
+
+	return fmt.Sprintf(
+		"openai_http_stream:%d:%d:%d:%s:%s:%s",
+		userID,
+		apiKey.ID,
+		groupID,
+		strings.TrimSpace(reqModel),
+		strings.TrimSpace(ip.GetClientIP(c)),
+		strings.TrimSpace(c.GetHeader("User-Agent")),
+	)
+}
+
+func (h *OpenAIGatewayHandler) resolveOpenAIStickySessionHash(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	userID int64,
+	reqModel string,
+	reqStream bool,
+	body []byte,
+) string {
+	if h == nil || h.gatewayService == nil {
+		return ""
+	}
+	if !reqStream {
+		return h.gatewayService.GenerateSessionHash(c, body)
+	}
+
+	seed := deriveOpenAIStreamingFallbackSeed(c, apiKey, userID, reqModel)
+	return h.gatewayService.GenerateSessionHashWithFallback(c, body, seed)
+}
+
 func (h *OpenAIGatewayHandler) resolveOpenAIFailoverPolicy(body []byte, reqStream bool) openAIFailoverPolicy {
 	limit := h.maxAccountSwitches
 	policy := openAIFailoverPolicy{
@@ -329,8 +369,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// Generate session hash (header first; fallback to prompt_cache_key)
-	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	// Generate sticky session hash. For streaming requests, fall back to a stable
+	// per-user/per-key seed when the client did not send session headers.
+	sessionHash := h.resolveOpenAIStickySessionHash(c, apiKey, subject.UserID, reqModel, reqStream, sessionHashBody)
 
 	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
 	maxAccountSwitches := failoverPolicy.MaxSwitches
@@ -695,7 +736,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
+	sessionHash := h.resolveOpenAIStickySessionHash(c, apiKey, subject.UserID, reqModel, reqStream, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 
 	// Anthropic 格式的请求在 metadata.user_id 中携带 session 标识，

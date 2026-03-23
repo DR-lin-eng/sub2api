@@ -122,6 +122,41 @@ func TestReadRequestBodyWithPrealloc(t *testing.T) {
 	require.Equal(t, payload, string(body))
 }
 
+func TestResolveOpenAIStickySessionHash_StreamingFallsBackToStableSeed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	req.Header.Set("User-Agent", "test-client/1.0")
+	c.Request = req
+
+	groupID := int64(11)
+	apiKey := &service.APIKey{ID: 99, GroupID: &groupID}
+	h := &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}
+
+	first := h.resolveOpenAIStickySessionHash(c, apiKey, 123, "gpt-5.4", true, []byte(`{"model":"gpt-5.4","stream":true}`))
+	second := h.resolveOpenAIStickySessionHash(c, apiKey, 123, "gpt-5.4", true, []byte(`{"model":"gpt-5.4","stream":true}`))
+
+	require.NotEmpty(t, first)
+	require.Equal(t, first, second)
+}
+
+func TestResolveOpenAIStickySessionHash_PrefersClientSessionSignal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+	req.Header.Set("session_id", "sess-123")
+	c.Request = req
+
+	groupID := int64(11)
+	apiKey := &service.APIKey{ID: 99, GroupID: &groupID}
+	h := &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}
+
+	got := h.resolveOpenAIStickySessionHash(c, apiKey, 123, "gpt-5.4", true, []byte(`{"model":"gpt-5.4","stream":true}`))
+	require.Equal(t, service.DeriveSessionHashFromSeed("sess-123"), got)
+}
+
 func TestReadRequestBodyWithPrealloc_MaxBytesError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(strings.Repeat("x", 8)))

@@ -102,7 +102,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
+	sessionHash := h.resolveOpenAIStickySessionHash(c, apiKey, subject.UserID, reqModel, reqStream, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 
 	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
