@@ -1,0 +1,8 @@
+import { HeroProps } from "./type.mjs";
+import * as react121 from "react";
+
+//#region src/awesome/Hero/Hero.d.ts
+declare const Hero: react121.NamedExoticComponent<HeroProps>;
+//#endregion
+export { Hero };
+//# sourceMappingURL=Hero.d.mts.map

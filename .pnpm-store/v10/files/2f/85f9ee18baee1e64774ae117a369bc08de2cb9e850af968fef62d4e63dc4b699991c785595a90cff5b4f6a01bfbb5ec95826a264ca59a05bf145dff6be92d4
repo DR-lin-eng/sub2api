@@ -1,0 +1,22 @@
+import { ColorScaleItem } from "../types.mjs";
+import * as react13 from "react";
+
+//#region src/color/ColorScales/index.d.ts
+interface ColorScalesProps {
+  /**
+   * @description Index of the mid highlight color in the scale
+   */
+  midHighLight: number;
+  /**
+   * @description Name of the color scale
+   */
+  name: string;
+  /**
+   * @description Color scale item object
+   */
+  scale: ColorScaleItem;
+}
+declare const ColorScales: react13.NamedExoticComponent<ColorScalesProps>;
+//#endregion
+export { ColorScales, ColorScalesProps };
+//# sourceMappingURL=index.d.mts.map

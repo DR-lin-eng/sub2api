@@ -1,0 +1,14 @@
+import { TooltipProps } from "./type.mjs";
+import "react";
+
+//#region src/Tooltip/groupContext.d.ts
+type TooltipGroupSharedProps = Omit<TooltipProps, 'children' | 'defaultOpen' | 'open' | 'ref' | 'title'> & {
+  /**
+   * @description Whether to enable layout animation when switching between tooltips
+   * @default true
+   */
+  layoutAnimation?: boolean;
+};
+//#endregion
+export { TooltipGroupSharedProps };
+//# sourceMappingURL=groupContext.d.mts.map

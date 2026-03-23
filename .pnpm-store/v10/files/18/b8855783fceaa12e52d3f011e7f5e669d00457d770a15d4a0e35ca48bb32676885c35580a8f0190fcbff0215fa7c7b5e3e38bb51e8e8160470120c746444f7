@@ -1,0 +1,8 @@
+import { AuroraBackgroundProps } from "./type.mjs";
+import * as react125 from "react";
+
+//#region src/awesome/AuroraBackground/AuroraBackground.d.ts
+declare const AuroraBackground: react125.NamedExoticComponent<AuroraBackgroundProps>;
+//#endregion
+export { AuroraBackground };
+//# sourceMappingURL=AuroraBackground.d.mts.map

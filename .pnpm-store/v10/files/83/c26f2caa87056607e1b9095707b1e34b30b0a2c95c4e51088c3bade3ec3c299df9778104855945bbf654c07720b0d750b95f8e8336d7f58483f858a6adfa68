@@ -1,0 +1,54 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import { styles } from "./style.mjs";
+import SortableItem_default from "./components/SortableItem.mjs";
+import DragHandle_default from "./components/DragHandle.mjs";
+import SortableOverlay_default from "./components/SortableOverlay.mjs";
+import { Fragment, memo, useMemo, useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { restrictToVerticalAxis, restrictToWindowEdges } from "@dnd-kit/modifiers";
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
+
+//#region src/SortableList/SortableList.tsx
+const SortableListParent = memo(({ ref, items, onChange, renderItem, gap = 8, ...rest }) => {
+	const [active, setActive] = useState(null);
+	const activeItem = useMemo(() => items.find((item) => item.id === active?.id), [active, items]);
+	const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+	return /* @__PURE__ */ jsxs(DndContext, {
+		modifiers: [restrictToVerticalAxis, restrictToWindowEdges],
+		onDragCancel: () => {
+			setActive(null);
+		},
+		onDragEnd: ({ active: active$1, over }) => {
+			if (over && active$1.id !== over?.id) onChange(arrayMove(items, items.findIndex(({ id }) => id === active$1.id), items.findIndex(({ id }) => id === over.id)));
+			setActive(null);
+		},
+		onDragStart: ({ active: active$1 }) => {
+			setActive(active$1);
+		},
+		sensors,
+		children: [/* @__PURE__ */ jsx(SortableContext, {
+			items,
+			strategy: verticalListSortingStrategy,
+			children: /* @__PURE__ */ jsx(FlexBasic_default, {
+				as: "ul",
+				className: styles.container,
+				gap,
+				ref,
+				...rest,
+				children: items.map((item) => /* @__PURE__ */ jsx(Fragment, { children: renderItem(item) }, item.id))
+			})
+		}), /* @__PURE__ */ jsx(SortableOverlay_default, { children: activeItem ? renderItem(activeItem) : null })]
+	});
+});
+SortableListParent.displayName = "SortableList";
+const SortableList = SortableListParent;
+SortableList.Item = SortableItem_default;
+SortableList.DragHandle = DragHandle_default;
+var SortableList_default = SortableList;
+
+//#endregion
+export { SortableList_default as default };
+//# sourceMappingURL=SortableList.mjs.map

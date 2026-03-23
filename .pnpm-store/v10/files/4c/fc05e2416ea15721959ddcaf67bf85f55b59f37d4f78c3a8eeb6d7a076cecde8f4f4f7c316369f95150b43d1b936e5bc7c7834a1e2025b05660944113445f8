@@ -1,0 +1,44 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import SyntaxHighlighter_default from "../Highlighter/SyntaxHighlighter/index.mjs";
+import CopyButton_default from "../CopyButton/CopyButton.mjs";
+import Spotlight_default from "../awesome/Spotlight/Spotlight.mjs";
+import { styles, variants } from "./style.mjs";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+
+//#region src/Snippet/Snippet.tsx
+const Snippet = ({ ref, prefix, language = "tsx", children, copyable = true, variant = "filled", spotlight, shadow, className, ...rest }) => {
+	const tirmedChildren = children.trim();
+	return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		align: "center",
+		className: cx(variants({
+			shadow,
+			variant
+		}), className),
+		"data-code-type": "highlighter",
+		gap: 8,
+		horizontal: true,
+		ref,
+		...rest,
+		children: [
+			spotlight && /* @__PURE__ */ jsx(Spotlight_default, {}),
+			/* @__PURE__ */ jsx(SyntaxHighlighter_default, {
+				className: styles.hightlight,
+				language,
+				children: [prefix, tirmedChildren].filter(Boolean).join(" ")
+			}),
+			copyable && /* @__PURE__ */ jsx(CopyButton_default, {
+				content: tirmedChildren,
+				size: "small"
+			})
+		]
+	});
+};
+Snippet.displayName = "Snippet";
+var Snippet_default = Snippet;
+
+//#endregion
+export { Snippet_default as default };
+//# sourceMappingURL=Snippet.mjs.map

@@ -90,6 +90,17 @@ type httpUpstreamService struct {
 	cfg     *config.Config                  // 全局配置
 	mu      sync.RWMutex                    // 保护 clients map 的读写锁
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	metrics httpUpstreamMetrics
+}
+
+type httpUpstreamMetrics struct {
+	cacheHit          atomic.Int64
+	cacheMiss         atomic.Int64
+	clientCreate      atomic.Int64
+	evictIdle         atomic.Int64
+	evictLRU          atomic.Int64
+	evictConfigChange atomic.Int64
+	limitReject       atomic.Int64
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -104,6 +115,26 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 	return &httpUpstreamService{
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
+	}
+}
+
+func (s *httpUpstreamService) SnapshotMetrics() service.HTTPUpstreamMetricsSnapshot {
+	if s == nil {
+		return service.HTTPUpstreamMetricsSnapshot{}
+	}
+	s.mu.RLock()
+	activeClients := len(s.clients)
+	s.mu.RUnlock()
+	return service.HTTPUpstreamMetricsSnapshot{
+		IsolationMode:          s.getIsolationMode(),
+		ActiveClients:          activeClients,
+		CacheHitTotal:          s.metrics.cacheHit.Load(),
+		CacheMissTotal:         s.metrics.cacheMiss.Load(),
+		ClientCreateTotal:      s.metrics.clientCreate.Load(),
+		EvictIdleTotal:         s.metrics.evictIdle.Load(),
+		EvictLRUTotal:          s.metrics.evictLRU.Load(),
+		EvictConfigChangeTotal: s.metrics.evictConfigChange.Load(),
+		LimitRejectTotal:       s.metrics.limitReject.Load(),
 	}
 }
 
@@ -255,10 +286,12 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 			atomic.AddInt64(&entry.inFlight, 1)
 		}
 		s.mu.RUnlock()
+		s.metrics.cacheHit.Add(1)
 		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
 		return entry, nil
 	}
 	s.mu.RUnlock()
+	s.metrics.cacheMiss.Add(1)
 
 	// 写锁慢路径
 	s.mu.Lock()
@@ -269,6 +302,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
+			s.metrics.cacheHit.Add(1)
 			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
 			return entry, nil
 		}
@@ -277,6 +311,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 			"cache_key", cacheKey,
 			"proxy_changed", entry.proxyKey != proxyKey,
 			"pool_changed", entry.poolKey != poolKey)
+		s.metrics.evictConfigChange.Add(1)
 		s.removeClientLocked(cacheKey, entry)
 	}
 
@@ -286,6 +321,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 		if len(s.clients) >= s.maxUpstreamClients() {
 			if !s.evictOldestIdleLocked() {
 				s.mu.Unlock()
+				s.metrics.limitReject.Add(1)
 				return nil, errUpstreamClientLimitReached
 			}
 		}
@@ -314,6 +350,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	if markInFlight {
 		atomic.StoreInt64(&entry.inFlight, 1)
 	}
+	s.metrics.clientCreate.Add(1)
 	s.clients[cacheKey] = entry
 
 	s.evictIdleLocked(now)
@@ -408,9 +445,11 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 			atomic.AddInt64(&entry.inFlight, 1)
 		}
 		s.mu.RUnlock()
+		s.metrics.cacheHit.Add(1)
 		return entry, nil
 	}
 	s.mu.RUnlock()
+	s.metrics.cacheMiss.Add(1)
 
 	// 写锁慢路径：创建或重建客户端
 	s.mu.Lock()
@@ -421,8 +460,10 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
+			s.metrics.cacheHit.Add(1)
 			return entry, nil
 		}
+		s.metrics.evictConfigChange.Add(1)
 		s.removeClientLocked(cacheKey, entry)
 	}
 
@@ -432,6 +473,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 		if len(s.clients) >= s.maxUpstreamClients() {
 			if !s.evictOldestIdleLocked() {
 				s.mu.Unlock()
+				s.metrics.limitReject.Add(1)
 				return nil, errUpstreamClientLimitReached
 			}
 		}
@@ -457,6 +499,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	if markInFlight {
 		atomic.StoreInt64(&entry.inFlight, 1)
 	}
+	s.metrics.clientCreate.Add(1)
 	s.clients[cacheKey] = entry
 
 	// 执行淘汰策略：先淘汰空闲超时的，再淘汰超出数量限制的
@@ -515,6 +558,7 @@ func (s *httpUpstreamService) evictIdleLocked(now time.Time) {
 		}
 		// 淘汰超时的空闲客户端
 		if atomic.LoadInt64(&entry.lastUsed) <= cutoff {
+			s.metrics.evictIdle.Add(1)
 			s.removeClientLocked(key, entry)
 		}
 	}
@@ -544,6 +588,7 @@ func (s *httpUpstreamService) evictOldestIdleLocked() bool {
 	if oldestEntry == nil {
 		return false
 	}
+	s.metrics.evictLRU.Add(1)
 	s.removeClientLocked(oldestKey, oldestEntry)
 	return true
 }

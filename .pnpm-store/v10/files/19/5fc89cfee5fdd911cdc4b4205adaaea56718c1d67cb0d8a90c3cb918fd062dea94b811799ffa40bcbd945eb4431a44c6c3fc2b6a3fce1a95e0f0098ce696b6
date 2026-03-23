@@ -1,0 +1,8 @@
+import * as react98 from "react";
+import * as lucide_react11 from "lucide-react";
+
+//#region src/icons/lucideExtra/ProviderIcon.d.ts
+declare const ProviderIcon: react98.ForwardRefExoticComponent<Omit<lucide_react11.LucideProps, "ref"> & react98.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { ProviderIcon };
+//# sourceMappingURL=ProviderIcon.d.mts.map

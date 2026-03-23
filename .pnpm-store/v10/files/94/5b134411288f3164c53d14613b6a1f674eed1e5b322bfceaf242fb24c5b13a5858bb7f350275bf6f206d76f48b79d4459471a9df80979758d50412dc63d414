@@ -1,0 +1,43 @@
+import { createStaticStyles } from "antd-style";
+
+//#region src/Tooltip/style.ts
+const styles = createStaticStyles(({ css: css$1, cssVar: cssVar$1 }) => {
+	return {
+		arrow: css$1`
+      fill: ${cssVar$1.colorText};
+    `,
+		content: css$1`
+      position: relative;
+
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      min-height: unset;
+      padding-block: 6px;
+      padding-inline: 10px;
+      border-radius: ${cssVar$1.borderRadiusSM};
+
+      color: ${cssVar$1.colorBgLayout};
+      word-break: normal;
+
+      background-color: ${cssVar$1.colorTextBase};
+    `,
+		tooltip: css$1`
+      user-select: none;
+
+      /* Keep the class name for backwards compatibility and user overrides */
+      position: relative;
+      z-index: 114514;
+      filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 12%));
+    `,
+		tooltipLayout: css$1`
+      transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    `
+	};
+});
+
+//#endregion
+export { styles };
+//# sourceMappingURL=style.mjs.map

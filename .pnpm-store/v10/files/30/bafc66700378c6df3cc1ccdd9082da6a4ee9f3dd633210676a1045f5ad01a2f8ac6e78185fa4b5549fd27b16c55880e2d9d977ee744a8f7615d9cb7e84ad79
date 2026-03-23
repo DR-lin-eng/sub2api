@@ -1,0 +1,8 @@
+import * as react96 from "react";
+import * as lucide_react10 from "lucide-react";
+
+//#region src/icons/lucideExtra/RightDoubleClickIcon.d.ts
+declare const RightDoubleClickIcon: react96.ForwardRefExoticComponent<Omit<lucide_react10.LucideProps, "ref"> & react96.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { RightDoubleClickIcon };
+//# sourceMappingURL=RightDoubleClickIcon.d.mts.map

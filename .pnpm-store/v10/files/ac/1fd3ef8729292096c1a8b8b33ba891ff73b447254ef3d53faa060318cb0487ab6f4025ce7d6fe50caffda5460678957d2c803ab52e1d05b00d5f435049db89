@@ -1,0 +1,1 @@
+export declare function error(...messages: string[]): void;

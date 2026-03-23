@@ -1,0 +1,28 @@
+import FlexBasic_default from "../../../Flex/FlexBasic.mjs";
+import Icon_default from "../../../Icon/Icon.mjs";
+import { styles } from "../style.mjs";
+import { jsx } from "react/jsx-runtime";
+import { Loader2 } from "lucide-react";
+
+//#region src/chat/ChatItem/components/Loading.tsx
+const Loading = ({ loading, placement = "left" }) => {
+	if (!loading) return null;
+	return /* @__PURE__ */ jsx(FlexBasic_default, {
+		align: "center",
+		className: placement === "left" ? styles.loadingLeft : styles.loadingRight,
+		justify: "center",
+		children: /* @__PURE__ */ jsx(Icon_default, {
+			icon: Loader2,
+			size: {
+				size: 12,
+				strokeWidth: 3
+			},
+			spin: true
+		})
+	});
+};
+var Loading_default = Loading;
+
+//#endregion
+export { Loading_default as default };
+//# sourceMappingURL=Loading.mjs.map

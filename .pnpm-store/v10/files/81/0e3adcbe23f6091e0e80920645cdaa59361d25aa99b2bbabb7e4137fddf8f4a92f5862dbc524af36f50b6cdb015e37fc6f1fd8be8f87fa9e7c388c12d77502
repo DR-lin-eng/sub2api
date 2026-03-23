@@ -1,0 +1,77 @@
+'use client';
+
+import Center_default from "../Flex/Center.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import Tooltip_default from "../Tooltip/Tooltip.mjs";
+import { calcSize } from "./components/utils.mjs";
+import { variants } from "./style.mjs";
+import { memo, useCallback, useMemo } from "react";
+import { jsx } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { Loader2 } from "lucide-react";
+
+//#region src/ActionIcon/ActionIcon.tsx
+const ActionIcon = memo(({ color, fill, className, active, icon, size = "middle", variant = "borderless", style, glass, title, onClick, loading, fillOpacity, fillRule, focusable, shadow, disabled, spin: iconSpinning, tooltipProps, danger, ref, ...rest }) => {
+	const { blockSize, borderRadius } = useMemo(() => calcSize(size), [size]);
+	const handleClick = useCallback((event) => {
+		if (loading || disabled) return;
+		onClick?.(event);
+	}, [
+		loading,
+		disabled,
+		onClick
+	]);
+	const node = /* @__PURE__ */ jsx(Center_default, {
+		className: cx(variants({
+			active,
+			danger,
+			disabled,
+			glass,
+			shadow,
+			variant
+		}), className),
+		flex: "none",
+		horizontal: true,
+		onClick: handleClick,
+		ref,
+		role: "button",
+		style: {
+			borderRadius,
+			height: blockSize,
+			width: blockSize,
+			...style
+		},
+		tabIndex: disabled ? -1 : 0,
+		...rest,
+		children: icon && /* @__PURE__ */ jsx(Icon_default, {
+			color,
+			fill,
+			fillOpacity,
+			fillRule,
+			focusable,
+			icon: loading ? Loader2 : icon,
+			size,
+			spin: loading ? true : iconSpinning,
+			style: { pointerEvents: "none" }
+		})
+	});
+	if (!title) return node;
+	return /* @__PURE__ */ jsx(Tooltip_default, {
+		title,
+		...tooltipProps,
+		styles: typeof tooltipProps?.styles === "function" ? tooltipProps.styles : {
+			...tooltipProps?.styles,
+			container: {
+				pointerEvents: "none",
+				...tooltipProps?.styles?.container
+			}
+		},
+		children: node
+	});
+});
+ActionIcon.displayName = "ActionIcon";
+var ActionIcon_default = ActionIcon;
+
+//#endregion
+export { ActionIcon_default as default };
+//# sourceMappingURL=ActionIcon.mjs.map

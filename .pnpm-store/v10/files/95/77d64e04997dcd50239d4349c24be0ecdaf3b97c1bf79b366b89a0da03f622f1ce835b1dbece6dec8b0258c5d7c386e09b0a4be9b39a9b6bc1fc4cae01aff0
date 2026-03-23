@@ -1,0 +1,119 @@
+'use client';
+
+import { useMotionComponent } from "../MotionProvider/index.mjs";
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import Hotkey_default from "../Hotkey/Hotkey.mjs";
+import { styles } from "./style.mjs";
+import { useMemo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { AnimatePresence } from "motion/react";
+import { FloatingArrow } from "@floating-ui/react";
+import { useDebounce } from "ahooks";
+
+//#region src/Tooltip/TooltipFloating.tsx
+const tooltipAnimateState = {
+	opacity: 1,
+	scale: 1,
+	y: 0
+};
+const tooltipExitState = {
+	opacity: 0,
+	scale: .98,
+	y: 4
+};
+const tooltipInitialState = {
+	opacity: 0,
+	scale: .96,
+	y: 6
+};
+const tooltipTransition = {
+	duration: .14,
+	ease: [
+		.4,
+		0,
+		.2,
+		1
+	]
+};
+const contentAnimateState = { opacity: 1 };
+const contentExitState = { opacity: 0 };
+const contentInitialState = { opacity: 0 };
+const contentTransition = { duration: .3 };
+const TooltipFloating = ({ open, title, placement, floatingStyles, setFloating, floatingProps, arrow: arrow$1, arrowRef, context, hotkey, hotkeyProps, isInitialShow, layoutAnimation = true, className, classNames, styles: styleProps, zIndex }) => {
+	const basePlacement = String(placement || "top").split("-")[0];
+	const transformOrigin = useMemo(() => {
+		switch (basePlacement) {
+			case "top": return "bottom center";
+			case "bottom": return "top center";
+			case "left": return "center right";
+			case "right": return "center left";
+			default: return "center";
+		}
+	}, [basePlacement]);
+	const hasTransform = useDebounce(Boolean(floatingStyles?.transform), {
+		leading: false,
+		wait: 16
+	});
+	const Motion = useMotionComponent();
+	const TooltipContent = hotkey ? /* @__PURE__ */ jsxs(FlexBasic_default, {
+		align: "center",
+		gap: 8,
+		horizontal: true,
+		justify: "space-between",
+		children: [/* @__PURE__ */ jsx("span", { children: title }), /* @__PURE__ */ jsx(Hotkey_default, {
+			inverseTheme: true,
+			keys: hotkey,
+			...hotkeyProps
+		})]
+	}) : title;
+	return /* @__PURE__ */ jsx(AnimatePresence, { children: open && title && /* @__PURE__ */ jsx("div", {
+		className: cx(styles.tooltip, layoutAnimation && hasTransform && styles.tooltipLayout, classNames?.container, classNames?.root, className),
+		ref: setFloating,
+		role: "tooltip",
+		style: styleProps?.root ? {
+			...floatingStyles,
+			zIndex,
+			...styleProps.container,
+			...styleProps.root
+		} : {
+			...floatingStyles,
+			zIndex,
+			...styleProps?.container
+		},
+		...floatingProps,
+		children: /* @__PURE__ */ jsxs(Motion.div, {
+			animate: tooltipAnimateState,
+			exit: tooltipExitState,
+			initial: tooltipInitialState,
+			style: { transformOrigin },
+			transition: tooltipTransition,
+			children: [/* @__PURE__ */ jsx("div", {
+				className: cx(styles.content, classNames?.content),
+				style: styleProps?.content,
+				children: layoutAnimation ? /* @__PURE__ */ jsx(AnimatePresence, {
+					mode: "popLayout",
+					children: /* @__PURE__ */ jsx(Motion.div, {
+						animate: contentAnimateState,
+						exit: contentExitState,
+						initial: isInitialShow ? false : contentInitialState,
+						transition: contentTransition,
+						children: TooltipContent
+					}, String(title))
+				}) : TooltipContent
+			}), arrow$1 && context && /* @__PURE__ */ jsx(FloatingArrow, {
+				className: cx(styles.arrow, classNames?.arrow),
+				context,
+				height: 6,
+				ref: arrowRef,
+				style: styleProps?.arrow,
+				width: 12
+			})]
+		})
+	}, "tooltip") });
+};
+var TooltipFloating_default = TooltipFloating;
+
+//#endregion
+export { TooltipFloating_default as default };
+//# sourceMappingURL=TooltipFloating.mjs.map

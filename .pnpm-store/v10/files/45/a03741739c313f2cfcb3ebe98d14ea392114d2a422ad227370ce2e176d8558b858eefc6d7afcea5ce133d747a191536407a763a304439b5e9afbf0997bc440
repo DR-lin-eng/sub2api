@@ -1,0 +1,8 @@
+import { SideNavProps } from "./type.mjs";
+import * as react53 from "react";
+
+//#region src/SideNav/SideNav.d.ts
+declare const SideNav: react53.NamedExoticComponent<SideNavProps>;
+//#endregion
+export { SideNav };
+//# sourceMappingURL=SideNav.d.mts.map

@@ -1,0 +1,8 @@
+import { TocProps } from "./type.mjs";
+import * as react16 from "react";
+
+//#region src/Toc/Toc.d.ts
+declare const Toc: react16.NamedExoticComponent<TocProps>;
+//#endregion
+export { Toc };
+//# sourceMappingURL=Toc.d.mts.map

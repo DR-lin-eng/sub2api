@@ -1,0 +1,8 @@
+import { DropdownProps } from "./type.mjs";
+import * as react58 from "react";
+
+//#region src/Dropdown/Dropdown.d.ts
+declare const Dropdown: react58.NamedExoticComponent<DropdownProps>;
+//#endregion
+export { Dropdown };
+//# sourceMappingURL=Dropdown.d.mts.map

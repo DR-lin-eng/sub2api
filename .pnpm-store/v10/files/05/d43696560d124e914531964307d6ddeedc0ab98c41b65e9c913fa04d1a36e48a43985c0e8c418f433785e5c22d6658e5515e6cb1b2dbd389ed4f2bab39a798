@@ -1,0 +1,8 @@
+import { SelectProps } from "./type.mjs";
+import * as react73 from "react";
+
+//#region src/Select/Select.d.ts
+declare const Input: react73.NamedExoticComponent<SelectProps>;
+//#endregion
+export { Input };
+//# sourceMappingURL=Select.d.mts.map

@@ -1,0 +1,56 @@
+import { isElementHidden } from "./utils.mjs";
+import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
+import { mergeRefs } from "react-merge-refs";
+
+//#region src/Tooltip/useTooltipReference.ts
+const useTooltipReference = ({ trigger, ref, getReferenceProps, setReference, mergedOpen, setOpen }) => {
+	const [referenceEl, setReferenceEl] = useState(null);
+	const previousReferenceRef = useRef(null);
+	const previousConnectedRef = useRef(false);
+	const referenceConnected = Boolean(referenceEl && !isElementHidden(referenceEl));
+	const referenceNode = useMemo(() => {
+		if (!isValidElement(trigger)) return trigger;
+		const originalRef = trigger.ref;
+		const setReferenceNode = (node) => {
+			const resolved = node instanceof HTMLElement ? node : null;
+			setReferenceEl((prev) => prev === resolved ? prev : resolved);
+		};
+		return cloneElement(trigger, getReferenceProps({
+			...trigger.props,
+			ref: mergeRefs([
+				originalRef,
+				setReference,
+				setReferenceNode,
+				ref
+			])
+		}));
+	}, [
+		getReferenceProps,
+		ref,
+		setReference,
+		trigger
+	]);
+	useEffect(() => {
+		const previousReference = previousReferenceRef.current;
+		const previousConnected = previousConnectedRef.current;
+		const referenceChanged = previousReference && previousReference !== referenceEl;
+		const previousDisconnected = previousReference ? isElementHidden(previousReference) : false;
+		if (mergedOpen && (referenceChanged && previousDisconnected || previousConnected && !referenceConnected)) setOpen(false);
+		previousReferenceRef.current = referenceEl;
+		previousConnectedRef.current = referenceConnected;
+	}, [
+		mergedOpen,
+		referenceConnected,
+		referenceEl,
+		setOpen
+	]);
+	return {
+		referenceConnected,
+		referenceEl,
+		referenceNode
+	};
+};
+
+//#endregion
+export { useTooltipReference };
+//# sourceMappingURL=useTooltipReference.mjs.map

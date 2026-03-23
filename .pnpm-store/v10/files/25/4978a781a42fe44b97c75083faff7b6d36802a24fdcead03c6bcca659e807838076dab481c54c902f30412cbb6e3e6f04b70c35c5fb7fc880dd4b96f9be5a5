@@ -1,0 +1,8 @@
+import { DraggableSideNavProps } from "./type.mjs";
+import * as react63 from "react";
+
+//#region src/DraggableSideNav/DraggableSideNav.d.ts
+declare const DraggableSideNav: react63.NamedExoticComponent<DraggableSideNavProps>;
+//#endregion
+export { DraggableSideNav };
+//# sourceMappingURL=DraggableSideNav.d.mts.map

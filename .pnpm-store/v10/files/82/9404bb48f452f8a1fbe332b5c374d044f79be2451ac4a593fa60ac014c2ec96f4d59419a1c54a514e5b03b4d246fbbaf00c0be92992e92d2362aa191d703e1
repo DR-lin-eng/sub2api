@@ -1,0 +1,18 @@
+import { isValidElement, useMemo } from "react";
+import { jsx } from "react/jsx-runtime";
+
+//#region src/Tooltip/useTooltipTrigger.tsx
+const useTooltipTrigger = (children) => {
+	return useMemo(() => {
+		if (!isValidElement(children)) return /* @__PURE__ */ jsx("span", { children });
+		if (typeof children.type === "string" && Boolean(children.props?.disabled)) return /* @__PURE__ */ jsx("span", {
+			style: { display: "inline-flex" },
+			children
+		});
+		return children;
+	}, [children]);
+};
+
+//#endregion
+export { useTooltipTrigger };
+//# sourceMappingURL=useTooltipTrigger.mjs.map

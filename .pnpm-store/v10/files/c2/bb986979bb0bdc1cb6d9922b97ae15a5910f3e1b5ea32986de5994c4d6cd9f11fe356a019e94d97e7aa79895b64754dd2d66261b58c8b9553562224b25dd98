@@ -1,0 +1,8 @@
+import * as react78 from "react";
+import * as lucide_react1 from "lucide-react";
+
+//#region src/icons/lucideExtra/GroupBotIcon.d.ts
+declare const GroupBotIcon: react78.ForwardRefExoticComponent<Omit<lucide_react1.LucideProps, "ref"> & react78.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { GroupBotIcon };
+//# sourceMappingURL=GroupBotIcon.d.mts.map

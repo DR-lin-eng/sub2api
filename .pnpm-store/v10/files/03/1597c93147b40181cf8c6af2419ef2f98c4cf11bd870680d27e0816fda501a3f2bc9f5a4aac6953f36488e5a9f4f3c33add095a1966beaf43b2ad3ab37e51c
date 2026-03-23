@@ -1,0 +1,10 @@
+export var TITLE = 'PixVerse';
+export var COMBINE_TEXT_MULTIPLE = 0.7;
+export var COMBINE_SPACE_MULTIPLE = 0.3;
+export var COLOR_PRIMARY = '#9727ef';
+export var COLOR_GRADIENT = 'linear-gradient(45deg, #3961f1, #9727ef, #ff601a)';
+
+// Avatar constants
+export var AVATAR_BACKGROUND = COLOR_GRADIENT;
+export var AVATAR_COLOR = '#000';
+export var AVATAR_ICON_MULTIPLE = 0.65;

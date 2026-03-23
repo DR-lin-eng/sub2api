@@ -53,3 +53,19 @@ type HTTPUpstream interface {
 	//   - TLS 指纹客户端与普通客户端使用不同的缓存键，互不影响
 	DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, enableTLSFingerprint bool) (*http.Response, error)
 }
+
+type HTTPUpstreamMetricsSnapshot struct {
+	IsolationMode          string `json:"isolation_mode"`
+	ActiveClients          int    `json:"active_clients"`
+	CacheHitTotal          int64  `json:"cache_hit_total"`
+	CacheMissTotal         int64  `json:"cache_miss_total"`
+	ClientCreateTotal      int64  `json:"client_create_total"`
+	EvictIdleTotal         int64  `json:"evict_idle_total"`
+	EvictLRUTotal          int64  `json:"evict_lru_total"`
+	EvictConfigChangeTotal int64  `json:"evict_config_change_total"`
+	LimitRejectTotal       int64  `json:"limit_reject_total"`
+}
+
+type HTTPUpstreamMetricsProvider interface {
+	SnapshotMetrics() HTTPUpstreamMetricsSnapshot
+}

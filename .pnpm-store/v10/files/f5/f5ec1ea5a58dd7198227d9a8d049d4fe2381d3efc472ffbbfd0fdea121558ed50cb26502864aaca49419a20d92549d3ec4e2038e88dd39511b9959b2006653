@@ -1,0 +1,73 @@
+'use client';
+
+import PreviewGroup_default from "../Image/PreviewGroup.mjs";
+import { MarkdownProvider } from "./components/MarkdownProvider.mjs";
+import MarkdownRender_default from "./SyntaxMarkdown/MarkdownRender.mjs";
+import StreamdownRender_default from "./SyntaxMarkdown/StreamdownRender.mjs";
+import Typography_default from "./Typography.mjs";
+import { useDelayedAnimated } from "./components/useDelayedAnimated.mjs";
+import { variants } from "./style.mjs";
+import { memo, useCallback } from "react";
+import { jsx } from "react/jsx-runtime";
+import { cx } from "antd-style";
+
+//#region src/Markdown/Markdown.tsx
+const Markdown = memo((props) => {
+	const { ref, children = "", className, style, fullFeaturedCodeBlock, onDoubleClick, animated, enableLatex = true, enableMermaid = true, enableImageGallery, enableCustomFootnotes, enableGithubAlert, enableStream = true, componentProps, rehypePluginsAhead, allowHtml, borderRadius, fontSize = props.variant === "chat" ? 14 : void 0, headerMultiple = props.variant === "chat" ? .25 : void 0, marginMultiple = props.variant === "chat" ? 1 : void 0, variant = "default", reactMarkdownProps, lineHeight = props.variant === "chat" ? 1.6 : void 0, rehypePlugins, remarkPlugins, remarkPluginsAhead, components = {}, customRender, showFootnotes = true, citations, ...rest } = props;
+	const delayedAnimated = useDelayedAnimated(animated);
+	const Render = useCallback(({ enableStream: enableStream$1, children: children$1, reactMarkdownProps: reactMarkdownProps$1 }) => {
+		const defaultDOM = /* @__PURE__ */ jsx(enableStream$1 ? StreamdownRender_default : MarkdownRender_default, {
+			...reactMarkdownProps$1,
+			children: children$1
+		});
+		return customRender ? customRender(defaultDOM, { text: children$1 }) : defaultDOM;
+	}, [customRender]);
+	return /* @__PURE__ */ jsx(PreviewGroup_default, {
+		enable: enableImageGallery,
+		children: /* @__PURE__ */ jsx(Typography_default, {
+			borderRadius,
+			className: cx(variants({
+				enableLatex,
+				variant
+			}), className),
+			"data-code-type": "markdown",
+			fontSize,
+			headerMultiple,
+			lineHeight,
+			marginMultiple,
+			onDoubleClick,
+			ref,
+			style,
+			...rest,
+			children: /* @__PURE__ */ jsx(MarkdownProvider, {
+				allowHtml,
+				animated: delayedAnimated,
+				citations,
+				componentProps,
+				components,
+				enableCustomFootnotes,
+				enableGithubAlert,
+				enableLatex,
+				enableMermaid,
+				fullFeaturedCodeBlock,
+				rehypePlugins,
+				rehypePluginsAhead,
+				remarkPlugins,
+				remarkPluginsAhead,
+				showFootnotes,
+				variant,
+				children: /* @__PURE__ */ jsx(Render, {
+					enableStream: enableStream && delayedAnimated,
+					reactMarkdownProps,
+					children
+				})
+			})
+		})
+	});
+});
+Markdown.displayName = "Markdown";
+var Markdown_default = Markdown;
+
+//#endregion
+export { Markdown_default as default };
+//# sourceMappingURL=Markdown.mjs.map

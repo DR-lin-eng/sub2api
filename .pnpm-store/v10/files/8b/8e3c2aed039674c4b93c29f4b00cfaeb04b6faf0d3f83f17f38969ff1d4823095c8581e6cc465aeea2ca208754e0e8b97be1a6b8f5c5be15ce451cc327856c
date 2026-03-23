@@ -1,0 +1,61 @@
+'use client';
+
+import Tooltip_default from "../Tooltip/Tooltip.mjs";
+import { variants } from "./styles.mjs";
+import { jsx } from "react/jsx-runtime";
+import { cx } from "antd-style";
+
+//#region src/Text/Text.tsx
+const Text = ({ as: Container = "div", align, className, children, style, type, disabled, strong, italic, underline, delete: deleteStyle, fontSize, mark, code, color, weight, ellipsis, ...rest }) => {
+	const textStyle = {
+		...color && { color },
+		...weight && { fontWeight: weight },
+		...typeof ellipsis === "object" && ellipsis.rows && { WebkitLineClamp: ellipsis.rows },
+		...fontSize && { fontSize },
+		...align && { textAlign: align },
+		...style
+	};
+	const content = /* @__PURE__ */ jsx(Container, {
+		className: cx(variants({
+			as: [
+				"h1",
+				"h2",
+				"h3",
+				"h4",
+				"h5",
+				"p"
+			].includes(Container) ? Container : void 0,
+			code,
+			delete: deleteStyle,
+			disabled,
+			ellipsis: ellipsis ? typeof ellipsis === "object" && ellipsis.rows ? "multi" : true : void 0,
+			italic,
+			mark,
+			strong,
+			type,
+			underline
+		}), className),
+		style: textStyle,
+		...rest,
+		children
+	});
+	if (ellipsis && typeof ellipsis === "object" && ellipsis.tooltip) {
+		const title = typeof ellipsis.tooltip === "string" ? ellipsis.tooltip : children;
+		if (typeof ellipsis.tooltip === "object") return /* @__PURE__ */ jsx(Tooltip_default, {
+			...ellipsis.tooltip,
+			title: ellipsis.tooltip?.title || title,
+			children: content
+		});
+		return /* @__PURE__ */ jsx(Tooltip_default, {
+			title,
+			children: content
+		});
+	}
+	return content;
+};
+Text.displayName = "Text";
+var Text_default = Text;
+
+//#endregion
+export { Text_default as default };
+//# sourceMappingURL=Text.mjs.map

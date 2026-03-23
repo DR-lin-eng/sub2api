@@ -1,0 +1,8 @@
+import { GiscusProps } from "./type.mjs";
+import * as react127 from "react";
+
+//#region src/awesome/Giscus/Giscus.d.ts
+declare const Giscus: react127.NamedExoticComponent<GiscusProps>;
+//#endregion
+export { Giscus };
+//# sourceMappingURL=Giscus.d.mts.map

@@ -106,6 +106,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	requestStart := time.Now()
 
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
@@ -173,6 +174,8 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 
 	streamStarted := false
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+	routingStart := time.Now()
 
 	maxWait := service.CalculateMaxWait(subject.Concurrency)
 	canWait, err := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
@@ -323,13 +326,22 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
+		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		forwardStart := time.Now()
 		result, err := h.soraGatewayService.Forward(c.Request.Context(), c, account, body, clientStream)
+		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
+		}
+		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, forwardDurationMs)
+		if err == nil && result != nil && result.FirstTokenMs != nil {
+			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.RecordGatewayAccountSwitch(account.ID)
 				failedAccountIDs[account.ID] = struct{}{}
 				if switchCount >= maxAccountSwitches {
 					lastFailoverStatus = failoverErr.StatusCode
@@ -387,6 +399,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 				reqLog.Warn("sora.upstream_failover_switching", fields...)
 				continue
 			}
+			h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
 			reqLog.Error("sora.forward_failed",
 				zap.Int64("account_id", account.ID),
 				zap.Int64("proxy_id", proxyID),
@@ -395,6 +408,11 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 				zap.Error(err),
 			)
 			return
+		}
+		if result != nil && result.FirstTokenMs != nil {
+			h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+		} else {
+			h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, nil)
 		}
 
 		userAgent := c.GetHeader("User-Agent")

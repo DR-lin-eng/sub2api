@@ -1,0 +1,8 @@
+import { SpotlightCardProps } from "./type.mjs";
+import * as react133 from "react";
+
+//#region src/awesome/SpotlightCard/SpotlightCard.d.ts
+declare const SpotlightCard: react133.NamedExoticComponent<SpotlightCardProps<any>>;
+//#endregion
+export { SpotlightCard };
+//# sourceMappingURL=SpotlightCard.d.mts.map

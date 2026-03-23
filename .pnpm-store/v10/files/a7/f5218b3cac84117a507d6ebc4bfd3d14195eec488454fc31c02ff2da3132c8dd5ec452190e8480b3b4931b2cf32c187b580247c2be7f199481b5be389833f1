@@ -1,0 +1,18 @@
+'use client';
+
+import { TooltipGroupApiContext } from "./groupContext.mjs";
+import { TooltipInGroup } from "./TooltipInGroup.mjs";
+import { TooltipStandalone } from "./TooltipStandalone.mjs";
+import { useContext } from "react";
+import { jsx } from "react/jsx-runtime";
+
+//#region src/Tooltip/Tooltip.tsx
+const Tooltip = (props) => {
+	const group = useContext(TooltipGroupApiContext);
+	return Boolean(group) && props.open === void 0 && props.defaultOpen === void 0 ? /* @__PURE__ */ jsx(TooltipInGroup, { ...props }) : /* @__PURE__ */ jsx(TooltipStandalone, { ...props });
+};
+var Tooltip_default = Tooltip;
+
+//#endregion
+export { Tooltip_default as default };
+//# sourceMappingURL=Tooltip.mjs.map

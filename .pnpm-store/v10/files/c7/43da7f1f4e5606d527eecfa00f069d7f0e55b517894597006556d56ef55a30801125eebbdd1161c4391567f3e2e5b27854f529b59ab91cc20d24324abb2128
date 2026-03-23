@@ -1,0 +1,103 @@
+'use client';
+
+import { useTooltipTrigger } from "./useTooltipTrigger.mjs";
+import TooltipFloating_default from "./TooltipFloating.mjs";
+import TooltipPortal_default from "./TooltipPortal.mjs";
+import { useTooltipFloating } from "./useTooltipFloating.mjs";
+import { isElementHidden, observeElementVisibility } from "./utils.mjs";
+import { useTooltipReference } from "./useTooltipReference.mjs";
+import { useCallback, useEffect, useState } from "react";
+import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+
+//#region src/Tooltip/TooltipStandalone.tsx
+const TooltipStandalone = ({ ref, hotkey, className, arrow = false, title, hotkeyProps, children, placement = "top", openDelay, closeDelay, mouseEnterDelay, mouseLeaveDelay, open, defaultOpen, onOpenChange, disabled, classNames, styles: styleProps, zIndex, portalled = true, getPopupContainer }) => {
+	const [uncontrolledOpen, setUncontrolledOpen] = useState(Boolean(defaultOpen));
+	const [referenceVisible, setReferenceVisible] = useState(true);
+	const mergedOpen = open ?? uncontrolledOpen;
+	const setOpen = useCallback((next) => {
+		if (open === void 0) setUncontrolledOpen(next);
+		onOpenChange?.(next);
+	}, [onOpenChange, open]);
+	const trigger = useTooltipTrigger(children);
+	const floatingHookResult = useTooltipFloating({
+		arrow,
+		closeDelay,
+		disabled,
+		mouseEnterDelay,
+		mouseLeaveDelay,
+		onOpenChange: setOpen,
+		open: mergedOpen,
+		openDelay,
+		placement
+	});
+	const { referenceConnected, referenceEl, referenceNode } = useTooltipReference({
+		getReferenceProps: floatingHookResult.getReferenceProps,
+		mergedOpen,
+		ref,
+		setOpen,
+		setReference: floatingHookResult.refs.setReference,
+		trigger
+	});
+	const connectedOpen = !disabled && mergedOpen && referenceConnected && referenceVisible;
+	const { arrowRef, context, floatingPlacement, floatingStyles, getFloatingProps, refs } = floatingHookResult;
+	useEffect(() => {
+		if (!mergedOpen) return;
+		if (!referenceEl) {
+			setReferenceVisible(false);
+			setOpen(false);
+			return;
+		}
+		let lastVisible = true;
+		const handleVisibilityChange = (visible) => {
+			setReferenceVisible(visible);
+			if (!visible && lastVisible) setOpen(false);
+			lastVisible = visible;
+		};
+		const stopVisibilityObserver = observeElementVisibility(referenceEl, handleVisibilityChange);
+		const root = referenceEl.getRootNode?.();
+		const observeTarget = typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot ? root : referenceEl.ownerDocument ?? document;
+		const observer = new MutationObserver(() => {
+			if (isElementHidden(referenceEl)) handleVisibilityChange(false);
+		});
+		observer.observe(observeTarget, {
+			childList: true,
+			subtree: true
+		});
+		return () => {
+			observer.disconnect();
+			stopVisibilityObserver?.();
+		};
+	}, [
+		mergedOpen,
+		referenceEl,
+		setOpen
+	]);
+	const portalRoot = getPopupContainer && referenceEl && referenceConnected && referenceVisible ? getPopupContainer(referenceEl) : void 0;
+	const floatingNode = /* @__PURE__ */ jsx(TooltipFloating_default, {
+		arrow,
+		arrowRef,
+		className,
+		classNames,
+		context,
+		floatingProps: getFloatingProps(),
+		floatingStyles,
+		hotkey,
+		hotkeyProps,
+		isInitialShow: true,
+		open: connectedOpen,
+		placement: floatingPlacement,
+		setFloating: refs.setFloating,
+		styles: styleProps,
+		title,
+		zIndex
+	});
+	return /* @__PURE__ */ jsxs(Fragment$1, { children: [referenceNode, !disabled && title && (portalled ? /* @__PURE__ */ jsx(TooltipPortal_default, {
+		root: portalRoot,
+		children: floatingNode
+	}) : floatingNode)] });
+};
+TooltipStandalone.displayName = "TooltipStandalone";
+
+//#endregion
+export { TooltipStandalone };
+//# sourceMappingURL=TooltipStandalone.mjs.map

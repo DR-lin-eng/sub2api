@@ -1,0 +1,44 @@
+'use client';
+
+import Modal_default from "./Modal.mjs";
+import { ModalProvider } from "./ModalProvider.mjs";
+import { memo } from "react";
+import { jsx } from "react/jsx-runtime";
+
+//#region src/Modal/ModalStackItem.tsx
+const ModalStackItem = memo(({ id, props, onClose, onUpdate, onDestroy }) => {
+	const { afterClose, afterOpenChange, children, onCancel, open, ...rest } = props;
+	const close = () => onClose(id);
+	const setCanDismissByClickOutside = (value) => {
+		onUpdate(id, { maskClosable: value });
+	};
+	const contextValue = {
+		close,
+		setCanDismissByClickOutside
+	};
+	return /* @__PURE__ */ jsx(Modal_default, {
+		...rest,
+		afterClose: () => {
+			afterClose?.();
+			onDestroy(id);
+		},
+		afterOpenChange: (nextOpen) => {
+			afterOpenChange?.(nextOpen);
+			if (!nextOpen) onDestroy(id);
+		},
+		onCancel: (event) => {
+			onCancel?.(event);
+			close();
+		},
+		open: open ?? true,
+		children: /* @__PURE__ */ jsx(ModalProvider, {
+			value: contextValue,
+			children
+		})
+	});
+});
+ModalStackItem.displayName = "ModalStackItem";
+
+//#endregion
+export { ModalStackItem };
+//# sourceMappingURL=ModalStackItem.mjs.map

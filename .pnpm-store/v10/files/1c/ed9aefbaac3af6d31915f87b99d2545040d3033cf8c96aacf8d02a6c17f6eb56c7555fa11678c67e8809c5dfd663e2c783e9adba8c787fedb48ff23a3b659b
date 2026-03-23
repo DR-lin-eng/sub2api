@@ -1,0 +1,14 @@
+import { ContextMenuItem } from "./type.mjs";
+import "@floating-ui/react";
+
+//#region src/ContextMenu/store.d.ts
+
+declare const showContextMenu: (items: ContextMenuItem[]) => void;
+/**
+ * Update menu items while keeping current anchor/position.
+ * Useful for interactive menu items (e.g. checkbox) to avoid re-positioning.
+ */
+declare const updateContextMenuItems: (items: ContextMenuItem[]) => void;
+//#endregion
+export { showContextMenu, updateContextMenuItems };
+//# sourceMappingURL=store.d.mts.map

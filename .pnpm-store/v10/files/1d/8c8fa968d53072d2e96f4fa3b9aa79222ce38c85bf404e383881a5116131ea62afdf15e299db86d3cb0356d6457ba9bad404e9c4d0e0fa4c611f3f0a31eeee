@@ -1,0 +1,8 @@
+import { ThemeProviderProps } from "./type.mjs";
+import * as react17 from "react";
+
+//#region src/ThemeProvider/ThemeProvider.d.ts
+declare const ThemeProvider: react17.NamedExoticComponent<ThemeProviderProps>;
+//#endregion
+export { ThemeProvider };
+//# sourceMappingURL=ThemeProvider.d.mts.map

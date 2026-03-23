@@ -1,0 +1,126 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import Center_default from "../Flex/Center.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import Text_default from "../Text/Text.mjs";
+import Button_default from "../Button/Button.mjs";
+import { useTranslation } from "../i18n/useTranslation.mjs";
+import emojiPicker_default from "../i18n/resources/en/emojiPicker.mjs";
+import Tag_default from "../Tag/Tag.mjs";
+import { memo, useCallback, useRef, useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { Upload, message } from "antd";
+import { cssVar } from "antd-style";
+import { ChevronLeftIcon, ImageUpIcon } from "lucide-react";
+import AvatarEditor from "react-avatar-editor";
+
+//#region src/EmojiPicker/AvatarUploader.tsx
+const { Dragger } = Upload;
+const createUploadImageHandler = (onUploadImage) => (file) => {
+	const reader = new FileReader();
+	reader.readAsDataURL(file);
+	reader.addEventListener("load", () => {
+		onUploadImage(String(reader.result));
+	});
+};
+const AvatarUploader = memo(({ shape, onChange, texts, compressSize = 256, onUpload }) => {
+	const editor = useRef(null);
+	const [previewImage, setPreviewImage] = useState("");
+	const { t } = useTranslation(emojiPicker_default);
+	const fileTypeErrorText = texts?.fileTypeError ?? t("emojiPicker.fileTypeError");
+	const draggerDescText = texts?.draggerDesc ?? t("emojiPicker.draggerDesc");
+	const uploadBtnText = texts?.uploadBtn ?? t("emojiPicker.uploadBtn");
+	const beforeUpload = useCallback((file) => {
+		if (!(file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/gif" || file.type === "image/webp")) {
+			message.error(fileTypeErrorText);
+			return;
+		}
+		return createUploadImageHandler((avatar) => {
+			setPreviewImage(avatar);
+		})(file);
+	}, [fileTypeErrorText]);
+	const handleUpload = () => {
+		if (!editor.current) return;
+		const canvasScaled = editor.current.getImageScaledToCanvas();
+		onChange(canvasScaled.toDataURL());
+		if (!onUpload) return;
+		canvasScaled.toBlob((blob) => {
+			if (blob) onUpload(new File([blob], "avatar.webp", { type: "image/webp" }));
+		}, "image/webp", .95);
+	};
+	return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		padding: 10,
+		style: { position: "relative" },
+		width: "100%",
+		children: [!previewImage && /* @__PURE__ */ jsx(Dragger, {
+			accept: "image",
+			beforeUpload,
+			itemRender: () => void 0,
+			maxCount: 1,
+			multiple: false,
+			children: /* @__PURE__ */ jsxs(Center_default, {
+				gap: 16,
+				height: compressSize,
+				width: compressSize,
+				children: [
+					/* @__PURE__ */ jsx(Icon_default, {
+						color: cssVar.colorTextDescription,
+						icon: ImageUpIcon,
+						size: 48
+					}),
+					/* @__PURE__ */ jsx(Text_default, {
+						color: cssVar.colorTextSecondary,
+						children: draggerDescText
+					}),
+					/* @__PURE__ */ jsxs(Center_default, {
+						gap: 4,
+						horizontal: true,
+						children: [
+							/* @__PURE__ */ jsx(Tag_default, { children: "JPG" }),
+							/* @__PURE__ */ jsx(Tag_default, { children: "PNG" }),
+							/* @__PURE__ */ jsx(Tag_default, { children: "GIF" }),
+							/* @__PURE__ */ jsx(Tag_default, { children: "WEBP" })
+						]
+					})
+				]
+			})
+		}), previewImage && /* @__PURE__ */ jsxs(Center_default, {
+			gap: 8,
+			style: { position: "relative" },
+			width: "100%",
+			children: [/* @__PURE__ */ jsx(AvatarEditor, {
+				border: 0,
+				borderRadius: shape === "square" ? void 0 : compressSize / 2,
+				height: compressSize,
+				image: previewImage,
+				ref: editor,
+				width: compressSize
+			}), /* @__PURE__ */ jsxs(FlexBasic_default, {
+				gap: 8,
+				horizontal: true,
+				style: { position: "relative" },
+				width: "100%",
+				children: [/* @__PURE__ */ jsx(Button_default, {
+					icon: ChevronLeftIcon,
+					onClick: () => setPreviewImage(""),
+					style: { flex: "none" }
+				}), /* @__PURE__ */ jsx(Button_default, {
+					onClick: handleUpload,
+					style: {
+						flex: 1,
+						fontWeight: 500
+					},
+					type: "primary",
+					children: uploadBtnText
+				})]
+			})]
+		})]
+	});
+});
+AvatarUploader.displayName = "AvatarUploader";
+var AvatarUploader_default = AvatarUploader;
+
+//#endregion
+export { AvatarUploader_default as default };
+//# sourceMappingURL=AvatarUploader.mjs.map

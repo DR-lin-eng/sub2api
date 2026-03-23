@@ -1,0 +1,8 @@
+import { LayoutHeaderProps } from "../type.mjs";
+import * as react40 from "react";
+
+//#region src/Layout/components/LayoutHeader.d.ts
+declare const LayoutHeader: react40.NamedExoticComponent<LayoutHeaderProps>;
+//#endregion
+export { LayoutHeader };
+//# sourceMappingURL=LayoutHeader.d.mts.map

@@ -1,0 +1,8 @@
+import { LayoutTocProps } from "../type.mjs";
+import * as react44 from "react";
+
+//#region src/Layout/components/LayoutToc.d.ts
+declare const LayoutToc: react44.NamedExoticComponent<LayoutTocProps>;
+//#endregion
+export { LayoutToc };
+//# sourceMappingURL=LayoutToc.d.mts.map

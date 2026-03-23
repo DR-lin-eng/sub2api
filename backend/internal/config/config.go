@@ -700,6 +700,14 @@ type GatewaySchedulingConfig struct {
 
 	// 负载计算
 	LoadBatchEnabled bool `mapstructure:"load_batch_enabled"`
+	// LBTopK: 通用 Gateway 运行时反馈调度时参与加权选择的 top-k 候选数量
+	LBTopK int `mapstructure:"lb_top_k"`
+	// RuntimeStatsAlpha: 通用 Gateway 调度器运行时指标的 EWMA 平滑系数
+	RuntimeStatsAlpha float64 `mapstructure:"runtime_stats_alpha"`
+	// FairWaitQueueEnabled: 是否启用 ticket 化公平等待队列
+	FairWaitQueueEnabled bool `mapstructure:"fair_wait_queue_enabled"`
+	// SchedulerScoreWeights: 通用 Gateway 调度器打分权重
+	SchedulerScoreWeights GatewaySchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
 
 	// 过期槽位清理周期（0 表示禁用）
 	SlotCleanupInterval time.Duration `mapstructure:"slot_cleanup_interval"`
@@ -726,6 +734,15 @@ type GatewaySchedulingConfig struct {
 	// 全量重建周期配置
 	// 全量重建周期（秒），0 表示禁用
 	FullRebuildIntervalSeconds int `mapstructure:"full_rebuild_interval_seconds"`
+}
+
+// GatewaySchedulerScoreWeights 通用 Gateway 调度打分权重。
+type GatewaySchedulerScoreWeights struct {
+	Priority  float64 `mapstructure:"priority"`
+	Load      float64 `mapstructure:"load"`
+	Queue     float64 `mapstructure:"queue"`
+	ErrorRate float64 `mapstructure:"error_rate"`
+	TTFT      float64 `mapstructure:"ttft"`
 }
 
 func (s *ServerConfig) Address() string {
@@ -1431,6 +1448,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
+	viper.SetDefault("gateway.scheduling.lb_top_k", 5)
+	viper.SetDefault("gateway.scheduling.runtime_stats_alpha", 0.2)
+	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", false)
+	viper.SetDefault("gateway.scheduling.scheduler_score_weights.priority", 1.0)
+	viper.SetDefault("gateway.scheduling.scheduler_score_weights.load", 1.0)
+	viper.SetDefault("gateway.scheduling.scheduler_score_weights.queue", 0.7)
+	viper.SetDefault("gateway.scheduling.scheduler_score_weights.error_rate", 0.8)
+	viper.SetDefault("gateway.scheduling.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
 	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
@@ -2240,6 +2265,19 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.FallbackMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_max_waiting must be positive")
+	}
+	if c.Gateway.Scheduling.LBTopK <= 0 {
+		return fmt.Errorf("gateway.scheduling.lb_top_k must be positive")
+	}
+	if c.Gateway.Scheduling.RuntimeStatsAlpha <= 0 || c.Gateway.Scheduling.RuntimeStatsAlpha > 1 {
+		return fmt.Errorf("gateway.scheduling.runtime_stats_alpha must be within (0,1]")
+	}
+	weights := c.Gateway.Scheduling.SchedulerScoreWeights
+	if weights.Priority < 0 || weights.Load < 0 || weights.Queue < 0 || weights.ErrorRate < 0 || weights.TTFT < 0 {
+		return fmt.Errorf("gateway.scheduling.scheduler_score_weights.* must be non-negative")
+	}
+	if weights.Priority == 0 && weights.Load == 0 && weights.Queue == 0 && weights.ErrorRate == 0 && weights.TTFT == 0 {
+		return fmt.Errorf("gateway.scheduling.scheduler_score_weights must not all be zero")
 	}
 	if c.Gateway.Scheduling.SlotCleanupInterval < 0 {
 		return fmt.Errorf("gateway.scheduling.slot_cleanup_interval must be non-negative")

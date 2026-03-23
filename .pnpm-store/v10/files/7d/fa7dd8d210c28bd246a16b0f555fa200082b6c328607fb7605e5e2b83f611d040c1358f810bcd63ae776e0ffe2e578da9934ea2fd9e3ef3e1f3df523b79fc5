@@ -1,0 +1,8 @@
+import { EmojiPickerProps } from "./type.mjs";
+import * as react52 from "react";
+
+//#region src/EmojiPicker/EmojiPicker.d.ts
+declare const EmojiPicker: react52.NamedExoticComponent<EmojiPickerProps>;
+//#endregion
+export { EmojiPicker };
+//# sourceMappingURL=EmojiPicker.d.mts.map

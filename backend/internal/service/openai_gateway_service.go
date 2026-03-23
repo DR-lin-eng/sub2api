@@ -233,10 +233,13 @@ type OpenAIForwardResult struct {
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
-	RetryAttemptsTotal            int64 `json:"retry_attempts_total"`
-	RetryBackoffMsTotal           int64 `json:"retry_backoff_ms_total"`
-	RetryExhaustedTotal           int64 `json:"retry_exhausted_total"`
-	NonRetryableFastFallbackTotal int64 `json:"non_retryable_fast_fallback_total"`
+	RetryAttemptsTotal            int64            `json:"retry_attempts_total"`
+	RetryBackoffMsTotal           int64            `json:"retry_backoff_ms_total"`
+	RetryExhaustedTotal           int64            `json:"retry_exhausted_total"`
+	NonRetryableFastFallbackTotal int64            `json:"non_retryable_fast_fallback_total"`
+	PrewarmSuccessTotal           int64            `json:"prewarm_success_total"`
+	PrewarmFallbackTotal          int64            `json:"prewarm_fallback_total"`
+	FallbackReasonCounts          map[string]int64 `json:"fallback_reason_counts,omitempty"`
 }
 
 type OpenAICompatibilityFallbackMetricsSnapshot struct {
@@ -259,6 +262,10 @@ type openAIWSRetryMetrics struct {
 	retryBackoffMs           atomic.Int64
 	retryExhausted           atomic.Int64
 	nonRetryableFastFallback atomic.Int64
+	prewarmSuccess           atomic.Int64
+	prewarmFallback          atomic.Int64
+	prewarmReasonMu          sync.Mutex
+	prewarmFallbackReasons   map[string]int64
 }
 
 type accountWriteThrottle struct {
@@ -734,15 +741,48 @@ func (s *OpenAIGatewayService) recordOpenAIWSNonRetryableFastFallback() {
 	s.openaiWSRetryMetrics.nonRetryableFastFallback.Add(1)
 }
 
+func (s *OpenAIGatewayService) recordOpenAIWSPrewarmSuccess() {
+	if s == nil {
+		return
+	}
+	s.openaiWSRetryMetrics.prewarmSuccess.Add(1)
+}
+
+func (s *OpenAIGatewayService) recordOpenAIWSPrewarmFallback(reason string) {
+	if s == nil {
+		return
+	}
+	s.openaiWSRetryMetrics.prewarmFallback.Add(1)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	s.openaiWSRetryMetrics.prewarmReasonMu.Lock()
+	defer s.openaiWSRetryMetrics.prewarmReasonMu.Unlock()
+	if s.openaiWSRetryMetrics.prewarmFallbackReasons == nil {
+		s.openaiWSRetryMetrics.prewarmFallbackReasons = make(map[string]int64)
+	}
+	s.openaiWSRetryMetrics.prewarmFallbackReasons[reason]++
+}
+
 func (s *OpenAIGatewayService) SnapshotOpenAIWSRetryMetrics() OpenAIWSRetryMetricsSnapshot {
 	if s == nil {
 		return OpenAIWSRetryMetricsSnapshot{}
 	}
+	fallbackReasonCounts := map[string]int64{}
+	s.openaiWSRetryMetrics.prewarmReasonMu.Lock()
+	for reason, count := range s.openaiWSRetryMetrics.prewarmFallbackReasons {
+		fallbackReasonCounts[reason] = count
+	}
+	s.openaiWSRetryMetrics.prewarmReasonMu.Unlock()
 	return OpenAIWSRetryMetricsSnapshot{
 		RetryAttemptsTotal:            s.openaiWSRetryMetrics.retryAttempts.Load(),
 		RetryBackoffMsTotal:           s.openaiWSRetryMetrics.retryBackoffMs.Load(),
 		RetryExhaustedTotal:           s.openaiWSRetryMetrics.retryExhausted.Load(),
 		NonRetryableFastFallbackTotal: s.openaiWSRetryMetrics.nonRetryableFastFallback.Load(),
+		PrewarmSuccessTotal:           s.openaiWSRetryMetrics.prewarmSuccess.Load(),
+		PrewarmFallbackTotal:          s.openaiWSRetryMetrics.prewarmFallback.Load(),
+		FallbackReasonCounts:          fallbackReasonCounts,
 	}
 }
 

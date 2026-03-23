@@ -1,0 +1,108 @@
+'use client';
+
+import Alert_default from "../../Alert/Alert.mjs";
+import PreviewGroup_default from "../../Image/PreviewGroup.mjs";
+import Image_default from "../mdxComponents/Image.mjs";
+import Video_default from "../mdxComponents/Video.mjs";
+import { useMarkdownContent } from "../../hooks/useMarkdown/useMarkdownContent.mjs";
+import Typography_default from "../../Markdown/Typography.mjs";
+import { styles } from "../../Markdown/style.mjs";
+import mdxComponents_default from "../mdxComponents/index.mjs";
+import CodeBlock_default from "../mdxComponents/CodeBlock.mjs";
+import { memo, useEffect, useMemo, useState } from "react";
+import jsxRuntime, { jsx } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { rehypeGithubAlerts } from "rehype-github-alerts";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import { evaluate } from "@mdx-js/mdx";
+import jsxDevRuntime from "react/jsx-dev-runtime";
+
+//#region src/mdx/Mdx/index.tsx
+const runtime = process.env.NODE_ENV === "production" ? jsxRuntime : jsxDevRuntime;
+const Mdx = memo(({ children, className, style, fullFeaturedCodeBlock = true, enableImageGallery, enableLatex = true, enableMermaid = true, rehypePlugins, remarkPlugins, components = {}, fallback = null, fontSize, headerMultiple, lineHeight, marginMultiple, variant, ...rest }) => {
+	const escapedContent = useMarkdownContent(children);
+	const isChatMode = variant === "chat";
+	const [MDXContent, setMDXContent] = useState(() => () => null);
+	const innerRehypePlugins = Array.isArray(rehypePlugins) ? rehypePlugins : [rehypePlugins];
+	const memoRehypePlugins = useMemo(() => [
+		rehypeGithubAlerts,
+		enableLatex && rehypeKatex,
+		...innerRehypePlugins
+	].filter(Boolean), [enableLatex, ...innerRehypePlugins]);
+	const innerRemarkPlugins = Array.isArray(remarkPlugins) ? remarkPlugins : [remarkPlugins];
+	const memoRemarkPlugins = useMemo(() => [
+		remarkGfm,
+		enableLatex && remarkMath,
+		...innerRemarkPlugins
+	].filter(Boolean), [enableLatex, ...innerRemarkPlugins]);
+	const memoComponents = useMemo(() => {
+		const list = {};
+		Object.entries({
+			...mdxComponents_default,
+			img: Image_default,
+			pre: (props) => /* @__PURE__ */ jsx(CodeBlock_default, {
+				...props,
+				enableMermaid,
+				fullFeatured: fullFeaturedCodeBlock
+			}),
+			video: Video_default,
+			...components
+		}).forEach(([key, Render]) => {
+			list[key] = (props) => /* @__PURE__ */ jsx(Render, { ...props });
+		});
+		return list;
+	}, [
+		components,
+		enableMermaid,
+		fullFeaturedCodeBlock
+	]);
+	useEffect(() => {
+		if (!escapedContent) return;
+		(async () => {
+			try {
+				const { default: Content } = await evaluate(escapedContent, {
+					...runtime,
+					development: process.env.NODE_ENV !== "production",
+					rehypePlugins: memoRehypePlugins,
+					remarkPlugins: memoRemarkPlugins
+				});
+				setMDXContent(() => Content);
+			} catch (error) {
+				setMDXContent(() => () => /* @__PURE__ */ jsx(Alert_default, {
+					description: String(error?.message),
+					style: { width: "100%" },
+					title: "Error compiling MDX",
+					type: "error"
+				}));
+				console.error("Error compiling MDX:", error);
+			}
+		})();
+	}, [
+		escapedContent,
+		memoRehypePlugins,
+		memoRemarkPlugins
+	]);
+	if (!escapedContent || !MDXContent) return fallback;
+	return /* @__PURE__ */ jsx(Typography_default, {
+		className: cx(enableLatex && styles.latex, isChatMode && styles.chat, className),
+		"data-code-type": "mdx",
+		fontSize,
+		headerMultiple,
+		lineHeight,
+		marginMultiple,
+		style,
+		...rest,
+		children: /* @__PURE__ */ jsx(PreviewGroup_default, {
+			enable: enableImageGallery,
+			children: /* @__PURE__ */ jsx(MDXContent, { components: memoComponents })
+		})
+	});
+});
+Mdx.displayName = "Mdx";
+var Mdx_default = Mdx;
+
+//#endregion
+export { Mdx_default as default };
+//# sourceMappingURL=index.mjs.map

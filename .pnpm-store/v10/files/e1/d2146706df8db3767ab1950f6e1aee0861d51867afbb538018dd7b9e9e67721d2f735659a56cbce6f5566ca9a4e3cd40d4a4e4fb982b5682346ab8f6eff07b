@@ -1,0 +1,8 @@
+import * as react86 from "react";
+import * as lucide_react5 from "lucide-react";
+
+//#region src/icons/lucideExtra/LeftDoubleClickIcon.d.ts
+declare const LeftDoubleClickIcon: react86.ForwardRefExoticComponent<Omit<lucide_react5.LucideProps, "ref"> & react86.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { LeftDoubleClickIcon };
+//# sourceMappingURL=LeftDoubleClickIcon.d.mts.map

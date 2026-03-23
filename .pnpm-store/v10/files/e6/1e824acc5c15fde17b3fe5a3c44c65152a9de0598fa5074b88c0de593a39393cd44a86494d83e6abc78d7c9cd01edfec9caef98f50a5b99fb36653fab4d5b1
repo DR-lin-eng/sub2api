@@ -1,0 +1,8 @@
+import * as react94 from "react";
+import * as lucide_react9 from "lucide-react";
+
+//#region src/icons/lucideExtra/McpIcon.d.ts
+declare const McpIcon: react94.ForwardRefExoticComponent<Omit<lucide_react9.LucideProps, "ref"> & react94.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { McpIcon };
+//# sourceMappingURL=McpIcon.d.mts.map

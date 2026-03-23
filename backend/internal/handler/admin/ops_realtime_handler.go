@@ -248,3 +248,55 @@ func (h *OpsHandler) GetRealtimeTrafficSummary(c *gin.Context) {
 		"timestamp": endTime,
 	})
 }
+
+// GetGatewaySchedulerRuntime returns generic Gateway scheduler runtime metrics.
+// GET /api/v1/admin/ops/gateway-scheduler
+func (h *OpsHandler) GetGatewaySchedulerRuntime(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	platform := strings.TrimSpace(c.Query("platform"))
+	var groupID *int64
+	if v := strings.TrimSpace(c.Query("group_id")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid group_id")
+			return
+		}
+		groupID = &id
+	}
+
+	data, err := h.opsService.GetGatewaySchedulerRuntime(c.Request.Context(), platform, groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, data)
+}
+
+// GetOpenAIWSRuntime returns OpenAI WS runtime diagnostics.
+// GET /api/v1/admin/ops/openai-ws-runtime
+func (h *OpsHandler) GetOpenAIWSRuntime(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	platform := strings.TrimSpace(c.Query("platform"))
+	data, err := h.opsService.GetOpenAIWSRuntime(c.Request.Context(), platform)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, data)
+}

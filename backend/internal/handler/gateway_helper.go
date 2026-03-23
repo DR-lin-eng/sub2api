@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -103,6 +104,19 @@ func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
 	return nil
 }
 
+func buildGatewaySessionContext(c *gin.Context, apiKeyID int64) *service.SessionContext {
+	if c == nil {
+		return &service.SessionContext{APIKeyID: apiKeyID}
+	}
+	return &service.SessionContext{
+		ClientIP:             ip.GetClientIP(c),
+		UserAgent:            c.GetHeader("User-Agent"),
+		APIKeyID:             apiKeyID,
+		StableSessionID:      strings.TrimSpace(c.GetHeader("session_id")),
+		StableConversationID: strings.TrimSpace(c.GetHeader("conversation_id")),
+	}
+}
+
 // 并发槽位等待相关常量
 //
 // 性能优化说明：
@@ -125,6 +139,8 @@ const (
 	backoffMultiplier = 1.5
 	// maxBackoff 最大退避时间
 	maxBackoff = 2 * time.Second
+	// fairWaitQueuePollBackoff 非队首 ticket 的轮询间隔下限，避免所有等待请求频繁抢 Redis
+	fairWaitQueuePollBackoff = 250 * time.Millisecond
 )
 
 // SSEPingFormat defines the format of SSE ping events for different platforms
@@ -309,6 +325,31 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 		}
 	}
 
+	fairWaitEnabled := h.concurrencyService != nil && h.concurrencyService.FairWaitQueueEnabled()
+	ticketID := ""
+	if fairWaitEnabled {
+		ticketID = service.NewConcurrencyTicketID()
+		var ticketErr error
+		switch slotType {
+		case "user":
+			ticketErr = h.concurrencyService.EnqueueUserWaitTicket(ctx, id, ticketID)
+		default:
+			ticketErr = h.concurrencyService.EnqueueAccountWaitTicket(ctx, id, ticketID)
+		}
+		if ticketErr != nil {
+			ticketID = ""
+		} else {
+			defer func() {
+				switch slotType {
+				case "user":
+					h.concurrencyService.RemoveUserWaitTicket(ctx, id, ticketID)
+				default:
+					h.concurrencyService.RemoveAccountWaitTicket(ctx, id, ticketID)
+				}
+			}()
+		}
+	}
+
 	// Determine if ping is needed (streaming + ping format defined)
 	needPing := isStream && h.pingFormat != ""
 
@@ -356,6 +397,29 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			flusher.Flush()
 
 		case <-timer.C:
+			if ticketID != "" {
+				var (
+					isTurn bool
+					err    error
+				)
+				switch slotType {
+				case "user":
+					isTurn, err = h.concurrencyService.IsUserWaitTicketTurn(ctx, id, ticketID)
+				default:
+					isTurn, err = h.concurrencyService.IsAccountWaitTicketTurn(ctx, id, ticketID)
+				}
+				if err != nil {
+					return nil, err
+				}
+				if !isTurn {
+					if backoff < fairWaitQueuePollBackoff {
+						backoff = fairWaitQueuePollBackoff
+					}
+					timer.Reset(backoff)
+					continue
+				}
+			}
+
 			// Try to acquire slot
 			result, err := acquireSlot()
 			if err != nil {
@@ -363,9 +427,21 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			}
 
 			if result.Acquired {
+				if ticketID != "" {
+					switch slotType {
+					case "user":
+						h.concurrencyService.RemoveUserWaitTicket(ctx, id, ticketID)
+					default:
+						h.concurrencyService.RemoveAccountWaitTicket(ctx, id, ticketID)
+					}
+					ticketID = ""
+				}
 				return result.ReleaseFunc, nil
 			}
 			backoff = nextBackoff(backoff)
+			if ticketID != "" && backoff < fairWaitQueuePollBackoff {
+				backoff = fairWaitQueuePollBackoff
+			}
 			timer.Reset(backoff)
 		}
 	}

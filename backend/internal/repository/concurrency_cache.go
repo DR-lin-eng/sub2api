@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
@@ -31,6 +32,10 @@ const (
 	waitQueueKeyPrefix = "concurrency:wait:"
 	// 账号级等待队列计数器格式: wait:account:{accountID}
 	accountWaitKeyPrefix = "wait:account:"
+	// 用户级公平等待 ticket 队列（有序集合，score=入队时间）
+	userWaitTicketKeyPrefix = "wait:ticket:user:"
+	// 账号级公平等待 ticket 队列（有序集合，score=入队时间）
+	accountWaitTicketKeyPrefix = "wait:ticket:account:"
 
 	// 默认槽位过期时间（分钟），可通过配置覆盖
 	defaultSlotTTLMinutes = 15
@@ -230,6 +235,14 @@ func accountWaitKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", accountWaitKeyPrefix, accountID)
 }
 
+func userWaitTicketKey(userID int64) string {
+	return fmt.Sprintf("%s%d", userWaitTicketKeyPrefix, userID)
+}
+
+func accountWaitTicketKey(accountID int64) string {
+	return fmt.Sprintf("%s%d", accountWaitTicketKeyPrefix, accountID)
+}
+
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -338,6 +351,40 @@ func (c *concurrencyCache) DecrementWaitCount(ctx context.Context, userID int64)
 	return err
 }
 
+func (c *concurrencyCache) EnqueueUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return err
+	}
+	key := userWaitTicketKey(userID)
+	score := float64(now.UnixNano())
+	if err := c.rdb.ZAdd(ctx, key, redis.Z{Score: score, Member: ticketID}).Err(); err != nil {
+		return err
+	}
+	return c.rdb.Expire(ctx, key, time.Duration(c.waitQueueTTLSeconds)*time.Second).Err()
+}
+
+func (c *concurrencyCache) IsUserWaitTicketTurn(ctx context.Context, userID int64, ticketID string) (bool, error) {
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return false, err
+	}
+	key := userWaitTicketKey(userID)
+	cutoff := strconv.FormatInt(now.Add(-time.Duration(c.waitQueueTTLSeconds)*time.Second).UnixNano(), 10)
+	if err := c.rdb.ZRemRangeByScore(ctx, key, "-inf", cutoff).Err(); err != nil {
+		return false, err
+	}
+	head, err := c.rdb.ZRange(ctx, key, 0, 0).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return false, err
+	}
+	return len(head) > 0 && head[0] == ticketID, nil
+}
+
+func (c *concurrencyCache) RemoveUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
+	return c.rdb.ZRem(ctx, userWaitTicketKey(userID), ticketID).Err()
+}
+
 // Account wait queue operations
 
 func (c *concurrencyCache) IncrementAccountWaitCount(ctx context.Context, accountID int64, maxWait int) (bool, error) {
@@ -353,6 +400,40 @@ func (c *concurrencyCache) DecrementAccountWaitCount(ctx context.Context, accoun
 	key := accountWaitKey(accountID)
 	_, err := decrementWaitScript.Run(ctx, c.rdb, []string{key}).Result()
 	return err
+}
+
+func (c *concurrencyCache) EnqueueAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error {
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return err
+	}
+	key := accountWaitTicketKey(accountID)
+	score := float64(now.UnixNano())
+	if err := c.rdb.ZAdd(ctx, key, redis.Z{Score: score, Member: ticketID}).Err(); err != nil {
+		return err
+	}
+	return c.rdb.Expire(ctx, key, time.Duration(c.waitQueueTTLSeconds)*time.Second).Err()
+}
+
+func (c *concurrencyCache) IsAccountWaitTicketTurn(ctx context.Context, accountID int64, ticketID string) (bool, error) {
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return false, err
+	}
+	key := accountWaitTicketKey(accountID)
+	cutoff := strconv.FormatInt(now.Add(-time.Duration(c.waitQueueTTLSeconds)*time.Second).UnixNano(), 10)
+	if err := c.rdb.ZRemRangeByScore(ctx, key, "-inf", cutoff).Err(); err != nil {
+		return false, err
+	}
+	head, err := c.rdb.ZRange(ctx, key, 0, 0).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return false, err
+	}
+	return len(head) > 0 && head[0] == ticketID, nil
+}
+
+func (c *concurrencyCache) RemoveAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error {
+	return c.rdb.ZRem(ctx, accountWaitTicketKey(accountID), ticketID).Err()
 }
 
 func (c *concurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
@@ -508,7 +589,12 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 	}
 
 	// 2. 删除所有等待队列计数器（重启后计数器失效）
-	waitPatterns := []string{accountWaitKeyPrefix + "*", waitQueueKeyPrefix + "*"}
+	waitPatterns := []string{
+		accountWaitKeyPrefix + "*",
+		waitQueueKeyPrefix + "*",
+		accountWaitTicketKeyPrefix + "*",
+		userWaitTicketKeyPrefix + "*",
+	}
 	for _, pattern := range waitPatterns {
 		if err := c.deleteKeysByPattern(ctx, pattern); err != nil {
 			return err

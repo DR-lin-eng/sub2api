@@ -1,0 +1,8 @@
+import { MessageInputProps } from "./type.mjs";
+import * as react111 from "react";
+
+//#region src/chat/MessageInput/MessageInput.d.ts
+declare const MessageInput: react111.NamedExoticComponent<MessageInputProps>;
+//#endregion
+export { MessageInput };
+//# sourceMappingURL=MessageInput.d.mts.map

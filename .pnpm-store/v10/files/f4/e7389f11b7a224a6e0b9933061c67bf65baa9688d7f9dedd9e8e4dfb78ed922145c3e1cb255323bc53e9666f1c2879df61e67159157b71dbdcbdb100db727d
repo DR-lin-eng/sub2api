@@ -1,0 +1,8 @@
+import { FlexBasicProps } from "./type.mjs";
+import * as react54 from "react";
+
+//#region src/Flex/FlexBasic.d.ts
+declare const _default: react54.NamedExoticComponent<FlexBasicProps>;
+//#endregion
+export { _default };
+//# sourceMappingURL=FlexBasic.d.mts.map

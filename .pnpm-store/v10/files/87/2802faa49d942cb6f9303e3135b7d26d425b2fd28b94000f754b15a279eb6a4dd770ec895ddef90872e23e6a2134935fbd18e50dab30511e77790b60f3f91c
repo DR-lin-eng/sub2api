@@ -1,0 +1,82 @@
+'use client';
+
+import { useCdnFn } from "../ConfigProvider/index.mjs";
+import { generateCustomStylish } from "../styles/theme/customStylish.mjs";
+import { generateCustomToken } from "../styles/theme/customToken.mjs";
+import { LOBE_THEME_APP_ID } from "./constants.mjs";
+import FontLoader_default from "../FontLoader/index.mjs";
+import { createLobeAntdTheme } from "../styles/theme/antdTheme.mjs";
+import ConfigProvider_default from "./ConfigProvider.mjs";
+import GlobalStyle_default from "./GlobalStyle/index.mjs";
+import { memo, useCallback, useMemo } from "react";
+import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+import { App } from "antd";
+import { ThemeProvider } from "antd-style";
+import { merge } from "es-toolkit/compat";
+
+//#region src/ThemeProvider/ThemeProvider.tsx
+const ThemeProvider$1 = memo(({ children, customStylish, customToken, enableCustomFonts = true, enableGlobalStyle = true, customFonts, customTheme = {}, className, style, theme: antdTheme, ...rest }) => {
+	const genCdnUrl = useCdnFn();
+	const webfontUrls = useMemo(() => customFonts || [
+		genCdnUrl({
+			path: "css/index.css",
+			pkg: "@lobehub/webfont-mono"
+		}),
+		genCdnUrl({
+			path: "css/index.css",
+			pkg: "@lobehub/webfont-harmony-sans"
+		}),
+		genCdnUrl({
+			path: "css/index.css",
+			pkg: "@lobehub/webfont-harmony-sans-sc"
+		}),
+		genCdnUrl({
+			path: "dist/katex.min.css",
+			pkg: "katex"
+		})
+	], [customFonts, genCdnUrl]);
+	const stylish = useCallback((theme$1) => ({
+		...generateCustomStylish(theme$1),
+		...customStylish?.(theme$1)
+	}), [customStylish]);
+	const token = useCallback((theme$1) => ({
+		...generateCustomToken(theme$1),
+		...customToken?.(theme$1)
+	}), [customToken]);
+	const theme = useCallback((appearance) => {
+		return merge(createLobeAntdTheme({
+			appearance,
+			neutralColor: customTheme.neutralColor,
+			primaryColor: customTheme.primaryColor
+		}), antdTheme);
+	}, [
+		customTheme.primaryColor,
+		customTheme.neutralColor,
+		antdTheme
+	]);
+	return /* @__PURE__ */ jsxs(Fragment$1, { children: [enableCustomFonts && webfontUrls?.length > 0 && webfontUrls.map((webfont) => /* @__PURE__ */ jsx(FontLoader_default, { url: webfont }, webfont)), /* @__PURE__ */ jsx(ThemeProvider, {
+		customStylish: stylish,
+		customToken: token,
+		theme,
+		...rest,
+		children: /* @__PURE__ */ jsxs(ConfigProvider_default, { children: [enableGlobalStyle && /* @__PURE__ */ jsx(GlobalStyle_default, {}), /* @__PURE__ */ jsx(App, {
+			className,
+			style: {
+				minHeight: "inherit",
+				width: "inherit",
+				...style
+			},
+			children: /* @__PURE__ */ jsx("div", {
+				id: LOBE_THEME_APP_ID,
+				style: { display: "contents" },
+				children
+			})
+		})] })
+	})] });
+});
+ThemeProvider$1.displayName = "LobeThemeProvider";
+var ThemeProvider_default = ThemeProvider$1;
+
+//#endregion
+export { ThemeProvider_default as default };
+//# sourceMappingURL=ThemeProvider.mjs.map

@@ -1,0 +1,137 @@
+'use client';
+
+import { LOBE_THEME_APP_ID } from "../ThemeProvider/constants.mjs";
+import { CLASSNAMES } from "../styles/classNames.mjs";
+import { TOOLTIP_CONTAINER_ATTR } from "../Tooltip/TooltipPortal.mjs";
+import { styles } from "../Menu/sharedStyle.mjs";
+import { useIsClient } from "../hooks/useIsClient.mjs";
+import { renderDropdownMenuItems } from "./renderItems.mjs";
+import { cloneElement, isValidElement, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { Menu } from "@base-ui/react/menu";
+import { mergeProps } from "@base-ui/react/merge-props";
+import clsx from "clsx";
+
+//#region src/DropdownMenu/DropdownMenu.tsx
+const topCenter = {
+	align: "center",
+	side: "top"
+};
+const bottomCenter = {
+	align: "center",
+	side: "bottom"
+};
+const placementMap = {
+	bottom: bottomCenter,
+	bottomCenter,
+	bottomLeft: {
+		align: "start",
+		side: "bottom"
+	},
+	bottomRight: {
+		align: "end",
+		side: "bottom"
+	},
+	top: topCenter,
+	topCenter,
+	topLeft: {
+		align: "start",
+		side: "top"
+	},
+	topRight: {
+		align: "end",
+		side: "top"
+	}
+};
+const DropdownMenu = memo(({ children, defaultOpen, items, nativeButton, onOpenChange, open, placement = "bottomLeft", popupProps, portalProps, positionerProps, triggerProps, ...rest }) => {
+	const isClient = useIsClient();
+	const [uncontrolledOpen, setUncontrolledOpen] = useState(Boolean(defaultOpen));
+	useEffect(() => {
+		if (open === void 0) return;
+		setUncontrolledOpen(open);
+	}, [open]);
+	const handleOpenChange = useCallback((nextOpen, details) => {
+		onOpenChange?.(nextOpen, details);
+		if (open === void 0) setUncontrolledOpen(nextOpen);
+	}, [onOpenChange, open]);
+	const shouldRenderItems = open ?? uncontrolledOpen;
+	const menuItems = useMemo(() => {
+		if (!shouldRenderItems) return null;
+		return renderDropdownMenuItems(typeof items === "function" ? items() : items);
+	}, [items, shouldRenderItems]);
+	const portalContainer = useMemo(() => {
+		if (!isClient) return null;
+		const themeApp = document.querySelector(`#${LOBE_THEME_APP_ID}`);
+		if (themeApp) return themeApp;
+		const tooltipContainer = document.querySelector(`[${TOOLTIP_CONTAINER_ATTR}="true"]`);
+		if (tooltipContainer) return tooltipContainer;
+		return document.body;
+	}, [isClient]);
+	const placementConfig = placementMap[placement];
+	const isNativeButtonTriggerElement = useMemo(() => {
+		if (!isValidElement(children)) return false;
+		return typeof children.type === "string" && children.type === "button";
+	}, [children]);
+	const renderer = useCallback((props) => {
+		const resolvedProps = (() => {
+			if (isNativeButtonTriggerElement) return props;
+			const { type, ...restProps } = props;
+			return restProps;
+		})();
+		return cloneElement(children, mergeProps(children.props, resolvedProps));
+	}, [children, isNativeButtonTriggerElement]);
+	const resolvedNativeButton = useMemo(() => {
+		if (nativeButton !== void 0) return nativeButton;
+		if (triggerProps?.nativeButton !== void 0) return triggerProps.nativeButton;
+		if (isNativeButtonTriggerElement) return true;
+		if (!isValidElement(children)) return void 0;
+		if (typeof children.type === "string") return false;
+	}, [
+		children,
+		isNativeButtonTriggerElement,
+		nativeButton,
+		triggerProps?.nativeButton
+	]);
+	const trigger = isValidElement(children) ? /* @__PURE__ */ jsx(Menu.Trigger, {
+		...triggerProps,
+		className: clsx(CLASSNAMES.DropdownMenuTrigger, triggerProps?.className),
+		nativeButton: resolvedNativeButton,
+		render: renderer
+	}) : /* @__PURE__ */ jsx(Menu.Trigger, {
+		...triggerProps,
+		className: clsx(CLASSNAMES.DropdownMenuTrigger, triggerProps?.className),
+		children
+	});
+	const resolvedPositionerProps = {
+		...positionerProps,
+		align: positionerProps?.align ?? placementConfig?.align ?? "center",
+		side: positionerProps?.side ?? placementConfig?.side ?? "bottom",
+		sideOffset: positionerProps?.sideOffset ?? 6
+	};
+	return /* @__PURE__ */ jsxs(Menu.Root, {
+		...rest,
+		defaultOpen,
+		onOpenChange: handleOpenChange,
+		open,
+		children: [trigger, /* @__PURE__ */ jsx(Menu.Portal, {
+			container: portalProps?.container ?? portalContainer,
+			...portalProps,
+			children: /* @__PURE__ */ jsx(Menu.Positioner, {
+				...resolvedPositionerProps,
+				className: (state) => cx(styles.positioner, typeof positionerProps?.className === "function" ? positionerProps.className(state) : positionerProps?.className),
+				children: /* @__PURE__ */ jsx(Menu.Popup, {
+					...popupProps,
+					className: (state) => cx(styles.popup, typeof popupProps?.className === "function" ? popupProps.className(state) : popupProps?.className),
+					children: menuItems
+				})
+			})
+		})]
+	});
+});
+DropdownMenu.displayName = "DropdownMenuV2";
+var DropdownMenu_default = DropdownMenu;
+
+//#endregion
+export { DropdownMenu_default as default };
+//# sourceMappingURL=DropdownMenu.mjs.map

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -861,6 +862,10 @@ type GatewayService struct {
 	debugClaudeMimic      atomic.Bool
 	proxyRepo             ProxyRepository
 	proxyLatencyCache     ProxyLatencyCache
+
+	gatewaySchedulerOnce sync.Once
+	gatewayScheduler     GatewayAccountScheduler
+	gatewayAccountStats  *gatewayAccountRuntimeStats
 }
 
 // NewGatewayService creates a new GatewayService
@@ -946,19 +951,29 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	}
 
 	// 1. 最高优先级：从 metadata.user_id 提取 session_xxx
+	if parsed.SessionContext != nil {
+		if sessionID := strings.TrimSpace(parsed.SessionContext.StableSessionID); sessionID != "" {
+			return sessionID
+		}
+		if conversationID := strings.TrimSpace(parsed.SessionContext.StableConversationID); conversationID != "" {
+			return conversationID
+		}
+	}
+
+	// 2. metadata.user_id 中稳定 session 标识
 	if parsed.MetadataUserID != "" {
 		if uid := ParseMetadataUserID(parsed.MetadataUserID); uid != nil && uid.SessionID != "" {
 			return uid.SessionID
 		}
 	}
 
-	// 2. 提取带 cache_control: {type: "ephemeral"} 的内容
+	// 3. 提取带 cache_control: {type: "ephemeral"} 的内容
 	cacheableContent := s.extractCacheableContent(parsed)
 	if cacheableContent != "" {
 		return s.hashContent(cacheableContent)
 	}
 
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 4. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
@@ -1553,6 +1568,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					localExcluded[account.ID] = struct{}{} // 排除此账号
 					continue                               // 重新选择
 				}
+				if stickyAccountID > 0 && stickyAccountID == account.ID && sessionHash != "" {
+					s.recordGatewayStickyHit(account.ID)
+				} else {
+					s.recordGatewayLoadBalanceHit(account.ID)
+				}
 				return &AccountSelectionResult{
 					Account:     account,
 					Acquired:    true,
@@ -1569,6 +1589,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
 				if waitingCount < cfg.StickySessionMaxWaiting {
+					s.recordGatewayStickyHit(account.ID)
 					return &AccountSelectionResult{
 						Account: account,
 						WaitPlan: &AccountWaitPlan{
@@ -1580,6 +1601,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}, nil
 				}
 			}
+			s.recordGatewayLoadBalanceHit(account.ID)
 			return &AccountSelectionResult{
 				Account: account,
 				WaitPlan: &AccountWaitPlan{
@@ -1608,8 +1630,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if len(accounts) == 0 {
 		return nil, ErrNoAvailableAccounts
 	}
-	ctx = s.withWindowCostPrefetch(ctx, accounts)
-	ctx = s.withRPMPrefetch(ctx, accounts)
 
 	isExcluded := func(accountID int64) bool {
 		if excludedIDs == nil {
@@ -1730,6 +1750,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 									if s.debugModelRoutingEnabled() {
 										logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), stickyAccountID)
 									}
+									s.recordGatewayStickyHit(stickyAccountID)
 									return &AccountSelectionResult{
 										Account:     stickyAccount,
 										Acquired:    true,
@@ -1744,6 +1765,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								if !s.checkAndRegisterSession(ctx, stickyAccount, sessionHash) {
 									// 会话限制已满，继续到负载感知选择
 								} else {
+									s.recordGatewayStickyHit(stickyAccountID)
 									return &AccountSelectionResult{
 										Account: stickyAccount,
 										WaitPlan: &AccountWaitPlan{
@@ -1823,6 +1845,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						if s.debugModelRoutingEnabled() {
 							logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
 						}
+						s.recordGatewayLoadBalanceHit(item.account.ID)
 						return &AccountSelectionResult{
 							Account:     item.account,
 							Acquired:    true,
@@ -1840,6 +1863,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					if s.debugModelRoutingEnabled() {
 						logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed wait: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
 					}
+					s.recordGatewayLoadBalanceHit(item.account.ID)
 					return &AccountSelectionResult{
 						Account: item.account,
 						WaitPlan: &AccountWaitPlan{
@@ -1857,62 +1881,30 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 	}
 
-	// ============ Layer 1.5: 粘性会话（仅在无模型路由配置时生效） ============
+	// ============ Layer 1.5: 粘性会话预清理（实际选择交给运行时反馈调度器） ============
 	if len(routingAccountIDs) == 0 && sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
-		accountID := stickyAccountID
-		if accountID > 0 && !isExcluded(accountID) {
-			account, ok := accountByID[accountID]
-			if ok {
-				// 检查账户是否需要清理粘性会话绑定
-				// Check if the account needs sticky session cleanup
-				clearSticky := shouldClearStickySession(account, requestedModel)
-				if clearSticky {
-					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
-				}
-				if !clearSticky && s.isAccountInGroup(account, groupID) &&
-					s.isAccountAllowedForPlatform(account, platform, useMixed) &&
-					(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) &&
-					s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) &&
-					s.isAccountSchedulableForQuota(account) &&
-					s.isAccountSchedulableForWindowCost(ctx, account, true) &&
-
-					s.isAccountSchedulableForRPM(ctx, account, true) { // 粘性会话窗口费用+RPM 检查
-					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
-					if err == nil && result.Acquired {
-						// 会话数量限制检查
-						// Session count limit check
-						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-							result.ReleaseFunc() // 释放槽位，继续到 Layer 2
-						} else {
-							return &AccountSelectionResult{
-								Account:     account,
-								Acquired:    true,
-								ReleaseFunc: result.ReleaseFunc,
-							}, nil
-						}
-					}
-
-					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-					if waitingCount < cfg.StickySessionMaxWaiting {
-						// 会话数量限制检查（等待计划也需要占用会话配额）
-						// Session count limit check (wait plan also requires session quota)
-						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-							// 会话限制已满，继续到 Layer 2
-							// Session limit full, continue to Layer 2
-						} else {
-							return &AccountSelectionResult{
-								Account: account,
-								WaitPlan: &AccountWaitPlan{
-									AccountID:      accountID,
-									MaxConcurrency: account.Concurrency,
-									Timeout:        cfg.StickySessionWaitTimeout,
-									MaxWaiting:     cfg.StickySessionMaxWaiting,
-								},
-							}, nil
-						}
-					}
+		if account, ok := accountByID[stickyAccountID]; ok {
+			clearSticky := shouldClearStickySession(account, requestedModel) ||
+				!s.isAccountInGroup(account, groupID) ||
+				!s.isAccountAllowedForPlatform(account, platform, useMixed) ||
+				(requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) ||
+				!s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) ||
+				!s.isAccountSchedulableForQuota(account)
+			if !clearSticky {
+				stickyCtx := s.withWindowCostPrefetch(ctx, []Account{*account})
+				stickyCtx = s.withRPMPrefetch(stickyCtx, []Account{*account})
+				if !s.isAccountSchedulableForWindowCost(stickyCtx, account, true) ||
+					!s.isAccountSchedulableForRPM(stickyCtx, account, true) {
+					clearSticky = true
 				}
 			}
+			if clearSticky && s.cache != nil {
+				_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				stickyAccountID = 0
+			}
+		} else if s.cache != nil {
+			_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+			stickyAccountID = 0
 		}
 	}
 
@@ -1957,101 +1949,67 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, ErrNoAvailableAccounts
 	}
 
-	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
-	for _, acc := range candidates {
-		accountLoads = append(accountLoads, AccountWithConcurrency{
-			ID:             acc.ID,
-			MaxConcurrency: acc.EffectiveLoadFactor(),
-		})
+	candidateAccounts := make([]Account, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate != nil {
+			candidateAccounts = append(candidateAccounts, *candidate)
+		}
+	}
+	ctx = s.withWindowCostPrefetch(ctx, candidateAccounts)
+	ctx = s.withRPMPrefetch(ctx, candidateAccounts)
+
+	if stickyAccountID > 0 && sessionHash != "" {
+		if stickyAccount, ok := accountByID[stickyAccountID]; ok {
+			if !s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true) ||
+				!s.isAccountSchedulableForRPM(ctx, stickyAccount, true) {
+				if s.cache != nil {
+					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				}
+				stickyAccountID = 0
+			}
+		}
 	}
 
-	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
-	if err != nil {
+	scheduler := s.getGatewayAccountScheduler()
+	if scheduler == nil {
 		if result, ok := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); ok {
+			s.recordGatewayLoadBalanceHit(result.Account.ID)
 			return result, nil
 		}
-	} else {
-		var available []accountWithLoad
+		s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
 		for _, acc := range candidates {
-			loadInfo := loadMap[acc.ID]
-			if loadInfo == nil {
-				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
+			if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
+				continue
 			}
-			readyTier, slotCap, slotFree := gatewayAccountReadyTier(acc, loadInfo)
-			if loadInfo.LoadRate < 100 {
-				available = append(available, accountWithLoad{
-					account:   acc,
-					loadInfo:  loadInfo,
-					slotCap:   slotCap,
-					slotFree:  slotFree,
-					readyTier: readyTier,
-				})
-			}
+			return &AccountSelectionResult{
+				Account: acc,
+				WaitPlan: &AccountWaitPlan{
+					AccountID:      acc.ID,
+					MaxConcurrency: acc.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				},
+			}, nil
 		}
-
-		// 分层过滤选择：优先级 → 即时可服务能力 → 剩余槽位 → 负载率 → LRU
-		for len(available) > 0 {
-			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
-			// 2. 取 ready tier 最佳的集合（优先有空槽且无排队）
-			candidates = filterByBestReadyTier(candidates)
-			// 3. 取剩余槽位最多的集合
-			candidates = filterByMaxSlotFree(candidates)
-			// 4. 取负载率最低的集合
-			candidates = filterByMinLoadRate(candidates)
-			// 5. LRU 选择最久未用的账号
-			selected := selectByLRU(candidates, preferOAuth)
-			if selected == nil {
-				break
-			}
-
-			result, err := s.tryAcquireAccountSlot(ctx, selected.account.ID, selected.account.Concurrency)
-			if err == nil && result.Acquired {
-				// 会话数量限制检查
-				if !s.checkAndRegisterSession(ctx, selected.account, sessionHash) {
-					result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
-				} else {
-					if sessionHash != "" && s.cache != nil {
-						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
-					}
-					return &AccountSelectionResult{
-						Account:     selected.account,
-						Acquired:    true,
-						ReleaseFunc: result.ReleaseFunc,
-					}, nil
-				}
-			}
-
-			// 移除已尝试的账号，重新进行分层过滤
-			selectedID := selected.account.ID
-			newAvailable := make([]accountWithLoad, 0, len(available)-1)
-			for _, acc := range available {
-				if acc.account.ID != selectedID {
-					newAvailable = append(newAvailable, acc)
-				}
-			}
-			available = newAvailable
-		}
+		return nil, ErrNoAvailableAccounts
 	}
 
-	// ============ Layer 3: 兜底排队 ============
-	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
-	for _, acc := range candidates {
-		// 会话数量限制检查（等待计划也需要占用会话配额）
-		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-			continue // 会话限制已满，尝试下一个账号
-		}
-		return &AccountSelectionResult{
-			Account: acc,
-			WaitPlan: &AccountWaitPlan{
-				AccountID:      acc.ID,
-				MaxConcurrency: acc.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			},
-		}, nil
+	selection, _, err := scheduler.Select(ctx, GatewayAccountScheduleRequest{
+		GroupID:               groupID,
+		SessionHash:           sessionHash,
+		StickyAccountID:       stickyAccountID,
+		RequestedModel:        requestedModel,
+		Candidates:            candidates,
+		PreferOAuth:           preferOAuth,
+		FallbackSelectionMode: cfg.FallbackSelectionMode,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, ErrNoAvailableAccounts
+	if selection == nil || selection.Account == nil {
+		return nil, ErrNoAvailableAccounts
+	}
+	return selection, nil
 }
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool) {
@@ -2089,8 +2047,17 @@ func (s *GatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 		StickySessionWaitTimeout: 45 * time.Second,
 		FallbackWaitTimeout:      30 * time.Second,
 		FallbackMaxWaiting:       100,
-		LoadBatchEnabled:         true,
-		SlotCleanupInterval:      30 * time.Second,
+		LBTopK:                   5,
+		RuntimeStatsAlpha:        0.2,
+		SchedulerScoreWeights: config.GatewaySchedulerScoreWeights{
+			Priority:  1.0,
+			Load:      1.0,
+			Queue:     0.7,
+			ErrorRate: 0.8,
+			TTFT:      0.5,
+		},
+		LoadBatchEnabled:    true,
+		SlotCleanupInterval: 30 * time.Second,
 	}
 }
 

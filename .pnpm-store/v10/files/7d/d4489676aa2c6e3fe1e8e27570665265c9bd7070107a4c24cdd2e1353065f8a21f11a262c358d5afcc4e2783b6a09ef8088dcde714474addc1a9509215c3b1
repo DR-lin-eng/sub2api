@@ -1,0 +1,16 @@
+import * as react71 from "react";
+import { Context, ReactNode } from "react";
+import * as motion_react0 from "motion/react";
+import * as m from "motion/react-m";
+
+//#region src/MotionProvider/index.d.ts
+type MotionComponentType = typeof motion_react0.motion | typeof m;
+declare const MotionComponent: Context<MotionComponentType>;
+declare const MotionProvider: react71.NamedExoticComponent<{
+  children: ReactNode;
+  motion: MotionComponentType;
+}>;
+declare const useMotionComponent: () => MotionComponentType;
+//#endregion
+export { MotionComponent, MotionComponentType, MotionProvider, useMotionComponent };
+//# sourceMappingURL=index.d.mts.map

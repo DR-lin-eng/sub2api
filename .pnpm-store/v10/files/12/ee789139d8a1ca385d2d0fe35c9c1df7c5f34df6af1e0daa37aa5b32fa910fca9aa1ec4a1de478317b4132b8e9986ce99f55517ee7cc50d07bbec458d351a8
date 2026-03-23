@@ -1,0 +1,8 @@
+import { SpotlightProps } from "./type.mjs";
+import * as react129 from "react";
+
+//#region src/awesome/Spotlight/Spotlight.d.ts
+declare const Spotlight: react129.NamedExoticComponent<SpotlightProps>;
+//#endregion
+export { Spotlight };
+//# sourceMappingURL=Spotlight.d.mts.map

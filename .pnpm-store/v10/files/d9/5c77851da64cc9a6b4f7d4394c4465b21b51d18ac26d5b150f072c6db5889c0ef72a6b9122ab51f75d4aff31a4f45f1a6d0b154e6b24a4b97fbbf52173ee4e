@@ -1,0 +1,69 @@
+'use client';
+
+import { AccordionContext } from "./context.mjs";
+import { styles } from "./style.mjs";
+import { Children, Fragment, isValidElement, memo, useCallback } from "react";
+import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+import { Divider } from "antd";
+import { cx } from "antd-style";
+import { LayoutGroup } from "motion/react";
+import useMergeState from "use-merge-value";
+
+//#region src/Accordion/Accordion.tsx
+const Accordion = memo(({ children, className: userClassName, style: userStyle, accordion = false, defaultExpandedKeys, expandedKeys: expandedKeysProp, onExpandedChange, variant = "borderless", gap, showDivider = false, disableAnimation = false, hideIndicator = false, indicatorPlacement = "start", keepContentMounted = true, classNames, styles: customStyles, motionProps, ref, ...rest }) => {
+	const validChildren = Children.toArray(children).filter(isValidElement);
+	const allItemKeys = validChildren.map((child, index) => child.props.itemKey || index);
+	const [expandedKeys, setExpandedKeys] = useMergeState(defaultExpandedKeys ?? allItemKeys, {
+		onChange: onExpandedChange,
+		value: expandedKeysProp
+	});
+	const toggleExpand = useCallback((key) => {
+		const prev = expandedKeys;
+		let newKeys;
+		if (accordion) newKeys = prev.includes(key) ? [] : [key];
+		else newKeys = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+		setExpandedKeys(newKeys);
+	}, [
+		accordion,
+		expandedKeys,
+		setExpandedKeys
+	]);
+	const contextValue = {
+		disableAnimation,
+		expandedKeys,
+		hideIndicator,
+		indicatorPlacement,
+		isExpanded: useCallback((key) => {
+			return expandedKeys.includes(key);
+		}, [expandedKeys]),
+		keepContentMounted,
+		motionProps,
+		onToggle: toggleExpand,
+		showDivider,
+		variant
+	};
+	const content = /* @__PURE__ */ jsx(Fragment$1, { children: validChildren.map((child, index) => {
+		const childKey = child.props.itemKey || index;
+		return /* @__PURE__ */ jsxs(Fragment, { children: [child, showDivider && index < validChildren.length - 1 && /* @__PURE__ */ jsx(Divider, { className: styles.divider })] }, childKey);
+	}) });
+	return /* @__PURE__ */ jsx(AccordionContext.Provider, {
+		value: contextValue,
+		children: /* @__PURE__ */ jsx("div", {
+			className: cx(styles.base, classNames?.base, userClassName),
+			ref,
+			style: {
+				gap,
+				...customStyles?.base,
+				...userStyle
+			},
+			...rest,
+			children: disableAnimation ? content : /* @__PURE__ */ jsx(LayoutGroup, { children: content })
+		})
+	});
+});
+Accordion.displayName = "Accordion";
+var Accordion_default = Accordion;
+
+//#endregion
+export { Accordion_default as default };
+//# sourceMappingURL=Accordion.mjs.map

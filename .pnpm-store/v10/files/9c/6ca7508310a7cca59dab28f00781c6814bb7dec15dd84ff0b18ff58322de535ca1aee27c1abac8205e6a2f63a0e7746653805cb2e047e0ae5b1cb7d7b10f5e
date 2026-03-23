@@ -1,0 +1,161 @@
+import Icon_default from "../Icon/Icon.mjs";
+import { styles } from "../Menu/sharedStyle.mjs";
+import { isValidElement } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { Check, ChevronRight } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+
+//#region src/DropdownMenu/renderItems.tsx
+const getItemKey = (item, fallback) => {
+	if (item && "key" in item && item.key !== void 0) return item.key;
+	return fallback;
+};
+const getItemLabel = (item) => {
+	if (item.label !== void 0) return item.label;
+	if ("title" in item && item.title !== void 0) return item.title;
+	return item.key;
+};
+const renderIcon = (icon) => {
+	if (!icon) return null;
+	if (isValidElement(icon)) return icon;
+	return /* @__PURE__ */ jsx(Icon_default, { icon });
+};
+const getReserveIconSpaceMap = (items) => {
+	const flags = Array.from({ length: items.length }).fill(false);
+	let segmentIndices = [];
+	let segmentHasIcon = false;
+	const flush = () => {
+		if (segmentHasIcon) for (const index of segmentIndices) flags[index] = true;
+		segmentIndices = [];
+		segmentHasIcon = false;
+	};
+	items.forEach((item, index) => {
+		if (!item) return;
+		if (item.type === "divider" || item.type === "group") {
+			flush();
+			return;
+		}
+		segmentIndices.push(index);
+		if (item.type === "checkbox") {
+			segmentHasIcon = true;
+			return;
+		}
+		if ("icon" in item && item.icon) segmentHasIcon = true;
+	});
+	flush();
+	return flags;
+};
+const renderItemContent = (item, options, iconNode) => {
+	const label = getItemLabel(item);
+	const extra = "extra" in item ? item.extra : void 0;
+	const hasCustomIcon = iconNode !== void 0;
+	const hasIcon = hasCustomIcon ? Boolean(iconNode) : Boolean(item.icon);
+	const shouldRenderIcon = hasCustomIcon ? Boolean(options?.reserveIconSpace || iconNode) : Boolean(hasIcon || options?.reserveIconSpace);
+	return /* @__PURE__ */ jsxs("div", {
+		className: styles.itemContent,
+		children: [
+			shouldRenderIcon ? /* @__PURE__ */ jsx("span", {
+				"aria-hidden": !hasIcon,
+				className: styles.icon,
+				children: hasCustomIcon ? iconNode : hasIcon ? renderIcon(item.icon) : null
+			}) : null,
+			/* @__PURE__ */ jsx("span", {
+				className: styles.label,
+				children: label
+			}),
+			extra ? /* @__PURE__ */ jsx("span", {
+				className: styles.extra,
+				children: extra
+			}) : null,
+			options?.submenu ? /* @__PURE__ */ jsx("span", {
+				className: styles.submenuArrow,
+				children: /* @__PURE__ */ jsx(ChevronRight, { size: 16 })
+			}) : null
+		]
+	});
+};
+const invokeItemClick = (item, keyPath, event) => {
+	if (!item.onClick) return;
+	const key = item.key ?? keyPath.at(-1) ?? "";
+	const info = {
+		domEvent: event,
+		item: event.currentTarget,
+		key: String(key),
+		keyPath
+	};
+	item.onClick(info);
+};
+const renderDropdownMenuItems = (items, keyPath = [], options) => {
+	const reserveIconSpaceMap = options?.reserveIconSpace === void 0 ? getReserveIconSpaceMap(items) : null;
+	return items.map((item, index) => {
+		if (!item) return null;
+		const itemKey = getItemKey(item, `${keyPath.join("-") || "root"}-${index}`);
+		const nextKeyPath = [...keyPath, String(itemKey)];
+		const reserveIconSpace = options?.reserveIconSpace ?? Boolean(reserveIconSpaceMap?.[index]);
+		if (item.type === "checkbox") {
+			const checkboxItem = item;
+			const label$1 = getItemLabel(checkboxItem);
+			const labelText$1 = typeof label$1 === "string" ? label$1 : void 0;
+			const isDanger$1 = Boolean(checkboxItem.danger);
+			const indicator = /* @__PURE__ */ jsx(Menu.CheckboxItemIndicator, { children: /* @__PURE__ */ jsx(Icon_default, { icon: Check }) });
+			return /* @__PURE__ */ jsx(Menu.CheckboxItem, {
+				checked: checkboxItem.checked,
+				className: cx(styles.item, isDanger$1 && styles.danger),
+				closeOnClick: checkboxItem.closeOnClick,
+				defaultChecked: checkboxItem.defaultChecked,
+				disabled: checkboxItem.disabled,
+				label: labelText$1,
+				onCheckedChange: (checked) => checkboxItem.onCheckedChange?.(checked),
+				children: renderItemContent(checkboxItem, { reserveIconSpace }, indicator)
+			}, itemKey);
+		}
+		if (item.type === "divider") return /* @__PURE__ */ jsx(Menu.Separator, { className: styles.separator }, itemKey);
+		if (item.type === "group") {
+			const group = item;
+			const groupReserveIconSpace = Boolean(group.children?.some((child) => Boolean(child && "icon" in child && child.icon)));
+			return /* @__PURE__ */ jsxs(Menu.Group, { children: [group.label ? /* @__PURE__ */ jsx(Menu.GroupLabel, {
+				className: styles.groupLabel,
+				children: group.label
+			}) : null, group.children ? renderDropdownMenuItems(group.children, nextKeyPath, { reserveIconSpace: groupReserveIconSpace }) : null] }, itemKey);
+		}
+		if (item.type === "submenu" || "children" in item) {
+			const submenu = item;
+			const label$1 = getItemLabel(submenu);
+			const labelText$1 = typeof label$1 === "string" ? label$1 : void 0;
+			const isDanger$1 = "danger" in submenu && Boolean(submenu.danger);
+			return /* @__PURE__ */ jsxs(Menu.SubmenuRoot, { children: [/* @__PURE__ */ jsx(Menu.SubmenuTrigger, {
+				className: cx(styles.item, isDanger$1 && styles.danger),
+				disabled: submenu.disabled,
+				label: labelText$1,
+				children: renderItemContent(submenu, {
+					reserveIconSpace,
+					submenu: true
+				})
+			}), /* @__PURE__ */ jsx(Menu.Portal, { children: /* @__PURE__ */ jsx(Menu.Positioner, {
+				alignOffset: -4,
+				className: styles.positioner,
+				sideOffset: -1,
+				children: /* @__PURE__ */ jsx(Menu.Popup, {
+					className: styles.popup,
+					children: submenu.children ? renderDropdownMenuItems(submenu.children, nextKeyPath) : null
+				})
+			}) })] }, itemKey);
+		}
+		const menuItem = item;
+		const label = getItemLabel(menuItem);
+		const labelText = typeof label === "string" ? label : void 0;
+		const isDanger = "danger" in menuItem && Boolean(menuItem.danger);
+		return /* @__PURE__ */ jsx(Menu.Item, {
+			className: cx(styles.item, isDanger && styles.danger),
+			disabled: menuItem.disabled,
+			label: labelText,
+			onClick: (event) => invokeItemClick(menuItem, nextKeyPath, event),
+			children: renderItemContent(menuItem, { reserveIconSpace })
+		}, itemKey);
+	});
+};
+
+//#endregion
+export { renderDropdownMenuItems };
+//# sourceMappingURL=renderItems.mjs.map

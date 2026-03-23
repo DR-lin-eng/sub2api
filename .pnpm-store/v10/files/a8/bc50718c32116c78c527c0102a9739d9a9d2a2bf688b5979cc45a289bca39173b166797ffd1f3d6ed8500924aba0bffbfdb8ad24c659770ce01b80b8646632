@@ -1,0 +1,175 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import Tooltip_default from "../Tooltip/Tooltip.mjs";
+import ActionIcon_default from "../ActionIcon/ActionIcon.mjs";
+import Avatar_default from "../Avatar/index.mjs";
+import { useTranslation } from "../i18n/useTranslation.mjs";
+import Tabs_default from "../Tabs/Tabs.mjs";
+import emojiPicker_default from "../i18n/resources/en/emojiPicker.mjs";
+import AvatarUploader_default from "./AvatarUploader.mjs";
+import { styles } from "./style.mjs";
+import { memo, useMemo, useRef, useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { Popover } from "antd";
+import { cx, useTheme } from "antd-style";
+import useMergeState from "use-merge-value";
+import { SmileIcon, TrashIcon, UploadIcon } from "lucide-react";
+import chroma from "chroma-js";
+import data from "@emoji-mart/data";
+import Picker from "@emoji-mart/react";
+import useSWR from "swr";
+
+//#region src/EmojiPicker/EmojiPicker.tsx
+const DEFAULT_AVATAR = "🤖";
+const EmojiPicker = memo(({ value, defaultAvatar = DEFAULT_AVATAR, onChange, locale = "en-US", allowUpload, allowDelete, texts, onDelete, compressSize = 256, customEmojis, className, loading, onUpload, customTabs = [], popupClassName, popupStyle, customRender, open, defaultOpen = false, onOpenChange, popupProps, shape, ...rest }) => {
+	const ref = useRef(null);
+	const { t } = useTranslation(emojiPicker_default);
+	const [visible, setVisible] = useMergeState(defaultOpen, {
+		defaultValue: defaultOpen,
+		onChange: onOpenChange,
+		value: open
+	});
+	const [tab, setTab] = useState("emoji");
+	const theme = useTheme();
+	const pickerCssVariables = useMemo(() => ({
+		"--emoji-picker-rgb-accent": chroma(theme.colorPrimary).rgb().join(", "),
+		"--emoji-picker-rgb-background": chroma(theme.colorBgElevated).rgb().join(", ")
+	}), [theme.colorPrimary, theme.colorBgElevated]);
+	const { data: i18n } = useSWR(locale, async () => await import(`@emoji-mart/data/i18n/${locale.split("-")[0]}.json`), {
+		revalidateOnFocus: false,
+		revalidateOnMount: false
+	});
+	const [ava, setAva] = useMergeState(defaultAvatar, {
+		defaultValue: defaultAvatar,
+		onChange,
+		value
+	});
+	const handleAvatarChange = (emoji) => {
+		setAva(emoji);
+		setVisible(false);
+	};
+	const emojiText = texts?.emoji ?? t("emojiPicker.emoji");
+	const uploadText = texts?.upload ?? t("emojiPicker.upload");
+	const deleteText = texts?.delete ?? t("emojiPicker.delete");
+	const items = [
+		!(typeof allowUpload === "object" && allowUpload?.enableEmoji === false) && {
+			key: "emoji",
+			label: /* @__PURE__ */ jsx(Tooltip_default, {
+				title: emojiText,
+				children: /* @__PURE__ */ jsx(Icon_default, {
+					icon: SmileIcon,
+					size: {
+						size: 20,
+						strokeWidth: 2.5
+					}
+				})
+			})
+		},
+		allowUpload && {
+			key: "upload",
+			label: /* @__PURE__ */ jsx(Tooltip_default, {
+				title: uploadText,
+				children: /* @__PURE__ */ jsx(Icon_default, {
+					icon: UploadIcon,
+					size: {
+						size: 20,
+						strokeWidth: 2.5
+					}
+				})
+			})
+		},
+		...customTabs.map((tab$1) => ({
+			key: tab$1.value,
+			label: tab$1.label
+		}))
+	].filter(Boolean);
+	const showTabs = allowDelete || items && items.length > 1;
+	return /* @__PURE__ */ jsx(Popover, {
+		arrow: false,
+		content: /* @__PURE__ */ jsxs(FlexBasic_default, {
+			className: cx(styles.picker, popupClassName),
+			ref,
+			style: {
+				minWidth: 310,
+				paddingTop: showTabs ? 4 : 0,
+				...pickerCssVariables,
+				...popupStyle
+			},
+			children: [
+				showTabs && /* @__PURE__ */ jsxs(FlexBasic_default, {
+					align: "center",
+					className: styles.tabs,
+					horizontal: true,
+					justify: "space-between",
+					paddingInline: 10,
+					children: [/* @__PURE__ */ jsx(Tabs_default, {
+						activeKey: tab,
+						compact: true,
+						items,
+						onChange: (key) => setTab(key),
+						size: "small"
+					}), allowDelete && /* @__PURE__ */ jsx(ActionIcon_default, {
+						icon: TrashIcon,
+						onClick: () => {
+							handleAvatarChange(defaultAvatar);
+							onDelete?.();
+						},
+						size: {
+							blockSize: 32,
+							size: 18
+						},
+						title: deleteText
+					})]
+				}),
+				tab === "emoji" && /* @__PURE__ */ jsx(Picker, {
+					custom: customEmojis,
+					data,
+					i18n,
+					icons: "outline",
+					locale: locale.split("-")[0],
+					navPosition: showTabs ? "bottom" : "top",
+					onEmojiSelect: (e) => handleAvatarChange(e.src || e.native),
+					previewPosition: "none",
+					skinTonePosition: "none",
+					theme: theme.isDarkMode ? "dark" : "light"
+				}),
+				tab === "upload" && /* @__PURE__ */ jsx(AvatarUploader_default, {
+					compressSize,
+					onChange: handleAvatarChange,
+					onUpload,
+					shape,
+					texts
+				}),
+				customTabs.map((item) => tab === item.value && /* @__PURE__ */ jsx(FlexBasic_default, {
+					padding: 10,
+					children: item.render(handleAvatarChange)
+				}, item.value))
+			]
+		}),
+		defaultOpen,
+		onOpenChange: (v) => {
+			if (loading) return;
+			setVisible(v);
+		},
+		open: visible,
+		placement: "bottom",
+		rootClassName: styles.popover,
+		trigger: ["click"],
+		...popupProps,
+		children: customRender ? customRender(ava) : /* @__PURE__ */ jsx(Avatar_default, {
+			avatar: ava,
+			className: cx(styles.root, className),
+			loading,
+			shape,
+			...rest
+		})
+	});
+});
+EmojiPicker.displayName = "EmojiPicker";
+var EmojiPicker_default = EmojiPicker;
+
+//#endregion
+export { EmojiPicker_default as default };
+//# sourceMappingURL=EmojiPicker.mjs.map

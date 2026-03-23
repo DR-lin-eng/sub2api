@@ -1,0 +1,10 @@
+import { MenuCheckboxItemType } from "../Menu/checkboxItem.mjs";
+import { BaseMenuItemType } from "../Menu/baseItem.mjs";
+import "../Menu/index.mjs";
+
+//#region src/ContextMenu/type.d.ts
+type ContextMenuCheckboxItem = MenuCheckboxItemType;
+type ContextMenuItem = BaseMenuItemType;
+//#endregion
+export { ContextMenuCheckboxItem, ContextMenuItem };
+//# sourceMappingURL=type.d.mts.map

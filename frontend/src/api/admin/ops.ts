@@ -394,6 +394,68 @@ export interface OpsUserConcurrencyStatsResponse {
   timestamp?: string
 }
 
+export interface GatewaySchedulerRuntimeEntry {
+  account_id: number
+  platform: string
+  priority: number
+  current_concurrency: number
+  waiting_count: number
+  load_rate: number
+  ready_tier: number
+  ttft_ewma_ms?: number | null
+  error_rate_ewma: number
+  sticky_hits: number
+  load_balance_hits: number
+  switches: number
+  last_selected_at?: string | null
+}
+
+export interface GatewaySchedulerRuntimeMetrics {
+  select_total: number
+  sticky_session_hit_total: number
+  load_balance_select_total: number
+  account_switch_total: number
+  scheduler_latency_ms_total: number
+  scheduler_latency_ms_avg: number
+  sticky_hit_ratio: number
+  account_switch_rate: number
+  load_skew_avg: number
+  runtime_stats_account_count: number
+}
+
+export interface HTTPUpstreamMetricsSnapshot {
+  isolation_mode: string
+  active_clients: number
+  cache_hit_total: number
+  cache_miss_total: number
+  client_create_total: number
+  evict_idle_total: number
+  evict_lru_total: number
+  evict_config_change_total: number
+  limit_reject_total: number
+}
+
+export interface GatewaySchedulerRuntimeResponse {
+  metrics: GatewaySchedulerRuntimeMetrics
+  transport: HTTPUpstreamMetricsSnapshot
+  items: GatewaySchedulerRuntimeEntry[]
+  timestamp: string
+}
+
+export interface OpenAIWSRuntimeResponse {
+  acquire_total: number
+  reuse_total: number
+  create_total: number
+  queue_wait_ms_total: number
+  conn_pick_ms_total: number
+  scale_up_total: number
+  scale_down_total: number
+  prewarm_success_total: number
+  prewarm_fallback_total: number
+  fallback_reason_counts: Record<string, number>
+  timestamp: string
+}
+
 export async function getConcurrencyStats(platform?: string, groupId?: number | null): Promise<OpsConcurrencyStatsResponse> {
   const params: Record<string, any> = {}
   if (platform) {
@@ -409,6 +471,21 @@ export async function getConcurrencyStats(platform?: string, groupId?: number | 
 
 export async function getUserConcurrencyStats(): Promise<OpsUserConcurrencyStatsResponse> {
   const { data } = await apiClient.get<OpsUserConcurrencyStatsResponse>('/admin/ops/user-concurrency')
+  return data
+}
+
+export async function getGatewaySchedulerRuntime(platform?: string, groupId?: number | null): Promise<GatewaySchedulerRuntimeResponse> {
+  const params: Record<string, any> = {}
+  if (platform) params.platform = platform
+  if (typeof groupId === 'number' && groupId > 0) params.group_id = groupId
+  const { data } = await apiClient.get<GatewaySchedulerRuntimeResponse>('/admin/ops/gateway-scheduler', { params })
+  return data
+}
+
+export async function getOpenAIWSRuntime(platform?: string): Promise<OpenAIWSRuntimeResponse> {
+  const params: Record<string, any> = {}
+  if (platform) params.platform = platform
+  const { data } = await apiClient.get<OpenAIWSRuntimeResponse>('/admin/ops/openai-ws-runtime', { params })
   return data
 }
 
@@ -1366,6 +1443,8 @@ export const opsAPI = {
   getOpenAITokenStats,
   getConcurrencyStats,
   getUserConcurrencyStats,
+  getGatewaySchedulerRuntime,
+  getOpenAIWSRuntime,
   getAccountAvailabilityStats,
   getRealtimeTrafficSummary,
   subscribeQPS,

@@ -1,0 +1,8 @@
+import { ActionIconProps } from "./type.mjs";
+import * as react22 from "react";
+
+//#region src/ActionIcon/ActionIcon.d.ts
+declare const ActionIcon: react22.NamedExoticComponent<ActionIconProps>;
+//#endregion
+export { ActionIcon };
+//# sourceMappingURL=ActionIcon.d.mts.map

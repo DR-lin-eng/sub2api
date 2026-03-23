@@ -1,0 +1,8 @@
+import { BurgerProps } from "./type.mjs";
+import * as react8 from "react";
+
+//#region src/Burger/Burger.d.ts
+declare const Burger: react8.NamedExoticComponent<BurgerProps>;
+//#endregion
+export { Burger };
+//# sourceMappingURL=Burger.d.mts.map

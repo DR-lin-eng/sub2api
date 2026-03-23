@@ -1,0 +1,8 @@
+import { GradientButtonProps } from "./type.mjs";
+import * as react120 from "react";
+
+//#region src/awesome/GradientButton/GradientButton.d.ts
+declare const GradientButton: react120.NamedExoticComponent<GradientButtonProps>;
+//#endregion
+export { GradientButton };
+//# sourceMappingURL=GradientButton.d.mts.map

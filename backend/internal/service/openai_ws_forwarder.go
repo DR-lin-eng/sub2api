@@ -3599,6 +3599,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 			connID,
 			truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
 		)
+		s.recordOpenAIWSPrewarmFallback("prewarm_write")
 		return wrapOpenAIWSFallback("prewarm_write", err)
 	}
 	logOpenAIWSModeInfo("prewarm_write_sent account_id=%d conn_id=%s payload_bytes=%d", account.ID, connID, len(prewarmPayloadJSON))
@@ -3620,7 +3621,9 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 				truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen),
 				prewarmEventCount,
 			)
-			return wrapOpenAIWSFallback("prewarm_"+classifyOpenAIWSReadFallbackReason(readErr), readErr)
+			reason := "prewarm_" + classifyOpenAIWSReadFallbackReason(readErr)
+			s.recordOpenAIWSPrewarmFallback(reason)
+			return wrapOpenAIWSFallback(reason, readErr)
 		}
 
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
@@ -3664,8 +3667,11 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 			)
 			lease.MarkBroken()
 			if canFallback {
-				return wrapOpenAIWSFallback("prewarm_"+fallbackReason, errors.New(errMsg))
+				reason := "prewarm_" + fallbackReason
+				s.recordOpenAIWSPrewarmFallback(reason)
+				return wrapOpenAIWSFallback(reason, errors.New(errMsg))
 			}
+			s.recordOpenAIWSPrewarmFallback("prewarm_error_event")
 			return wrapOpenAIWSFallback("prewarm_error_event", errors.New(errMsg))
 		}
 
@@ -3690,6 +3696,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		prewarmTerminalCount,
 		time.Since(prewarmStart).Milliseconds(),
 	)
+	s.recordOpenAIWSPrewarmSuccess()
 	return nil
 }
 

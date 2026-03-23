@@ -1,0 +1,8 @@
+import * as react84 from "react";
+import * as lucide_react4 from "lucide-react";
+
+//#region src/icons/lucideExtra/GroupBotSquareIcon.d.ts
+declare const GroupBotSquareIcon: react84.ForwardRefExoticComponent<Omit<lucide_react4.LucideProps, "ref"> & react84.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { GroupBotSquareIcon };
+//# sourceMappingURL=GroupBotSquareIcon.d.mts.map

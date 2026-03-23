@@ -1,0 +1,8 @@
+import { LayoutSidebarInnerProps } from "../type.mjs";
+import * as react43 from "react";
+
+//#region src/Layout/components/LayoutSidebarInner.d.ts
+declare const LayoutSidebarInner: react43.NamedExoticComponent<LayoutSidebarInnerProps>;
+//#endregion
+export { LayoutSidebarInner };
+//# sourceMappingURL=LayoutSidebarInner.d.mts.map

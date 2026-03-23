@@ -1,0 +1,8 @@
+import { AccordionItemProps } from "./type.mjs";
+import * as react24 from "react";
+
+//#region src/Accordion/AccordionItem.d.ts
+declare const AccordionItem: react24.NamedExoticComponent<AccordionItemProps>;
+//#endregion
+export { AccordionItem };
+//# sourceMappingURL=AccordionItem.d.mts.map

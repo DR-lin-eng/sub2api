@@ -1,0 +1,9 @@
+import { ActionIconProps } from "../../ActionIcon/type.mjs";
+import "../../ActionIcon/index.mjs";
+import * as react106 from "react";
+
+//#region src/SortableList/components/DragHandle.d.ts
+declare const DragHandle: react106.NamedExoticComponent<ActionIconProps>;
+//#endregion
+export { DragHandle };
+//# sourceMappingURL=DragHandle.d.mts.map

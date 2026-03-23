@@ -36,6 +36,44 @@ func TestGenerateSessionHash_MetadataHasHighestPriority(t *testing.T) {
 	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should have highest priority")
 }
 
+func TestGenerateSessionHash_StableSessionIDOverridesMetadataAndDigest(t *testing.T) {
+	svc := &GatewayService{}
+
+	parsed := &ParsedRequest{
+		MetadataUserID: "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000",
+		System:         "You are a helpful assistant.",
+		HasSystem:      true,
+		Messages: []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		SessionContext: &SessionContext{
+			StableSessionID: "session_header_abc",
+		},
+	}
+
+	hash := svc.GenerateSessionHash(parsed)
+	require.Equal(t, "session_header_abc", hash)
+}
+
+func TestGenerateSessionHash_StableConversationIDOverridesMetadataWhenSessionIDMissing(t *testing.T) {
+	svc := &GatewayService{}
+
+	parsed := &ParsedRequest{
+		MetadataUserID: "user_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2_account__session_123e4567-e89b-12d3-a456-426614174000",
+		System:         "You are a helpful assistant.",
+		HasSystem:      true,
+		Messages: []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		SessionContext: &SessionContext{
+			StableConversationID: "conversation_header_xyz",
+		},
+	}
+
+	hash := svc.GenerateSessionHash(parsed)
+	require.Equal(t, "conversation_header_xyz", hash)
+}
+
 // ============ System + Messages 基础测试 ============
 
 func TestGenerateSessionHash_SystemPlusMessages(t *testing.T) {

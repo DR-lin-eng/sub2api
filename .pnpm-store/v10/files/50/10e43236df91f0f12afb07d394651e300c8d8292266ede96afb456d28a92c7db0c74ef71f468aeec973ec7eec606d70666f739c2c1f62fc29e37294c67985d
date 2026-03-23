@@ -1,0 +1,8 @@
+import { SyntaxMermaidProps } from "../type.mjs";
+import * as react32 from "react";
+
+//#region src/Mermaid/SyntaxMermaid/index.d.ts
+declare const SyntaxMermaid: react32.NamedExoticComponent<SyntaxMermaidProps>;
+//#endregion
+export { SyntaxMermaid };
+//# sourceMappingURL=index.d.mts.map

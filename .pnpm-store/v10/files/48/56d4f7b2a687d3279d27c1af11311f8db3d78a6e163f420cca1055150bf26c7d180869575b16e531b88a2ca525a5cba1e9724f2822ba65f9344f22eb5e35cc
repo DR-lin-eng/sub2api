@@ -1,0 +1,8 @@
+import { MaskShadowProps } from "./type.mjs";
+import * as react36 from "react";
+
+//#region src/MaskShadow/MaskShadow.d.ts
+declare const MaskShadow: react36.NamedExoticComponent<MaskShadowProps>;
+//#endregion
+export { MaskShadow };
+//# sourceMappingURL=MaskShadow.d.mts.map

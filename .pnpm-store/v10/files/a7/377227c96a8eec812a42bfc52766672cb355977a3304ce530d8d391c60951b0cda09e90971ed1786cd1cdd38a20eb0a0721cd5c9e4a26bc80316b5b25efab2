@@ -1,0 +1,79 @@
+'use client';
+
+import Center_default from "../Flex/Center.mjs";
+import TooltipGroup_default from "../Tooltip/TooltipGroup.mjs";
+import ActionIcon_default from "../ActionIcon/ActionIcon.mjs";
+import DropdownMenu_default from "../DropdownMenu/DropdownMenu.mjs";
+import { variants } from "./style.mjs";
+import { useMemo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { MoreHorizontal } from "lucide-react";
+
+//#region src/ActionIconGroup/ActionIconGroup.tsx
+const ActionIconGroup = ({ variant = "filled", disabled, shadow, glass, actionIconProps, items = [], horizontal = true, menu, onActionClick, className, size = "small", ref, ...rest }) => {
+	const tooltipPlacement = useMemo(() => actionIconProps?.tooltipProps?.placement || horizontal ? "top" : "right", [actionIconProps, horizontal]);
+	const menuItems = useMemo(() => {
+		const rawItems = typeof menu === "function" ? menu() : menu;
+		if (!rawItems) return [];
+		return rawItems.map((item) => ({
+			...item,
+			onClick: (info) => {
+				item?.onClick?.(info);
+				onActionClick?.(info);
+			}
+		}));
+	}, [menu, onActionClick]);
+	return /* @__PURE__ */ jsx(TooltipGroup_default, { children: /* @__PURE__ */ jsxs(Center_default, {
+		className: cx(variants({
+			disabled,
+			glass,
+			shadow,
+			variant
+		}), className),
+		horizontal,
+		padding: 2,
+		ref,
+		...rest,
+		children: [items?.length > 0 && items.map((item) => {
+			const { icon, key, label, onClick, danger, loading, ...itemRest } = item;
+			return /* @__PURE__ */ jsx(ActionIcon_default, {
+				danger,
+				icon,
+				loading,
+				onClick: (e) => {
+					onActionClick?.({
+						domEvent: e,
+						key: String(key),
+						keyPath: [String(key)]
+					});
+					onClick?.(e);
+				},
+				size,
+				title: label,
+				tooltipProps: { placement: tooltipPlacement },
+				...actionIconProps,
+				disabled: disabled || loading || itemRest?.disabled
+			}, key);
+		}), menu && /* @__PURE__ */ jsx(DropdownMenu_default, {
+			items: menuItems,
+			nativeButton: false,
+			children: /* @__PURE__ */ jsx(ActionIcon_default, {
+				disabled,
+				icon: MoreHorizontal,
+				size,
+				...actionIconProps,
+				tooltipProps: {
+					placement: tooltipPlacement,
+					...actionIconProps?.tooltipProps
+				}
+			}, "more")
+		})]
+	}) });
+};
+ActionIconGroup.displayName = "ActionIconGroup";
+var ActionIconGroup_default = ActionIconGroup;
+
+//#endregion
+export { ActionIconGroup_default as default };
+//# sourceMappingURL=ActionIconGroup.mjs.map

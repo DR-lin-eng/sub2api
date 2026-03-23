@@ -1,0 +1,8 @@
+import { EditableTextProps } from "./type.mjs";
+import * as react55 from "react";
+
+//#region src/EditableText/EditableText.d.ts
+declare const EditableText: react55.NamedExoticComponent<EditableTextProps>;
+//#endregion
+export { EditableText };
+//# sourceMappingURL=EditableText.d.mts.map

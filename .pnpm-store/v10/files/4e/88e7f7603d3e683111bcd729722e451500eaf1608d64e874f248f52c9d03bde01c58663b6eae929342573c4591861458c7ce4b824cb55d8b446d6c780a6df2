@@ -1,0 +1,15 @@
+import { DivProps } from "../../types/index.mjs";
+import * as react62 from "react";
+
+//#region src/DraggablePanel/components/DraggablePanelHeader.d.ts
+interface DraggablePanelHeaderProps extends Omit<DivProps, 'children'> {
+  pin?: boolean;
+  position?: 'left' | 'right';
+  setExpand?: (expand: boolean) => void;
+  setPin?: (pin: boolean) => void;
+  title?: string;
+}
+declare const DraggablePanelHeader: react62.NamedExoticComponent<DraggablePanelHeaderProps>;
+//#endregion
+export { DraggablePanelHeader, DraggablePanelHeaderProps };
+//# sourceMappingURL=DraggablePanelHeader.d.mts.map

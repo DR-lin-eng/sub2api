@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -85,12 +86,49 @@ const (
 
 // ConcurrencyService manages concurrent request limiting for accounts and users
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache                ConcurrencyCache
+	fairWaitQueueEnabled atomic.Bool
 }
 
 // NewConcurrencyService creates a new ConcurrencyService
 func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	return &ConcurrencyService{cache: cache}
+}
+
+type waitTicketQueueCache interface {
+	EnqueueUserWaitTicket(ctx context.Context, userID int64, ticketID string) error
+	IsUserWaitTicketTurn(ctx context.Context, userID int64, ticketID string) (bool, error)
+	RemoveUserWaitTicket(ctx context.Context, userID int64, ticketID string) error
+
+	EnqueueAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error
+	IsAccountWaitTicketTurn(ctx context.Context, accountID int64, ticketID string) (bool, error)
+	RemoveAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error
+}
+
+func NewConcurrencyTicketID() string {
+	return generateRequestID()
+}
+
+func (s *ConcurrencyService) SetFairWaitQueueEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.fairWaitQueueEnabled.Store(enabled)
+}
+
+func (s *ConcurrencyService) FairWaitQueueEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.fairWaitQueueEnabled.Load()
+}
+
+func (s *ConcurrencyService) ticketQueueCache() waitTicketQueueCache {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	cache, _ := s.cache.(waitTicketQueueCache)
+	return cache
 }
 
 // AcquireResult represents the result of acquiring a concurrency slot
@@ -273,6 +311,62 @@ func (s *ConcurrencyService) GetAccountWaitingCount(ctx context.Context, account
 		return 0, nil
 	}
 	return s.cache.GetAccountWaitingCount(ctx, accountID)
+}
+
+func (s *ConcurrencyService) EnqueueUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return nil
+	}
+	return cache.EnqueueUserWaitTicket(ctx, userID, ticketID)
+}
+
+func (s *ConcurrencyService) IsUserWaitTicketTurn(ctx context.Context, userID int64, ticketID string) (bool, error) {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return true, nil
+	}
+	return cache.IsUserWaitTicketTurn(ctx, userID, ticketID)
+}
+
+func (s *ConcurrencyService) RemoveUserWaitTicket(ctx context.Context, userID int64, ticketID string) {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return
+	}
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cache.RemoveUserWaitTicket(bgCtx, userID, ticketID); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: remove user wait ticket failed for user %d: %v", userID, err)
+	}
+}
+
+func (s *ConcurrencyService) EnqueueAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return nil
+	}
+	return cache.EnqueueAccountWaitTicket(ctx, accountID, ticketID)
+}
+
+func (s *ConcurrencyService) IsAccountWaitTicketTurn(ctx context.Context, accountID int64, ticketID string) (bool, error) {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return true, nil
+	}
+	return cache.IsAccountWaitTicketTurn(ctx, accountID, ticketID)
+}
+
+func (s *ConcurrencyService) RemoveAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) {
+	cache := s.ticketQueueCache()
+	if cache == nil || strings.TrimSpace(ticketID) == "" {
+		return
+	}
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cache.RemoveAccountWaitTicket(bgCtx, accountID, ticketID); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: remove account wait ticket failed for account %d: %v", accountID, err)
+	}
 }
 
 // CalculateMaxWait calculates the maximum wait queue size for a user

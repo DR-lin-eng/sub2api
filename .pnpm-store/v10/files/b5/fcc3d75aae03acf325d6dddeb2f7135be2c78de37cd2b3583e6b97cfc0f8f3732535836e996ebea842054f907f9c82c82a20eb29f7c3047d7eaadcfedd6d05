@@ -1,0 +1,13 @@
+//#region src/utils/dom.ts
+const stopPropagation = (event) => {
+	event.stopPropagation();
+};
+const preventDefaultAndStopPropagation = (event) => {
+	event.preventDefault();
+	event.stopPropagation();
+	event.preventBaseUIHandler?.();
+};
+
+//#endregion
+export { preventDefaultAndStopPropagation, stopPropagation };
+//# sourceMappingURL=dom.mjs.map

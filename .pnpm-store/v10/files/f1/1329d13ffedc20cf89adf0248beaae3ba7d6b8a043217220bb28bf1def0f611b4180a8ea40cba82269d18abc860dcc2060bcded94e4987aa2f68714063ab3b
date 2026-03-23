@@ -1,0 +1,15 @@
+import { FlexboxProps } from "../../Flex/type.mjs";
+import "../../Flex/index.mjs";
+import * as react104 from "react";
+import "@dnd-kit/core";
+
+//#region src/SortableList/components/SortableItem.d.ts
+
+interface SortableItemProps extends Omit<FlexboxProps, 'id'> {
+  id: string | number;
+  variant?: 'borderless' | 'filled' | 'outlined';
+}
+declare const SortableItem: react104.NamedExoticComponent<SortableItemProps>;
+//#endregion
+export { SortableItem };
+//# sourceMappingURL=SortableItem.d.mts.map

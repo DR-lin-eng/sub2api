@@ -377,6 +377,18 @@ gateway:
     # Fallback max waiting queue size
     # 兜底最大排队长度
     fallback_max_waiting: 100
+    # 通用 Gateway 运行时反馈调度参与加权选择的 top-k 数量
+    lb_top_k: 5
+    # 通用 Gateway 运行时指标的 EWMA 平滑系数（0-1]
+    runtime_stats_alpha: 0.2
+    # 是否启用 ticket 化公平等待队列（默认关闭，按需灰度）
+    fair_wait_queue_enabled: false
+    scheduler_score_weights:
+      priority: 1.0
+      load: 1.0
+      queue: 0.7
+      error_rate: 0.8
+      ttft: 0.5
     # Enable batch load calculation for scheduling
     # 启用调度批量负载计算
     load_batch_enabled: true
