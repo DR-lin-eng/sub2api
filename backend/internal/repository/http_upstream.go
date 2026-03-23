@@ -630,9 +630,25 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 	if (isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy) && accountConcurrency > 0 {
 		settings.maxIdleConns = accountConcurrency
 		settings.maxIdleConnsPerHost = accountConcurrency
-		settings.maxConnsPerHost = accountConcurrency
+		// 长连接流式请求会长时间占用连接；为重试、短请求和连接轮换保留少量活跃连接头寸，
+		// 避免账号隔离模式把 transport 精确卡死在 accountConcurrency 上。
+		settings.maxConnsPerHost = accountConcurrency + upstreamTransportConnHeadroom(accountConcurrency)
 	}
 	return settings
+}
+
+func upstreamTransportConnHeadroom(accountConcurrency int) int {
+	if accountConcurrency <= 0 {
+		return 0
+	}
+	headroom := accountConcurrency / 4
+	if headroom < 2 {
+		headroom = 2
+	}
+	if headroom > 8 {
+		headroom = 8
+	}
+	return headroom
 }
 
 // buildPoolKey 构建连接池配置键

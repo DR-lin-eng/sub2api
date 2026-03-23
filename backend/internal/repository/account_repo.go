@@ -60,8 +60,13 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
-	"codex_usage_updated_at":     {},
-	"session_window_utilization": {},
+	"codex_usage_updated_at":          {},
+	"fetched_models":                  {},
+	"models_fetched_at":               {},
+	"models_refresh_error":            {},
+	"models_refresh_interval_seconds": {},
+	"models_source":                   {},
+	"session_window_utilization":      {},
 }
 
 // NewAccountRepository 创建账户仓储实例。
@@ -443,10 +448,10 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "", "", 0)
+	return r.ListWithFilters(ctx, params, "", "", "", "", "", "", "", 0)
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64) ([]service.Account, *pagination.PaginationResult, error) {
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search, plan, oauthType, tierID string, groupID int64) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.client.Account.Query()
 
 	if platform != "" {
@@ -473,6 +478,21 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	}
 	if search != "" {
 		q = q.Where(dbaccount.NameContainsFold(search))
+	}
+	if normalizedPlan := strings.ToLower(strings.TrimSpace(plan)); normalizedPlan != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			s.Where(entsql.ExprP("LOWER(COALESCE(credentials->>'plan_type','')) = ?", normalizedPlan))
+		}))
+	}
+	if normalizedOAuthType := strings.ToLower(strings.TrimSpace(oauthType)); normalizedOAuthType != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			s.Where(entsql.ExprP("LOWER(COALESCE(credentials->>'oauth_type','')) = ?", normalizedOAuthType))
+		}))
+	}
+	if normalizedTierID := strings.ToLower(strings.TrimSpace(tierID)); normalizedTierID != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			s.Where(entsql.ExprP("LOWER(COALESCE(credentials->>'tier_id','')) = ?", normalizedTierID))
+		}))
 	}
 	if groupID == service.AccountListGroupUngrouped {
 		q = q.Where(dbaccount.Not(dbaccount.HasAccountGroups()))

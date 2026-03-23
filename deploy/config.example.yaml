@@ -55,6 +55,39 @@ server:
     max_upload_buffer_per_stream: 524288
 
 # =============================================================================
+# Process Model Configuration
+# 进程模型配置
+# =============================================================================
+process:
+  # Process mode: "single" or "master_worker"
+  # 进程模式："single"（单进程）或 "master_worker"（单 master + 多 worker）
+  mode: "single"
+  # Number of worker processes. 0 means auto = CPU core count.
+  # worker 进程数。0 表示自动使用 CPU 核数。
+  worker_count: 0
+  # Graceful shutdown timeout for workers (seconds)
+  # worker 优雅退出超时（秒）
+  graceful_shutdown_timeout_seconds: 30
+  # Worker startup readiness timeout (seconds)
+  # worker 启动就绪超时（秒）
+  worker_ready_timeout_seconds: 20
+  # Rolling reload timeout (seconds)
+  # 平滑重载超时（秒）
+  reload_timeout_seconds: 60
+  # Respawn backoff after unexpected worker exit (milliseconds)
+  # worker 异常退出后的拉起退避（毫秒）
+  respawn_backoff_ms: 2000
+  # Whether SIGUSR1 should trigger log file reopen
+  # 是否启用 SIGUSR1 日志重开
+  log_reopen_signal_enabled: true
+  # Whether SIGHUP should trigger config reload and worker rolling reload
+  # 是否启用 SIGHUP 配置重载与 worker 平滑替换
+  config_reload_signal_enabled: true
+  # Linux-only CPU affinity for workers
+  # Linux 下是否对 worker 执行 CPU 绑核
+  enable_cpu_affinity: false
+
+# =============================================================================
 # Run Mode Configuration
 # 运行模式配置
 # =============================================================================

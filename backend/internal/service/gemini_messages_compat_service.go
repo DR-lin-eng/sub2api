@@ -438,18 +438,17 @@ func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Co
 }
 
 func (s *GeminiMessagesCompatService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
-		if err != nil {
-			return "", fmt.Errorf("invalid base_url: %w", err)
+	var allowInsecureHTTP bool
+	opts := urlvalidator.ValidationOptions{}
+	if s.cfg != nil {
+		allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		opts = urlvalidator.ValidationOptions{
+			AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+			RequireAllowlist: s.cfg.Security.URLAllowlist.Enabled,
+			AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
 		}
-		return normalized, nil
 	}
-	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
-		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
-	})
+	normalized, err := urlvalidator.ValidateHTTPURL(raw, allowInsecureHTTP, opts)
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
 	}
@@ -722,8 +721,12 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			c.Set(OpsUpstreamRequestBodyKey, string(body))
 		}
 
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -739,8 +742,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				continue
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries: "+safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		// Special-case: signature/thought_signature validation errors are not transient, but may be fixed by
 		// downgrading Claude thinking/tool history to plain text (conservative two-stage retry).
@@ -1222,8 +1226,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			c.Set(OpsUpstreamRequestBodyKey, string(body))
 		}
 
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -1252,8 +1260,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}, nil
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
-			return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries: "+safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		// 错误策略优先：匹配则跳过重试直接处理。
 		if matched, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp); matched {

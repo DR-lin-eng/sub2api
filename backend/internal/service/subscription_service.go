@@ -72,6 +72,9 @@ func (s *SubscriptionService) initMaintenanceQueue(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	if !workerLocalBackgroundServicesEnabled() {
+		return
+	}
 	mc := cfg.SubscriptionMaintenance
 	if mc.WorkerCount <= 0 || mc.QueueSize <= 0 {
 		return

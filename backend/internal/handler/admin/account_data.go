@@ -49,6 +49,7 @@ type DataAccount struct {
 	Type               string         `json:"type"`
 	Credentials        map[string]any `json:"credentials"`
 	Extra              map[string]any `json:"extra,omitempty"`
+	GroupIDs           []int64        `json:"group_ids,omitempty"`
 	ProxyKey           *string        `json:"proxy_key,omitempty"`
 	Concurrency        int            `json:"concurrency"`
 	Priority           int            `json:"priority"`
@@ -59,6 +60,7 @@ type DataAccount struct {
 
 type DataImportRequest struct {
 	Data                 DataPayload `json:"data"`
+	GroupIDs             []int64     `json:"group_ids,omitempty"`
 	SkipDefaultGroupBind *bool       `json:"skip_default_group_bind"`
 }
 
@@ -193,6 +195,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	if req.SkipDefaultGroupBind != nil {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
 	}
+	importGroupIDs := normalizeInt64IDList(req.GroupIDs)
 
 	dataPayload := req.Data
 	result := DataImportResult{}
@@ -296,6 +299,10 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		}
 
 		enrichCredentialsFromIDToken(&item)
+		groupIDs := normalizeInt64IDList(item.GroupIDs)
+		if len(groupIDs) == 0 {
+			groupIDs = importGroupIDs
+		}
 
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
@@ -308,7 +315,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			Concurrency:          item.Concurrency,
 			Priority:             item.Priority,
 			RateMultiplier:       item.RateMultiplier,
-			GroupIDs:             nil,
+			GroupIDs:             groupIDs,
 			ExpiresAt:            item.ExpiresAt,
 			AutoPauseOnExpired:   item.AutoPauseOnExpired,
 			SkipDefaultGroupBind: skipDefaultGroupBind,
@@ -352,7 +359,7 @@ func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, acc
 	pageSize := dataPageCap
 	var out []service.Account
 	for {
-		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, 0)
+		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, "", "", "", 0)
 		if err != nil {
 			return nil, err
 		}

@@ -3,6 +3,7 @@ package openai_ws_v2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -79,7 +80,9 @@ type relayState struct {
 	usage             Usage
 	requestModel      string
 	lastResponseID    string
+	lastEventType     string
 	terminalEventType string
+	observedProtocol  bool
 	firstTokenMs      *int
 	turnTimingByID    map[string]*relayTurnTiming
 }
@@ -249,6 +252,7 @@ func Relay(
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
+	terminalObserved := relayHasObservedTerminalEvent(state)
 	if firstExit.stage == "read_client" && firstExit.graceful {
 		stage := "client_disconnected"
 		exitErr := firstExit.err
@@ -273,6 +277,25 @@ func Relay(
 		}
 	}
 	if firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
+		if relayShouldFailIncompleteGracefulClose(state, combinedWroteDownstream, terminalObserved) {
+			incompleteExit := firstExit
+			if hasSecondExit && secondExit.stage != "" {
+				incompleteExit = secondExit
+			}
+			exitErr := relayIncompleteDisconnectError(incompleteExit.err)
+			emitRelayTrace(onTrace, RelayTraceEvent{
+				Stage:           "relay_exit",
+				Direction:       relayDirectionFromStage(incompleteExit.stage),
+				Graceful:        false,
+				WroteDownstream: combinedWroteDownstream,
+				Error:           relayErrorString(exitErr),
+			})
+			return result, &RelayExit{
+				Stage:           incompleteExit.stage,
+				Err:             exitErr,
+				WroteDownstream: combinedWroteDownstream,
+			}
+		}
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_complete",
 			Graceful:        true,
@@ -535,6 +558,8 @@ func observeUpstreamMessage(
 	if eventType == "" {
 		return observedUpstreamEvent{}
 	}
+	state.lastEventType = eventType
+	state.observedProtocol = true
 	responseID := strings.TrimSpace(values[1].String())
 	if responseID == "" {
 		responseID = strings.TrimSpace(values[2].String())
@@ -719,6 +744,33 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
 	result.FirstTokenMs = state.firstTokenMs
+}
+
+func relayHasObservedTerminalEvent(state *relayState) bool {
+	if state == nil {
+		return false
+	}
+	return strings.TrimSpace(state.terminalEventType) != ""
+}
+
+func relayShouldFailIncompleteGracefulClose(state *relayState, wroteDownstream bool, terminalObserved bool) bool {
+	if terminalObserved {
+		return false
+	}
+	if state != nil && strings.EqualFold(strings.TrimSpace(state.lastEventType), "error") {
+		return false
+	}
+	if !wroteDownstream {
+		return true
+	}
+	return state != nil && state.observedProtocol
+}
+
+func relayIncompleteDisconnectError(err error) error {
+	if err == nil || isDisconnectError(err) {
+		return fmt.Errorf("stream closed before response.completed: %w", io.ErrUnexpectedEOF)
+	}
+	return err
 }
 
 func isDisconnectError(err error) bool {

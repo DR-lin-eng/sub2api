@@ -598,6 +598,107 @@ func TestConfigAddressHelpers(t *testing.T) {
 	}
 }
 
+func TestLoadProcessDefaults(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Process.Mode != ProcessModeSingle {
+		t.Fatalf("Process.Mode = %q", cfg.Process.Mode)
+	}
+	if cfg.Process.WorkerCount != 0 {
+		t.Fatalf("Process.WorkerCount = %d", cfg.Process.WorkerCount)
+	}
+	if cfg.Process.GracefulShutdownTimeoutSeconds != 30 {
+		t.Fatalf("Process.GracefulShutdownTimeoutSeconds = %d", cfg.Process.GracefulShutdownTimeoutSeconds)
+	}
+	if cfg.Process.WorkerReadyTimeoutSeconds != 20 {
+		t.Fatalf("Process.WorkerReadyTimeoutSeconds = %d", cfg.Process.WorkerReadyTimeoutSeconds)
+	}
+	if cfg.Process.ReloadTimeoutSeconds != 60 {
+		t.Fatalf("Process.ReloadTimeoutSeconds = %d", cfg.Process.ReloadTimeoutSeconds)
+	}
+	if cfg.Process.RespawnBackoffMS != 2000 {
+		t.Fatalf("Process.RespawnBackoffMS = %d", cfg.Process.RespawnBackoffMS)
+	}
+	if !cfg.Process.LogReopenSignalEnabled {
+		t.Fatalf("Process.LogReopenSignalEnabled expected true")
+	}
+	if !cfg.Process.ConfigReloadSignalEnabled {
+		t.Fatalf("Process.ConfigReloadSignalEnabled expected true")
+	}
+}
+
+func TestValidateProcessConfigRejectsInvalidMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.Process.Mode = "invalid"
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatalf("Validate() expected error for invalid process.mode")
+	}
+	if !strings.Contains(err.Error(), "process.mode") {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidateProcessConfigRejectsNegativeWorkerCount(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.Process.Mode = ProcessModeMasterWorker
+	cfg.Process.WorkerCount = -1
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatalf("Validate() expected error for negative process.worker_count")
+	}
+	if !strings.Contains(err.Error(), "process.worker_count") {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidateProcessConfigRejectsNonPositiveTimeouts(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.Process.Mode = ProcessModeMasterWorker
+	cfg.Process.GracefulShutdownTimeoutSeconds = 0
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "process.graceful_shutdown_timeout_seconds") {
+		t.Fatalf("Validate() expected graceful shutdown timeout error, got: %v", err)
+	}
+
+	cfg.Process.GracefulShutdownTimeoutSeconds = 30
+	cfg.Process.WorkerReadyTimeoutSeconds = 0
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "process.worker_ready_timeout_seconds") {
+		t.Fatalf("Validate() expected worker ready timeout error, got: %v", err)
+	}
+
+	cfg.Process.WorkerReadyTimeoutSeconds = 20
+	cfg.Process.ReloadTimeoutSeconds = 0
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "process.reload_timeout_seconds") {
+		t.Fatalf("Validate() expected reload timeout error, got: %v", err)
+	}
+}
+
 func TestNormalizeStringSlice(t *testing.T) {
 	values := normalizeStringSlice([]string{" a ", "", "b", "   ", "c"})
 	if len(values) != 3 || values[0] != "a" || values[1] != "b" || values[2] != "c" {

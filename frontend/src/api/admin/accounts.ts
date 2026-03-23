@@ -14,6 +14,9 @@ import type {
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
+  AccountListFilters,
+  AccountModelsRefreshResult,
+  BatchTestAccountsResponse,
   AdminDataPayload,
   AdminDataImportResult,
   CheckMixedChannelRequest,
@@ -30,14 +33,7 @@ import type {
 export async function list(
   page: number = 1,
   pageSize: number = 20,
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    group?: string
-    search?: string
-    lite?: string
-  },
+  filters?: AccountListFilters,
   options?: {
     signal?: AbortSignal
   }
@@ -62,14 +58,7 @@ export interface AccountListWithEtagResult {
 export async function listWithEtag(
   page: number = 1,
   pageSize: number = 20,
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    group?: string
-    search?: string
-    lite?: string
-  },
+  filters?: AccountListFilters,
   options?: {
     signal?: AbortSignal
     etag?: string | null
@@ -435,6 +424,16 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
   return data
 }
 
+/**
+ * Refresh fetched model list for an account
+ * @param id - Account ID
+ * @returns Refreshed model fetch result
+ */
+export async function refreshModels(id: number): Promise<AccountModelsRefreshResult> {
+  const { data } = await apiClient.post<AccountModelsRefreshResult>(`/admin/accounts/${id}/models/refresh`)
+  return data
+}
+
 export interface CRSPreviewAccount {
   crs_account_id: string
   kind: string
@@ -494,12 +493,7 @@ export async function syncFromCrs(params: {
 
 export async function exportData(options?: {
   ids?: number[]
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    search?: string
-  }
+  filters?: Pick<AccountListFilters, 'platform' | 'type' | 'status' | 'search'>
   includeProxies?: boolean
 }): Promise<AdminDataPayload> {
   const params: Record<string, string> = {}
@@ -521,10 +515,12 @@ export async function exportData(options?: {
 
 export async function importData(payload: {
   data: AdminDataPayload
+  group_ids?: number[]
   skip_default_group_bind?: boolean
 }): Promise<AdminDataImportResult> {
   const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', {
     data: payload.data,
+    group_ids: payload.group_ids,
     skip_default_group_bind: payload.skip_default_group_bind
   })
   return data
@@ -621,6 +617,25 @@ export async function batchRefresh(accountIds: number[]): Promise<BatchOperation
   return data
 }
 
+/**
+ * Batch-test account liveness
+ * @param accountIds - Array of account IDs
+ * @param modelId - Optional model ID override
+ * @returns Batch test result
+ */
+export async function batchTest(accountIds: number[], modelId?: string): Promise<BatchTestAccountsResponse> {
+  const payload: { account_ids: number[]; model_id?: string } = {
+    account_ids: accountIds
+  }
+  if (modelId && modelId.trim()) {
+    payload.model_id = modelId.trim()
+  }
+  const { data } = await apiClient.post<BatchTestAccountsResponse>('/admin/accounts/batch-test', payload, {
+    timeout: 120000
+  })
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -644,6 +659,7 @@ export const accountsAPI = {
   resetTempUnschedulable,
   setSchedulable,
   getAvailableModels,
+  refreshModels,
   generateAuthUrl,
   exchangeCode,
   refreshOpenAIToken,
@@ -657,7 +673,8 @@ export const accountsAPI = {
   importData,
   getAntigravityDefaultModelMapping,
   batchClearError,
-  batchRefresh
+  batchRefresh,
+  batchTest
 }
 
 export default accountsAPI

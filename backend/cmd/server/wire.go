@@ -27,6 +27,10 @@ type Application struct {
 	Cleanup func()
 }
 
+type CoordinatorApplication struct {
+	Cleanup func()
+}
+
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	wire.Build(
 		// Infrastructure layer ProviderSets
@@ -56,6 +60,19 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	return nil, nil
 }
 
+func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*CoordinatorApplication, error) {
+	wire.Build(
+		config.ProviderSet,
+		repository.ProviderSet,
+		service.ProviderSet,
+		providePrivacyClientFactory,
+		provideServiceBuildInfo,
+		provideCleanup,
+		wire.Struct(new(CoordinatorApplication), "Cleanup"),
+	)
+	return nil, nil
+}
+
 func providePrivacyClientFactory() service.PrivacyClientFactory {
 	return repository.CreatePrivacyReqClient
 }
@@ -80,6 +97,7 @@ func provideCleanup(
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
+	accountModelsRefresh *service.AccountModelsRefreshService,
 	subscriptionExpiry *service.SubscriptionExpiryService,
 	usageCleanup *service.UsageCleanupService,
 	idempotencyCleanup *service.IdempotencyCleanupService,
@@ -173,6 +191,12 @@ func provideCleanup(
 			}},
 			{"AccountExpiryService", func() error {
 				accountExpiry.Stop()
+				return nil
+			}},
+			{"AccountModelsRefreshService", func() error {
+				if accountModelsRefresh != nil {
+					accountModelsRefresh.Stop()
+				}
 				return nil
 			}},
 			{"SubscriptionExpiryService", func() error {

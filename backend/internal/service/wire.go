@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -10,6 +12,55 @@ import (
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 )
+
+const (
+	// Deprecated: retained for backward-compatible tests and env hygiene.
+	backgroundServicesEnvVar = "SUB2API_ENABLE_BACKGROUND_SERVICES"
+	processRoleEnvVar        = "SUB2API_PROCESS_ROLE"
+	processRoleWorker        = "worker"
+	processRoleCoordinator   = "coordinator"
+)
+
+func currentProcessRole() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv(processRoleEnvVar)))
+}
+
+func singletonBackgroundServicesEnabled() bool {
+	switch currentProcessRole() {
+	case "", processRoleCoordinator:
+		return true
+	default:
+		return false
+	}
+}
+
+func workerLocalBackgroundServicesEnabled() bool {
+	switch currentProcessRole() {
+	case "", processRoleWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestPathCacheSyncEnabled() bool {
+	switch currentProcessRole() {
+	case "", processRoleWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func coordinatorOrSingleProcess() bool {
+	role := strings.ToLower(strings.TrimSpace(os.Getenv(processRoleEnvVar)))
+	switch role {
+	case "", processRoleCoordinator:
+		return true
+	default:
+		return false
+	}
+}
 
 // BuildInfo contains build information
 type BuildInfo struct {
@@ -20,7 +71,7 @@ type BuildInfo struct {
 // ProvidePricingService creates and initializes PricingService
 func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
 	svc := NewPricingService(cfg, remoteClient)
-	if err := svc.Initialize(); err != nil {
+	if err := svc.InitializeWithBackground(singletonBackgroundServicesEnabled()); err != nil {
 		// Pricing service initialization failure should not block startup, use fallback prices
 		println("[Service] Warning: Pricing service initialization failed:", err.Error())
 	}
@@ -62,7 +113,9 @@ func ProvideTokenRefreshService(
 	svc.SetRefreshAPI(refreshAPI)
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -127,28 +180,36 @@ func ProvideAntigravityTokenProvider(
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
 func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, cfg *config.Config) *DashboardAggregationService {
 	svc := NewDashboardAggregationService(repo, timingWheel, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideUsageCleanupService 创建并启动使用记录清理任务服务
 func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *TimingWheelService, dashboardAgg *DashboardAggregationService, cfg *config.Config) *UsageCleanupService {
 	svc := NewUsageCleanupService(repo, timingWheel, dashboardAgg, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideAccountExpiryService creates and starts AccountExpiryService.
 func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
 func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -165,17 +226,21 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
 // ProvideDeferredService creates and starts DeferredService
 func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
 	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
-	svc.Start()
+	if workerLocalBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideConcurrencyService creates ConcurrencyService and starts slot cleanup worker.
 func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountRepository, cfg *config.Config) *ConcurrencyService {
 	svc := NewConcurrencyService(cache)
-	if err := svc.CleanupStaleProcessSlots(context.Background()); err != nil {
-		logger.LegacyPrintf("service.concurrency", "Warning: startup cleanup stale process slots failed: %v", err)
+	if coordinatorOrSingleProcess() {
+		if err := svc.CleanupStaleProcessSlots(context.Background()); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: startup cleanup stale process slots failed: %v", err)
+		}
 	}
-	if cfg != nil {
+	if cfg != nil && coordinatorOrSingleProcess() {
 		svc.StartSlotCleanupWorker(accountRepo, cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}
 	return svc
@@ -184,7 +249,7 @@ func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountReposi
 // ProvideUserMessageQueueService 创建用户消息串行队列服务并启动清理 worker
 func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg *config.Config) *UserMessageQueueService {
 	svc := NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
-	if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 {
+	if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 && coordinatorOrSingleProcess() {
 		svc.StartCleanupWorker(time.Duration(cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds) * time.Second)
 	}
 	return svc
@@ -199,7 +264,9 @@ func ProvideSchedulerSnapshotService(
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
 	svc := NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -232,7 +299,9 @@ func ProvideOpsMetricsCollector(
 	cfg *config.Config,
 ) *OpsMetricsCollector {
 	collector := NewOpsMetricsCollector(opsRepo, settingRepo, accountRepo, concurrencyService, db, redisClient, cfg)
-	collector.Start()
+	if singletonBackgroundServicesEnabled() {
+		collector.Start()
+	}
 	return collector
 }
 
@@ -245,7 +314,9 @@ func ProvideOpsAggregationService(
 	cfg *config.Config,
 ) *OpsAggregationService {
 	svc := NewOpsAggregationService(opsRepo, settingRepo, db, redisClient, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -258,7 +329,9 @@ func ProvideOpsAlertEvaluatorService(
 	cfg *config.Config,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -270,7 +343,9 @@ func ProvideOpsCleanupService(
 	cfg *config.Config,
 ) *OpsCleanupService {
 	svc := NewOpsCleanupService(opsRepo, db, redisClient, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -301,7 +376,9 @@ func ProvideSoraSDKClient(
 // ProvideSoraMediaCleanupService 创建并启动 Sora 媒体清理服务
 func ProvideSoraMediaCleanupService(storage *SoraMediaStorage, cfg *config.Config) *SoraMediaCleanupService {
 	svc := NewSoraMediaCleanupService(storage, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -340,7 +417,9 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 
 func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
 	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -361,7 +440,21 @@ func ProvideScheduledTestRunnerService(
 	cfg *config.Config,
 ) *ScheduledTestRunnerService {
 	svc := NewScheduledTestRunnerService(planRepo, scheduledSvc, accountTestSvc, rateLimitSvc, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
+	return svc
+}
+
+// ProvideAccountModelsRefreshService creates and starts AccountModelsRefreshService.
+func ProvideAccountModelsRefreshService(
+	accountRepo AccountRepository,
+	accountTestSvc *AccountTestService,
+) *AccountModelsRefreshService {
+	svc := NewAccountModelsRefreshService(accountRepo, accountTestSvc, defaultAccountModelsRefreshInterval)
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -374,14 +467,18 @@ func ProvideOpsScheduledReportService(
 	cfg *config.Config,
 ) *OpsScheduledReportService {
 	svc := NewOpsScheduledReportService(opsService, userService, emailService, redisClient, cfg)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
 // ProvideAPIKeyAuthCacheInvalidator 提供 API Key 认证缓存失效能力
 func ProvideAPIKeyAuthCacheInvalidator(apiKeyService *APIKeyService) APIKeyAuthCacheInvalidator {
 	// Start Pub/Sub subscriber for L1 cache invalidation across instances
-	apiKeyService.StartAuthCacheInvalidationSubscriber(context.Background())
+	if requestPathCacheSyncEnabled() {
+		apiKeyService.StartAuthCacheInvalidationSubscriber(context.Background())
+	}
 	return apiKeyService
 }
 
@@ -394,7 +491,9 @@ func ProvideBackupService(
 	dumper DBDumper,
 ) *BackupService {
 	svc := NewBackupService(settingRepo, cfg, encryptor, storeFactory, dumper)
-	svc.Start()
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -402,6 +501,62 @@ func ProvideBackupService(
 func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
+	return svc
+}
+
+// ProvideGatewayService wires optional proxy failover dependencies onto GatewayService
+// without forcing every unit test to pass them through the raw constructor.
+func ProvideGatewayService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	identityService *IdentityService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	claudeTokenProvider *ClaudeTokenProvider,
+	sessionLimitCache SessionLimitCache,
+	rpmCache RPMCache,
+	digestStore *DigestSessionStore,
+	settingService *SettingService,
+	proxyRepo ProxyRepository,
+	proxyLatencyCache ProxyLatencyCache,
+) *GatewayService {
+	svc := NewGatewayService(
+		accountRepo,
+		groupRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		identityService,
+		httpUpstream,
+		deferredService,
+		claudeTokenProvider,
+		sessionLimitCache,
+		rpmCache,
+		digestStore,
+		settingService,
+	)
+	svc.SetProxyFailoverDeps(proxyRepo, proxyLatencyCache)
 	return svc
 }
 
@@ -424,7 +579,7 @@ var ProviderSet = wire.NewSet(
 	NewBillingCacheService,
 	NewAnnouncementService,
 	NewAdminService,
-	NewGatewayService,
+	ProvideGatewayService,
 	ProvideSoraMediaStorage,
 	ProvideSoraMediaCleanupService,
 	ProvideSoraSDKClient,
@@ -448,6 +603,7 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	NewAccountUsageService,
 	NewAccountTestService,
+	ProvideAccountModelsRefreshService,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,

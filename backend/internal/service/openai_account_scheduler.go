@@ -364,6 +364,9 @@ type openAIAccountCandidateScore struct {
 	errorRate float64
 	ttft      float64
 	hasTTFT   bool
+	slotCap   int
+	slotFree  int
+	readyTier int
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -401,8 +404,14 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	if left.score != right.score {
 		return left.score > right.score
 	}
+	if left.slotFree != right.slotFree {
+		return left.slotFree > right.slotFree
+	}
 	if left.account.Priority != right.account.Priority {
 		return left.account.Priority < right.account.Priority
+	}
+	if left.loadInfo.CurrentConcurrency != right.loadInfo.CurrentConcurrency {
+		return left.loadInfo.CurrentConcurrency < right.loadInfo.CurrentConcurrency
 	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
@@ -558,6 +567,103 @@ func buildOpenAIWeightedSelectionOrder(
 	return order
 }
 
+func openAIAccountSlotCapacity(account *Account) int {
+	if account == nil {
+		return 1
+	}
+	if account.Concurrency > 0 {
+		return account.Concurrency
+	}
+	if fallback := account.EffectiveLoadFactor(); fallback > 0 {
+		return fallback
+	}
+	return 1
+}
+
+func openAIAccountReadyTier(account *Account, loadInfo *AccountLoadInfo) (tier int, slotCap int, slotFree int) {
+	slotCap = openAIAccountSlotCapacity(account)
+	if loadInfo == nil {
+		return 0, slotCap, slotCap
+	}
+	slotFree = slotCap - loadInfo.CurrentConcurrency
+	if slotFree < 0 {
+		slotFree = 0
+	}
+	switch {
+	case slotFree > 0 && loadInfo.WaitingCount <= 0:
+		return 0, slotCap, slotFree
+	case slotFree > 0:
+		return 1, slotCap, slotFree
+	default:
+		return 2, slotCap, slotFree
+	}
+}
+
+func buildOpenAITieredSelectionOrder(
+	candidates []openAIAccountCandidateScore,
+	topK int,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 {
+		return append([]openAIAccountCandidateScore(nil), candidates...)
+	}
+	if topK <= 0 {
+		topK = 1
+	}
+
+	tierBuckets := [3][]openAIAccountCandidateScore{}
+	for _, candidate := range candidates {
+		tier := candidate.readyTier
+		if tier < 0 {
+			tier = 0
+		}
+		if tier > 2 {
+			tier = 2
+		}
+		tierBuckets[tier] = append(tierBuckets[tier], candidate)
+	}
+
+	order := make([]openAIAccountCandidateScore, 0, len(candidates))
+	for tier := 0; tier < len(tierBuckets); tier++ {
+		if len(tierBuckets[tier]) == 0 {
+			continue
+		}
+		ranked := selectTopKOpenAICandidates(tierBuckets[tier], topK)
+		order = append(order, buildOpenAIWeightedSelectionOrder(ranked, req)...)
+	}
+	return order
+}
+
+func adaptiveOpenAISelectionTopK(baseTopK int, candidateCount int, loadSkew float64) int {
+	if candidateCount <= 0 {
+		return 1
+	}
+	if baseTopK <= 0 {
+		baseTopK = 1
+	}
+	if baseTopK > candidateCount {
+		baseTopK = candidateCount
+	}
+
+	adaptive := baseTopK
+	if candidateCount >= 16 {
+		adaptive += candidateCount / 8
+	}
+	switch {
+	case loadSkew <= 5:
+		adaptive += 2
+	case loadSkew <= 10:
+		adaptive++
+	}
+	if adaptive > 16 {
+		adaptive = 16
+	}
+	if adaptive > candidateCount {
+		adaptive = candidateCount
+	}
+	return adaptive
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -626,6 +732,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if loadInfo.WaitingCount > maxWaiting {
 			maxWaiting = loadInfo.WaitingCount
 		}
+		readyTier, slotCap, slotFree := openAIAccountReadyTier(account, loadInfo)
 		errorRate, ttft, hasTTFT := s.stats.snapshot(account.ID)
 		if hasTTFT && ttft > 0 {
 			if !hasTTFTSample {
@@ -649,6 +756,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			errorRate: errorRate,
 			ttft:      ttft,
 			hasTTFT:   hasTTFT,
+			slotCap:   slotCap,
+			slotFree:  slotFree,
+			readyTier: readyTier,
 		})
 	}
 	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
@@ -661,7 +771,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			priorityFactor = 1 - float64(item.account.Priority-minPriority)/float64(maxPriority-minPriority)
 		}
 		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
+		slotFactor := clamp01(float64(item.slotFree) / float64(max(1, item.slotCap)))
+		loadFactor = 0.6*loadFactor + 0.4*slotFactor
 		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
+		switch item.readyTier {
+		case 0:
+			queueFactor = 1.0
+		case 1:
+			if queueFactor < 0.4 {
+				queueFactor = 0.4
+			}
+		default:
+			queueFactor *= 0.2
+		}
 		errorFactor := 1 - clamp01(item.errorRate)
 		ttftFactor := 0.5
 		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
@@ -676,14 +798,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	topK := s.service.openAIWSLBTopK()
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
-	if topK <= 0 {
-		topK = 1
-	}
-	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
-	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
+	topK = adaptiveOpenAISelectionTopK(topK, len(candidates), loadSkew)
+	selectionOrder := buildOpenAITieredSelectionOrder(candidates, topK, req)
 
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]

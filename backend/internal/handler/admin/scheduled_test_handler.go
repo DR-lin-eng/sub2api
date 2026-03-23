@@ -20,20 +20,22 @@ func NewScheduledTestHandler(scheduledTestSvc *service.ScheduledTestService) *Sc
 }
 
 type createScheduledTestPlanRequest struct {
-	AccountID      int64  `json:"account_id" binding:"required"`
-	ModelID        string `json:"model_id"`
-	CronExpression string `json:"cron_expression" binding:"required"`
-	Enabled        *bool  `json:"enabled"`
-	MaxResults     int    `json:"max_results"`
-	AutoRecover    *bool  `json:"auto_recover"`
+	AccountID              int64  `json:"account_id" binding:"required"`
+	ModelID                string `json:"model_id"`
+	CronExpression         string `json:"cron_expression" binding:"required"`
+	Enabled                *bool  `json:"enabled"`
+	MaxResults             int    `json:"max_results"`
+	AutoRecover            *bool  `json:"auto_recover"`
+	MaxFailuresBeforePause int    `json:"max_failures_before_pause"`
 }
 
 type updateScheduledTestPlanRequest struct {
-	ModelID        string `json:"model_id"`
-	CronExpression string `json:"cron_expression"`
-	Enabled        *bool  `json:"enabled"`
-	MaxResults     int    `json:"max_results"`
-	AutoRecover    *bool  `json:"auto_recover"`
+	ModelID                string `json:"model_id"`
+	CronExpression         string `json:"cron_expression"`
+	Enabled                *bool  `json:"enabled"`
+	MaxResults             int    `json:"max_results"`
+	AutoRecover            *bool  `json:"auto_recover"`
+	MaxFailuresBeforePause int    `json:"max_failures_before_pause"`
 }
 
 // ListByAccount GET /admin/accounts/:id/scheduled-test-plans
@@ -61,11 +63,12 @@ func (h *ScheduledTestHandler) Create(c *gin.Context) {
 	}
 
 	plan := &service.ScheduledTestPlan{
-		AccountID:      req.AccountID,
-		ModelID:        req.ModelID,
-		CronExpression: req.CronExpression,
-		Enabled:        true,
-		MaxResults:     req.MaxResults,
+		AccountID:              req.AccountID,
+		ModelID:                req.ModelID,
+		CronExpression:         req.CronExpression,
+		Enabled:                true,
+		MaxResults:             req.MaxResults,
+		MaxFailuresBeforePause: req.MaxFailuresBeforePause,
 	}
 	if req.Enabled != nil {
 		plan.Enabled = *req.Enabled
@@ -116,6 +119,9 @@ func (h *ScheduledTestHandler) Update(c *gin.Context) {
 	}
 	if req.AutoRecover != nil {
 		existing.AutoRecover = *req.AutoRecover
+	}
+	if req.MaxFailuresBeforePause > 0 {
+		existing.MaxFailuresBeforePause = req.MaxFailuresBeforePause
 	}
 
 	updated, err := h.scheduledTestSvc.UpdatePlan(c.Request.Context(), existing)

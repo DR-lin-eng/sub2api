@@ -131,7 +131,7 @@
         </div>
       </template>
       <template #table>
-        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
+        <AccountBulkActionsBar :selected-ids="selIds" @batch-test="handleBatchTestSelected" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           :columns="cols"
@@ -163,6 +163,14 @@
                 :title="row.extra.email_address"
               >
                 {{ row.extra.email_address }}
+              </span>
+              <span
+                v-if="getAccountModelsHint(row)"
+                class="max-w-[240px] truncate text-xs"
+                :class="getAccountModelsHintClass(row)"
+                :title="getAccountModelsHint(row)"
+              >
+                {{ getAccountModelsHint(row) }}
               </span>
             </div>
           </template>
@@ -276,9 +284,9 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @refresh-models="handleRefreshModels" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
-    <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
+    <ImportDataModal :show="showImportData" :groups="groups" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal :show="showBulkEdit" :account-ids="selIds" :selected-platforms="selPlatforms" :selected-types="selTypes" :proxies="proxies" :groups="groups" @close="showBulkEdit = false" @updated="handleBulkUpdated" />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
@@ -328,7 +336,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
+import type { Account, AccountListFilters, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -581,7 +589,7 @@ const {
   handlePageSizeChange: baseHandlePageSizeChange
 } = useTableLoader<Account, any>({
   fetchFn: adminAPI.accounts.list,
-  initialParams: { platform: '', type: '', status: '', group: '', search: '' }
+  initialParams: { platform: '', type: '', status: '', group: '', search: '', plan: '', oauth_type: '', tier_id: '' }
 })
 
 const {
@@ -695,6 +703,8 @@ const inAutoRefreshSilentWindow = () => {
 }
 
 const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
+  const currentExtra = current.extra as Record<string, unknown> | undefined
+  const nextExtra = next.extra as Record<string, unknown> | undefined
   return (
     current.updated_at !== next.updated_at ||
     current.current_concurrency !== next.current_concurrency ||
@@ -705,6 +715,8 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.rate_limit_reset_at !== next.rate_limit_reset_at ||
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
+    currentExtra?.models_fetched_at !== nextExtra?.models_fetched_at ||
+    currentExtra?.models_refresh_error !== nextExtra?.models_refresh_error ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next)
   )
 }
@@ -754,14 +766,7 @@ const refreshAccountsIncrementally = async () => {
     const result = await adminAPI.accounts.listWithEtag(
       pagination.page,
       pagination.page_size,
-      toRaw(params) as {
-        platform?: string
-        type?: string
-        status?: string
-        group?: string
-        search?: string
-
-      },
+      toRaw(params) as AccountListFilters & { group?: string },
       { etag: autoRefreshETag.value }
     )
 
@@ -855,6 +860,37 @@ function getAntigravityTierClass(row: any): string {
     case 'g1-ultra-tier': return 'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-300'
     default: return ''
   }
+}
+
+function getAccountModelsHint(account: Account): string {
+  const extra = account.extra as Record<string, unknown> | undefined
+  if (!extra) return ''
+  const refreshError = typeof extra.models_refresh_error === 'string' ? extra.models_refresh_error.trim() : ''
+  if (refreshError) {
+    return t('admin.accounts.modelsRefreshError', { message: refreshError })
+  }
+  const fetchedAt = typeof extra.models_fetched_at === 'string' ? extra.models_fetched_at : ''
+  if (!fetchedAt) return ''
+  const fetchedModels = Array.isArray(extra.fetched_models) ? extra.fetched_models.length : 0
+  return t('admin.accounts.modelsFetchedAt', {
+    time: formatRelativeTime(fetchedAt),
+    count: fetchedModels
+  })
+}
+
+function getAccountModelsHintClass(account: Account): string {
+  const extra = account.extra as Record<string, unknown> | undefined
+  const refreshError = typeof extra?.models_refresh_error === 'string' ? extra.models_refresh_error.trim() : ''
+  return refreshError
+    ? 'text-red-500 dark:text-red-400'
+    : 'text-gray-500 dark:text-gray-400'
+}
+
+function canRefreshAccountModels(account: Account): boolean {
+  if (account.platform === 'openai' || account.platform === 'gemini') {
+    return true
+  }
+  return account.platform === 'anthropic' && account.type !== 'bedrock'
 }
 
 // All available columns
@@ -985,6 +1021,22 @@ const handleBulkRefreshToken = async () => {
     appStore.showError(String(error))
   }
 }
+const handleBatchTestSelected = async () => {
+  if (selIds.value.length === 0) return
+  try {
+    const result = await adminAPI.accounts.batchTest(selIds.value)
+    await reload()
+    appStore.showSuccess(
+      t('admin.accounts.batchTestAccountsDone', {
+        success: result.success,
+        failed: result.failed
+      })
+    )
+  } catch (error: any) {
+    console.error('Failed to batch test accounts:', error)
+    appStore.showError(error?.message || t('admin.accounts.batchTestAccountsFailed'))
+  }
+}
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {
   if (accountIds.length === 0) return
   const idSet = new Set(accountIds)
@@ -1092,6 +1144,18 @@ const handleDataImported = () => { showImportData.value = false; reload() }
 const accountMatchesCurrentFilters = (account: Account) => {
   if (params.platform && account.platform !== params.platform) return false
   if (params.type && account.type !== params.type) return false
+  if (params.plan) {
+    const plan = typeof account.credentials?.plan_type === 'string' ? account.credentials.plan_type : ''
+    if (plan !== params.plan) return false
+  }
+  if (params.oauth_type) {
+    const oauthType = typeof account.credentials?.oauth_type === 'string' ? account.credentials.oauth_type : ''
+    if (oauthType !== params.oauth_type) return false
+  }
+  if (params.tier_id) {
+    const tierID = typeof account.credentials?.tier_id === 'string' ? account.credentials.tier_id : ''
+    if (tierID !== params.tier_id) return false
+  }
   if (params.status) {
     if (params.status === 'rate_limited') {
       if (!account.rate_limit_reset_at) return false
@@ -1210,6 +1274,26 @@ const handleSchedule = async (a: Account) => {
 }
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
 const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
+const patchAccountModelsMetadata = (accountID: number, updates: {
+  models?: string[]
+  fetched_at?: string | null
+  source?: string
+  refresh_error?: string
+}) => {
+  const existing = accounts.value.find(account => account.id === accountID)
+  if (!existing) return
+  const nextAccount: Account = {
+    ...existing,
+    extra: {
+      ...(existing.extra || {}),
+      fetched_models: updates.models || [],
+      models_fetched_at: updates.fetched_at || undefined,
+      models_source: updates.source || undefined,
+      models_refresh_error: updates.refresh_error || undefined
+    }
+  }
+  patchAccountInList(nextAccount)
+}
 const handleRefresh = async (a: Account) => {
   try {
     const updated = await adminAPI.accounts.refreshCredentials(a.id)
@@ -1217,6 +1301,22 @@ const handleRefresh = async (a: Account) => {
     enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to refresh credentials:', error)
+  }
+}
+const handleRefreshModels = async (a: Account) => {
+  if (!canRefreshAccountModels(a)) return
+  try {
+    const result = await adminAPI.accounts.refreshModels(a.id)
+    patchAccountModelsMetadata(a.id, result)
+    if (scheduleAcc.value?.id === a.id && showSchedulePanel.value) {
+      const models = await adminAPI.accounts.getAvailableModels(a.id)
+      scheduleModelOptions.value = models.map((m: ClaudeModel) => ({ value: m.id, label: m.display_name || m.id }))
+    }
+    enterAutoRefreshSilentWindow()
+    appStore.showSuccess(t('admin.accounts.refreshModelsSuccess'))
+  } catch (error: any) {
+    console.error('Failed to refresh models:', error)
+    appStore.showError(error?.message || t('admin.accounts.refreshModelsFailed'))
   }
 }
 const handleRecoverState = async (a: Account) => {

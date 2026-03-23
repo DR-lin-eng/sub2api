@@ -94,6 +94,8 @@ func (s *FailoverState) HandleFailoverError(
 	// 同账号重试用尽，执行临时封禁
 	if failoverErr.RetryableOnSameAccount {
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
+	} else if failoverErr.TempUnscheduleFor > 0 {
+		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
 	}
 
 	// 加入失败列表

@@ -235,9 +235,37 @@ func TestRelay_UpstreamDisconnect(t *testing.T) {
 	defer cancel()
 
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
-	// 上游 EOF 属于 disconnect，标记为 graceful
-	require.Nil(t, relayExit, "上游 EOF 应被视为 graceful disconnect")
+	require.NotNil(t, relayExit, "未观测到 terminal 事件时，上游 EOF 不应被视为成功完成")
+	require.Equal(t, "read_upstream", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, io.ErrUnexpectedEOF)
 	require.Equal(t, "gpt-4o", result.RequestModel)
+	require.Empty(t, result.TerminalEventType)
+}
+
+func TestRelay_UpstreamProtocolStreamWithoutTerminalFails(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.output_text.delta","delta":"hello"}`),
+		},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-4o","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
+	require.NotNil(t, relayExit, "协议流缺少 terminal 事件时应返回不完整错误")
+	require.Equal(t, "read_upstream", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, io.ErrUnexpectedEOF)
+	require.Empty(t, result.TerminalEventType, "result should not invent a terminal event")
+
+	clientWrites := clientConn.Writes()
+	require.Len(t, clientWrites, 1)
+	require.Equal(t, coderws.MessageText, clientWrites[0].msgType)
 }
 
 func TestRelay_ClientDisconnect(t *testing.T) {

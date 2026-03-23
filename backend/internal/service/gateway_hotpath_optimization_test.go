@@ -535,6 +535,40 @@ func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) 
 	require.Equal(t, int64(2), store)
 }
 
+func TestGetAvailableModels_PrefersFetchedModelsOverModelMapping(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(10)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: PlatformAnthropic,
+					Credentials: map[string]any{
+						"model_mapping": map[string]any{
+							"claude-legacy": "claude-legacy",
+						},
+					},
+					Extra: map[string]any{
+						AccountExtraFetchedModelsKey: []any{"claude-3-7-sonnet", "claude-3-5-haiku"},
+					},
+				},
+			},
+		},
+	}
+
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
+	require.Equal(t, []string{"claude-3-5-haiku", "claude-3-7-sonnet"}, models)
+	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+}
+
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
@@ -578,6 +612,35 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	models := svcOK.GetAvailableModels(context.Background(), nil, "")
 	require.Equal(t, []string{"claude-3-5-sonnet", "gemini-2.5-pro"}, models)
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
+}
+
+func TestGetAvailableModels_PrefersFetchedModelsOverStaticMapping(t *testing.T) {
+	repo := &modelsListAccountRepoStub{
+		all: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gpt-4.1": "gpt-4.1",
+					},
+				},
+				Extra: map[string]any{
+					AccountExtraFetchedModelsKey: []any{"gpt-5", "gpt-5-mini"},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), nil, PlatformOpenAI)
+
+	require.Equal(t, []string{"gpt-5", "gpt-5-mini"}, models)
+	require.Equal(t, int64(1), repo.listAllCalls.Load())
 }
 
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {

@@ -219,6 +219,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	accountType := c.Query("type")
 	status := c.Query("status")
 	search := c.Query("search")
+	plan := c.Query("plan")
+	oauthType := c.Query("oauth_type")
+	tierID := c.Query("tier_id")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)
 	if len(search) > 100 {
@@ -244,7 +247,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID)
+	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, groupID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -366,7 +369,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		result[i] = item
 	}
 
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, lite)
+	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, lite)
 	if etag != "" {
 		c.Header("ETag", etag)
 		c.Header("Vary", "If-None-Match")
@@ -383,7 +386,7 @@ func buildAccountsListETag(
 	items []AccountWithConcurrency,
 	total int64,
 	page, pageSize int,
-	platform, accountType, status, search string,
+	platform, accountType, status, search, plan, oauthType, tierID string,
 	lite bool,
 ) string {
 	payload := struct {
@@ -394,6 +397,9 @@ func buildAccountsListETag(
 		AccountType string                   `json:"type"`
 		Status      string                   `json:"status"`
 		Search      string                   `json:"search"`
+		Plan        string                   `json:"plan"`
+		OAuthType   string                   `json:"oauth_type"`
+		TierID      string                   `json:"tier_id"`
 		Lite        bool                     `json:"lite"`
 		Items       []AccountWithConcurrency `json:"items"`
 	}{
@@ -404,6 +410,9 @@ func buildAccountsListETag(
 		AccountType: accountType,
 		Status:      status,
 		Search:      search,
+		Plan:        plan,
+		OAuthType:   oauthType,
+		TierID:      tierID,
 		Lite:        lite,
 		Items:       items,
 	}
@@ -646,6 +655,23 @@ type TestAccountRequest struct {
 	Prompt  string `json:"prompt"`
 }
 
+type BatchTestAccountsRequest struct {
+	AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`
+	ModelID    string  `json:"model_id"`
+}
+
+type BatchTestAccountResult struct {
+	AccountID        int64      `json:"account_id"`
+	AccountName      string     `json:"account_name,omitempty"`
+	Status           string     `json:"status"`
+	ResponseText     string     `json:"response_text,omitempty"`
+	ErrorMessage     string     `json:"error_message,omitempty"`
+	LatencyMs        int64      `json:"latency_ms,omitempty"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	RuntimeRecovered bool       `json:"runtime_recovered,omitempty"`
+}
+
 type SyncFromCRSRequest struct {
 	BaseURL            string   `json:"base_url" binding:"required"`
 	Username           string   `json:"username" binding:"required"`
@@ -658,6 +684,87 @@ type PreviewFromCRSRequest struct {
 	BaseURL  string `json:"base_url" binding:"required"`
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
+}
+
+func mappingKeys(mapping map[string]string) []string {
+	if len(mapping) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(mapping))
+	for key := range mapping {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func buildOpenAIModelsFromIDs(ids []string) []openai.Model {
+	if len(ids) == 0 {
+		return nil
+	}
+	defaults := make(map[string]openai.Model, len(openai.DefaultModels))
+	for _, model := range openai.DefaultModels {
+		defaults[model.ID] = model
+	}
+	models := make([]openai.Model, 0, len(ids))
+	for _, id := range ids {
+		if model, ok := defaults[id]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, openai.Model{
+			ID:          id,
+			Object:      "model",
+			Type:        "model",
+			DisplayName: id,
+		})
+	}
+	return models
+}
+
+func buildGeminiModelsFromIDs(ids []string) []geminicli.Model {
+	if len(ids) == 0 {
+		return nil
+	}
+	defaults := make(map[string]geminicli.Model, len(geminicli.DefaultModels))
+	for _, model := range geminicli.DefaultModels {
+		defaults[model.ID] = model
+	}
+	models := make([]geminicli.Model, 0, len(ids))
+	for _, id := range ids {
+		if model, ok := defaults[id]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, geminicli.Model{
+			ID:          id,
+			Type:        "model",
+			DisplayName: id,
+		})
+	}
+	return models
+}
+
+func buildClaudeModelsFromIDs(ids []string) []claude.Model {
+	if len(ids) == 0 {
+		return nil
+	}
+	defaults := make(map[string]claude.Model, len(claude.DefaultModels))
+	for _, model := range claude.DefaultModels {
+		defaults[model.ID] = model
+	}
+	models := make([]claude.Model, 0, len(ids))
+	for _, id := range ids {
+		if model, ok := defaults[id]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, claude.Model{
+			ID:          id,
+			Type:        "model",
+			DisplayName: id,
+		})
+	}
+	return models
 }
 
 // Test handles testing account connectivity with SSE streaming
@@ -684,6 +791,127 @@ func (h *AccountHandler) Test(c *gin.Context) {
 			_ = c.Error(err)
 		}
 	}
+}
+
+// BatchTest handles batch account liveness tests.
+// POST /api/v1/admin/accounts/batch-test
+func (h *AccountHandler) BatchTest(c *gin.Context) {
+	var req BatchTestAccountsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if h.accountTestService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account test service unavailable")
+		return
+	}
+
+	accountIDs := normalizeInt64IDList(req.AccountIDs)
+	if len(accountIDs) == 0 {
+		response.BadRequest(c, "account_ids is required")
+		return
+	}
+
+	accounts, err := h.adminService.GetAccountsByIDs(c.Request.Context(), accountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	accountsByID := make(map[int64]*service.Account, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		accountsByID[account.ID] = account
+	}
+
+	const maxConcurrency = 10
+	g, gctx := errgroup.WithContext(c.Request.Context())
+	g.SetLimit(maxConcurrency)
+
+	resultsByID := make(map[int64]BatchTestAccountResult, len(accountIDs))
+	var mu sync.Mutex
+
+	for _, accountID := range accountIDs {
+		account, ok := accountsByID[accountID]
+		if !ok {
+			resultsByID[accountID] = BatchTestAccountResult{
+				AccountID:    accountID,
+				Status:       "failed",
+				ErrorMessage: "account not found",
+			}
+			continue
+		}
+
+		acc := account
+		g.Go(func() error {
+			result, testErr := h.accountTestService.RunTestBackground(gctx, acc.ID, req.ModelID)
+			item := BatchTestAccountResult{
+				AccountID:   acc.ID,
+				AccountName: acc.Name,
+				Status:      "failed",
+			}
+
+			if testErr != nil {
+				item.ErrorMessage = testErr.Error()
+			} else if result != nil {
+				item.Status = result.Status
+				item.ResponseText = result.ResponseText
+				item.ErrorMessage = result.ErrorMessage
+				item.LatencyMs = result.LatencyMs
+				item.StartedAt = &result.StartedAt
+				item.FinishedAt = &result.FinishedAt
+			}
+
+			if item.Status == "success" && h.rateLimitService != nil {
+				recovery, recoveryErr := h.rateLimitService.RecoverAccountAfterSuccessfulTest(gctx, acc.ID)
+				if recoveryErr != nil && item.ErrorMessage == "" {
+					item.ErrorMessage = recoveryErr.Error()
+				}
+				if recovery != nil && (recovery.ClearedError || recovery.ClearedRateLimit) {
+					item.RuntimeRecovered = true
+				}
+			}
+
+			mu.Lock()
+			resultsByID[acc.ID] = item
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	results := make([]BatchTestAccountResult, 0, len(accountIDs))
+	successCount := 0
+	failedCount := 0
+	for _, accountID := range accountIDs {
+		item, ok := resultsByID[accountID]
+		if !ok {
+			item = BatchTestAccountResult{
+				AccountID:    accountID,
+				Status:       "failed",
+				ErrorMessage: "batch test result missing",
+			}
+		}
+		if item.Status == "success" {
+			successCount++
+		} else {
+			failedCount++
+		}
+		results = append(results, item)
+	}
+
+	response.Success(c, gin.H{
+		"total":   len(accountIDs),
+		"success": successCount,
+		"failed":  failedCount,
+		"results": results,
+	})
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.
@@ -1738,79 +1966,61 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	fetchedModelIDs := account.GetFetchedModelIDs()
+	if account.ShouldRefreshFetchedModels(time.Now()) && h.accountTestService != nil {
+		if refreshed, refreshErr := h.accountTestService.FetchAndCacheAvailableModels(c.Request.Context(), accountID); refreshErr == nil && refreshed != nil {
+			fetchedModelIDs = refreshed.Models
+		}
+		if refreshedAccount, getErr := h.adminService.GetAccount(c.Request.Context(), accountID); getErr == nil && refreshedAccount != nil {
+			account = refreshedAccount
+			if refreshed := account.GetFetchedModelIDs(); len(refreshed) > 0 {
+				fetchedModelIDs = refreshed
+			}
+		}
+	}
+
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
-		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
+		if len(fetchedModelIDs) > 0 {
+			response.Success(c, buildOpenAIModelsFromIDs(fetchedModelIDs))
+			return
+		}
+
+		// OpenAI 自动透传会绕过常规模型改写；未拉取到真实模型列表时回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
 			response.Success(c, openai.DefaultModels)
 			return
 		}
 
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
+		modelIDs := mappingKeys(account.GetModelMapping())
+		if len(modelIDs) == 0 {
 			response.Success(c, openai.DefaultModels)
 			return
 		}
-
-		// Return mapped models
-		var models []openai.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range openai.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, openai.Model{
-					ID:          requestedModel,
-					Object:      "model",
-					Type:        "model",
-					DisplayName: requestedModel,
-				})
-			}
-		}
-		response.Success(c, models)
+		response.Success(c, buildOpenAIModelsFromIDs(modelIDs))
 		return
 	}
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
+		if len(fetchedModelIDs) > 0 {
+			response.Success(c, buildGeminiModelsFromIDs(fetchedModelIDs))
+			return
+		}
+
 		// For OAuth accounts: return default Gemini models
 		if account.IsOAuth() {
 			response.Success(c, geminicli.DefaultModels)
 			return
 		}
 
-		// For API Key accounts: return models based on model_mapping
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
+		modelIDs := mappingKeys(account.GetModelMapping())
+		if len(modelIDs) == 0 {
 			response.Success(c, geminicli.DefaultModels)
 			return
 		}
 
-		var models []geminicli.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range geminicli.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, geminicli.Model{
-					ID:          requestedModel,
-					Type:        "model",
-					DisplayName: requestedModel,
-					CreatedAt:   "",
-				})
-			}
-		}
-		response.Success(c, models)
+		response.Success(c, buildGeminiModelsFromIDs(modelIDs))
 		return
 	}
 
@@ -1828,44 +2038,52 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	// Handle Claude/Anthropic accounts
+	if len(fetchedModelIDs) > 0 {
+		response.Success(c, buildClaudeModelsFromIDs(fetchedModelIDs))
+		return
+	}
+
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
 		response.Success(c, claude.DefaultModels)
 		return
 	}
 
-	// For API Key accounts: return models based on model_mapping
-	mapping := account.GetModelMapping()
-	if len(mapping) == 0 {
+	modelIDs := mappingKeys(account.GetModelMapping())
+	if len(modelIDs) == 0 {
 		// No mapping configured, return default models
 		response.Success(c, claude.DefaultModels)
 		return
 	}
 
-	// Return mapped models (keys of the mapping are the available model IDs)
-	var models []claude.Model
-	for requestedModel := range mapping {
-		// Try to find display info from default models
-		var found bool
-		for _, dm := range claude.DefaultModels {
-			if dm.ID == requestedModel {
-				models = append(models, dm)
-				found = true
-				break
-			}
-		}
-		// If not found in defaults, create a basic entry
-		if !found {
-			models = append(models, claude.Model{
-				ID:          requestedModel,
-				Type:        "model",
-				DisplayName: requestedModel,
-				CreatedAt:   "",
-			})
-		}
+	response.Success(c, buildClaudeModelsFromIDs(modelIDs))
+}
+
+// RefreshModels handles manually refreshing an account's fetched model list.
+// POST /api/v1/admin/accounts/:id/models/refresh
+func (h *AccountHandler) RefreshModels(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
 	}
 
-	response.Success(c, models)
+	if h.accountTestService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account model refresh service unavailable")
+		return
+	}
+
+	result, err := h.accountTestService.FetchAndCacheAvailableModels(c.Request.Context(), accountID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "does not support model refresh") {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		response.Error(c, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	response.Success(c, result)
 }
 
 // RefreshTier handles refreshing Google One tier for a single account
@@ -1936,7 +2154,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	accounts := make([]*service.Account, 0)
 
 	if len(req.AccountIDs) == 0 {
-		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0)
+		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", "", "", "", 0)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return

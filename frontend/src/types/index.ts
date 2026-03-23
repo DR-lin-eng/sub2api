@@ -660,6 +660,45 @@ export interface TempUnschedulableStatus {
   state?: TempUnschedulableState
 }
 
+export interface AccountListFilters {
+  platform?: string
+  type?: string
+  status?: string
+  group?: string
+  search?: string
+  lite?: string
+  plan?: string
+  oauth_type?: string
+  tier_id?: string
+}
+
+export interface AccountModelsRefreshResult {
+  account_id: number
+  models: string[]
+  fetched_at?: string | null
+  source?: string
+  refresh_error?: string
+}
+
+export interface BatchTestAccountResult {
+  account_id: number
+  account_name?: string
+  status: string
+  response_text?: string
+  error_message?: string
+  latency_ms?: number
+  started_at?: string | null
+  finished_at?: string | null
+  runtime_recovered?: boolean
+}
+
+export interface BatchTestAccountsResponse {
+  total: number
+  success: number
+  failed: number
+  results: BatchTestAccountResult[]
+}
+
 export interface Account {
   id: number
   name: string
@@ -670,6 +709,11 @@ export interface Account {
   // Extra fields including Codex usage and model-level rate limits (Antigravity smart retry)
   extra?: (CodexUsageSnapshot & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
+    fetched_models?: string[]
+    models_fetched_at?: string
+    models_refresh_error?: string
+    models_refresh_interval_seconds?: number
+    models_source?: string
   } & Record<string, unknown>)
   proxy_id: number | null
   concurrency: number
@@ -920,6 +964,7 @@ export interface AdminDataPayload {
   type?: string
   version?: number
   exported_at: string
+  group_ids?: number[]
   proxies: AdminDataProxy[]
   accounts: AdminDataAccount[]
 }
@@ -942,6 +987,7 @@ export interface AdminDataAccount {
   type: AccountType
   credentials: Record<string, unknown>
   extra?: Record<string, unknown>
+  group_ids?: number[]
   proxy_key?: string | null
   concurrency: number
   priority: number
@@ -1581,6 +1627,11 @@ export interface ScheduledTestPlan {
   enabled: boolean
   max_results: number
   auto_recover: boolean
+  consecutive_failures: number
+  last_failure_reason: string
+  paused_at: string | null
+  pause_reason: string
+  max_failures_before_pause: number
   last_run_at: string | null
   next_run_at: string | null
   created_at: string
@@ -1606,6 +1657,7 @@ export interface CreateScheduledTestPlanRequest {
   enabled?: boolean
   max_results?: number
   auto_recover?: boolean
+  max_failures_before_pause?: number
 }
 
 export interface UpdateScheduledTestPlanRequest {
@@ -1614,4 +1666,5 @@ export interface UpdateScheduledTestPlanRequest {
   enabled?: boolean
   max_results?: number
   auto_recover?: boolean
+  max_failures_before_pause?: number
 }

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,11 +122,18 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) {
+	runFinishedAt := time.Now()
 	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d RunTestBackground error: %v", plan.ID, err)
-		return
+		result = &ScheduledTestResult{
+			Status:       "failed",
+			ErrorMessage: err.Error(),
+			StartedAt:    runFinishedAt,
+			FinishedAt:   runFinishedAt,
+		}
 	}
+	runFinishedAt = time.Now()
 
 	if err := s.scheduledSvc.SaveResult(ctx, plan.ID, plan.MaxResults, result); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d SaveResult error: %v", plan.ID, err)
@@ -135,15 +144,67 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		s.tryRecoverAccount(ctx, plan.AccountID, plan.ID)
 	}
 
-	nextRun, err := computeNextRun(plan.CronExpression, time.Now())
+	update, err := buildScheduledTestRunUpdate(plan, result, runFinishedAt)
 	if err != nil {
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d computeNextRun error: %v", plan.ID, err)
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d build run update error: %v", plan.ID, err)
 		return
 	}
-
-	if err := s.planRepo.UpdateAfterRun(ctx, plan.ID, time.Now(), nextRun); err != nil {
+	if err := s.planRepo.UpdateAfterRun(ctx, update); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
 	}
+}
+
+func buildScheduledTestRunUpdate(plan *ScheduledTestPlan, result *ScheduledTestResult, finishedAt time.Time) (ScheduledTestRunUpdate, error) {
+	update := ScheduledTestRunUpdate{
+		ID:        plan.ID,
+		LastRunAt: finishedAt,
+		Enabled:   plan.Enabled,
+	}
+	if result == nil {
+		result = &ScheduledTestResult{
+			Status:       "failed",
+			ErrorMessage: "scheduled test returned no result",
+		}
+	}
+
+	if result.Status == "success" {
+		nextRun, err := computeNextRun(plan.CronExpression, finishedAt)
+		if err != nil {
+			return ScheduledTestRunUpdate{}, err
+		}
+		update.NextRunAt = &nextRun
+		update.ConsecutiveFailures = 0
+		update.LastFailureReason = ""
+		update.PausedAt = nil
+		update.PauseReason = ""
+		return update, nil
+	}
+
+	update.ConsecutiveFailures = plan.ConsecutiveFailures + 1
+	update.LastFailureReason = strings.TrimSpace(result.ErrorMessage)
+	if update.LastFailureReason == "" {
+		update.LastFailureReason = strings.TrimSpace(result.ResponseText)
+	}
+	if update.LastFailureReason == "" {
+		update.LastFailureReason = "scheduled test failed"
+	}
+	update.PausedAt = nil
+	update.PauseReason = ""
+
+	if plan.MaxFailuresBeforePause > 0 && update.ConsecutiveFailures >= plan.MaxFailuresBeforePause {
+		update.Enabled = false
+		pausedAt := finishedAt
+		update.PausedAt = &pausedAt
+		update.PauseReason = fmt.Sprintf("paused after %d consecutive scheduled test failures", update.ConsecutiveFailures)
+		return update, nil
+	}
+
+	nextRun, err := computeNextRun(plan.CronExpression, finishedAt)
+	if err != nil {
+		return ScheduledTestRunUpdate{}, err
+	}
+	update.NextRunAt = &nextRun
+	return update, nil
 }
 
 // tryRecoverAccount attempts to recover an account from recoverable runtime state.

@@ -120,8 +120,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if cancelQuickFail != nil {
+			cancelQuickFail()
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -132,9 +136,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, newProxyRequestFailoverError(account, proxyURL, err)
 	}
+	resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 	defer func() { _ = resp.Body.Close() }()
 
 	// 8. Handle error response with failover

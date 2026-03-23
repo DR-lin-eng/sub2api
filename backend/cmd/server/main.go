@@ -3,16 +3,12 @@ package main
 //go:generate go run github.com/google/wire/cmd/wire
 
 import (
-	"context"
 	_ "embed"
 	"errors"
 	"flag"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
@@ -145,34 +141,7 @@ func runMainServer() {
 		BuildType: BuildType,
 	}
 
-	app, err := initializeApplication(buildInfo)
-	if err != nil {
-		log.Fatalf("Failed to initialize application: %v", err)
+	if err := runServerProcessModel(cfg, buildInfo); err != nil {
+		log.Fatalf("Server runtime failed: %v", err)
 	}
-	defer app.Cleanup()
-
-	// 启动服务器
-	go func() {
-		if err := app.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Failed to start server: %v", err)
-		}
-	}()
-
-	log.Printf("Server started on %s", app.Server.Addr)
-
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Println("Shutting down server...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
-	}
-
-	log.Println("Server exited")
 }

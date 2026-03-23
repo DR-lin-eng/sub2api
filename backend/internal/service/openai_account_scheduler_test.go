@@ -654,6 +654,137 @@ func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing
 	}
 }
 
+func TestBuildOpenAITieredSelectionOrder_PrefersReadyCandidates(t *testing.T) {
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:   &Account{ID: 801},
+			loadInfo:  &AccountLoadInfo{LoadRate: 5, WaitingCount: 0},
+			score:     9.9,
+			readyTier: 2,
+		},
+		{
+			account:   &Account{ID: 802},
+			loadInfo:  &AccountLoadInfo{LoadRate: 20, WaitingCount: 2},
+			score:     6.0,
+			readyTier: 1,
+		},
+		{
+			account:   &Account{ID: 803},
+			loadInfo:  &AccountLoadInfo{LoadRate: 30, WaitingCount: 0},
+			score:     4.0,
+			readyTier: 0,
+		},
+	}
+	req := OpenAIAccountScheduleRequest{SessionHash: "tiered-ready"}
+
+	order := buildOpenAITieredSelectionOrder(candidates, 1, req)
+	require.Len(t, order, 3)
+	require.Equal(t, int64(803), order[0].account.ID)
+	require.Equal(t, int64(802), order[1].account.ID)
+	require.Equal(t, int64(801), order[2].account.ID)
+}
+
+func TestAdaptiveOpenAISelectionTopK(t *testing.T) {
+	require.Equal(t, 1, adaptiveOpenAISelectionTopK(0, 0, 0))
+	require.Equal(t, 3, adaptiveOpenAISelectionTopK(3, 3, 20))
+	require.Equal(t, 7, adaptiveOpenAISelectionTopK(4, 24, 20))
+	require.Equal(t, 9, adaptiveOpenAISelectionTopK(4, 24, 4))
+	require.Equal(t, 16, adaptiveOpenAISelectionTopK(12, 64, 3))
+}
+
+func TestSelectTopKOpenAICandidates_TieBreakPrefersMoreHeadroom(t *testing.T) {
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:  &Account{ID: 901, Priority: 1},
+			loadInfo: &AccountLoadInfo{CurrentConcurrency: 2, LoadRate: 20, WaitingCount: 0},
+			score:    8.0,
+			slotCap:  3,
+			slotFree: 1,
+		},
+		{
+			account:  &Account{ID: 902, Priority: 1},
+			loadInfo: &AccountLoadInfo{CurrentConcurrency: 0, LoadRate: 20, WaitingCount: 0},
+			score:    8.0,
+			slotCap:  3,
+			slotFree: 3,
+		},
+	}
+
+	ranked := selectTopKOpenAICandidates(candidates, 2)
+	require.Len(t, ranked, 2)
+	require.Equal(t, int64(902), ranked[0].account.ID)
+	require.Equal(t, int64(901), ranked[1].account.ID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PrefersImmediateHeadroom(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(18)
+	accounts := []Account{
+		{
+			ID:          6101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          6102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    0,
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 2
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.5
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.5
+
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			6101: {AccountID: 6101, CurrentConcurrency: 1, LoadRate: 10, WaitingCount: 0},
+			6102: {AccountID: 6102, CurrentConcurrency: 0, LoadRate: 10, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			6101: false,
+			6102: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(6102), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesAcrossSessions(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(15)

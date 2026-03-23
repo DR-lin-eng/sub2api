@@ -14,6 +14,14 @@
               <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
               {{ t('admin.accounts.testConnection') }}
             </button>
+            <button
+              v-if="supportsModelRefresh"
+              @click="$emit('refresh-models', account); $emit('close')"
+              class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700"
+            >
+              <Icon name="refresh" size="sm" class="text-cyan-500" />
+              {{ t('admin.accounts.refreshModels') }}
+            </button>
             <button @click="$emit('stats', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="chart" size="sm" class="text-indigo-500" />
               {{ t('admin.accounts.viewStats') }}
@@ -55,8 +63,13 @@ import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'reset-quota'])
+const emit = defineEmits(['close', 'test', 'refresh-models', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'reset-quota'])
 const { t } = useI18n()
+const supportsModelRefresh = computed(() => {
+  if (!props.account) return false
+  if (props.account.platform === 'openai' || props.account.platform === 'gemini') return true
+  return props.account.platform === 'anthropic' && props.account.type !== 'bedrock'
+})
 const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
     return true

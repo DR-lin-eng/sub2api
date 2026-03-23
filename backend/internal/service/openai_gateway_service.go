@@ -2156,10 +2156,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Send request
 		upstreamStart := time.Now()
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
-			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -2170,14 +2173,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		// Handle error response
 		if resp.StatusCode >= 400 {
@@ -2369,9 +2367,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	upstreamStart := time.Now()
+	upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if cancelQuickFail != nil {
+			cancelQuickFail()
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -2383,14 +2385,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error": gin.H{
-				"type":    "upstream_error",
-				"message": "Upstream request failed",
-			},
-		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, newProxyRequestFailoverError(account, proxyURL, err)
 	}
+	resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
@@ -3818,18 +3815,17 @@ func (s *OpenAIGatewayService) replaceModelInSSEBody(body, fromModel, toModel st
 }
 
 func (s *OpenAIGatewayService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
-		if err != nil {
-			return "", fmt.Errorf("invalid base_url: %w", err)
+	var allowInsecureHTTP bool
+	opts := urlvalidator.ValidationOptions{}
+	if s.cfg != nil {
+		allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		opts = urlvalidator.ValidationOptions{
+			AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+			RequireAllowlist: s.cfg.Security.URLAllowlist.Enabled,
+			AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
 		}
-		return normalized, nil
 	}
-	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
-		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
-	})
+	normalized, err := urlvalidator.ValidateHTTPURL(raw, allowInsecureHTTP, opts)
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
 	}

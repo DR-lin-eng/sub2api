@@ -19,18 +19,24 @@ type accountRepoStubForAdminList struct {
 	listWithFiltersType     string
 	listWithFiltersStatus   string
 	listWithFiltersSearch   string
+	listWithFiltersPlan     string
+	listWithFiltersOAuth    string
+	listWithFiltersTierID   string
 	listWithFiltersAccounts []Account
 	listWithFiltersResult   *pagination.PaginationResult
 	listWithFiltersErr      error
 }
 
-func (s *accountRepoStubForAdminList) ListWithFilters(_ context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64) ([]Account, *pagination.PaginationResult, error) {
+func (s *accountRepoStubForAdminList) ListWithFilters(_ context.Context, params pagination.PaginationParams, platform, accountType, status, search, plan, oauthType, tierID string, groupID int64) ([]Account, *pagination.PaginationResult, error) {
 	s.listWithFiltersCalls++
 	s.listWithFiltersParams = params
 	s.listWithFiltersPlatform = platform
 	s.listWithFiltersType = accountType
 	s.listWithFiltersStatus = status
 	s.listWithFiltersSearch = search
+	s.listWithFiltersPlan = plan
+	s.listWithFiltersOAuth = oauthType
+	s.listWithFiltersTierID = tierID
 
 	if s.listWithFiltersErr != nil {
 		return nil, nil, s.listWithFiltersErr
@@ -168,7 +174,7 @@ func TestAdminService_ListAccounts_WithSearch(t *testing.T) {
 		}
 		svc := &adminServiceImpl{accountRepo: repo}
 
-		accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformGemini, AccountTypeOAuth, StatusActive, "acc", 0)
+		accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformGemini, AccountTypeOAuth, StatusActive, "acc", "plus", "google_one", "2", 0)
 		require.NoError(t, err)
 		require.Equal(t, int64(10), total)
 		require.Equal(t, []Account{{ID: 1, Name: "acc"}}, accounts)
@@ -179,6 +185,9 @@ func TestAdminService_ListAccounts_WithSearch(t *testing.T) {
 		require.Equal(t, AccountTypeOAuth, repo.listWithFiltersType)
 		require.Equal(t, StatusActive, repo.listWithFiltersStatus)
 		require.Equal(t, "acc", repo.listWithFiltersSearch)
+		require.Equal(t, "plus", repo.listWithFiltersPlan)
+		require.Equal(t, "google_one", repo.listWithFiltersOAuth)
+		require.Equal(t, "2", repo.listWithFiltersTierID)
 	})
 }
 

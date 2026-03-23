@@ -205,7 +205,7 @@ func (s *HTTPUpstreamSuite) TestAccountModeProxyChangeClearsPool() {
 }
 
 // TestAccountConcurrencyOverridesPoolSettings 测试账户并发数覆盖连接池配置
-// 验证账户隔离模式下，连接池大小与账户并发数对应
+// 验证账户隔离模式下，空闲池仍贴近账号并发，但活跃连接会保留少量流式头寸
 func (s *HTTPUpstreamSuite) TestAccountConcurrencyOverridesPoolSettings() {
 	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccount}
 	svc := s.newService()
@@ -213,10 +213,20 @@ func (s *HTTPUpstreamSuite) TestAccountConcurrencyOverridesPoolSettings() {
 	entry := mustGetOrCreateClient(s.T(), svc, "", 1, 12)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
-	// 连接池参数应与并发数一致
-	require.Equal(s.T(), 12, transport.MaxConnsPerHost, "MaxConnsPerHost mismatch")
+	require.Equal(s.T(), 15, transport.MaxConnsPerHost, "MaxConnsPerHost should include streaming headroom")
 	require.Equal(s.T(), 12, transport.MaxIdleConns, "MaxIdleConns mismatch")
 	require.Equal(s.T(), 12, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
+}
+
+func (s *HTTPUpstreamSuite) TestAccountConcurrencyLowValueStillAddsTransportHeadroom() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+	entry := mustGetOrCreateClient(s.T(), svc, "", 1, 1)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 3, transport.MaxConnsPerHost, "low concurrency stream pools should still reserve reconnect headroom")
+	require.Equal(s.T(), 1, transport.MaxIdleConns, "MaxIdleConns mismatch")
+	require.Equal(s.T(), 1, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
 }
 
 // TestAccountConcurrencyFallbackToDefault 测试账户并发数为 0 时回退到默认配置

@@ -64,8 +64,11 @@ type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
 type accountWithLoad struct {
-	account  *Account
-	loadInfo *AccountLoadInfo
+	account   *Account
+	loadInfo  *AccountLoadInfo
+	slotCap   int
+	slotFree  int
+	readyTier int
 }
 
 var ForceCacheBillingContextKey = forceCacheBillingKeyType{}
@@ -510,16 +513,309 @@ type UpstreamFailoverError struct {
 	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	TempUnscheduleFor      time.Duration
+	TempUnscheduleReason   string
+	FailedProxyID          int64
+	FailedProxyURL         string
 }
 
 func (e *UpstreamFailoverError) Error() string {
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
 }
 
-// TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
-// 由 handler 层在同账号重试全部用尽、切换账号时调用。
+const proxyRequestFailureCooldown = 10 * time.Minute
+const proxyRequestQuickFailTimeout = 5 * time.Second
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCloseReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return err
+}
+
+func newProxyRequestFailoverError(account *Account, proxyURL string, err error) *UpstreamFailoverError {
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:           http.StatusBadGateway,
+		ResponseBody:         []byte(sanitizeUpstreamErrorMessage(err.Error())),
+		TempUnscheduleFor:    proxyRequestFailureCooldown,
+		TempUnscheduleReason: "upstream request failed via proxy/network (auto temp-unschedule 10m)",
+		FailedProxyURL:       strings.TrimSpace(proxyURL),
+	}
+	if account != nil && account.ProxyID != nil && *account.ProxyID > 0 {
+		failoverErr.FailedProxyID = *account.ProxyID
+	}
+	return failoverErr
+}
+
+func withProxyQuickFailRequest(req *http.Request, proxyURL string) (*http.Request, context.CancelFunc) {
+	if req == nil || strings.TrimSpace(proxyURL) == "" {
+		return req, nil
+	}
+	if deadline, ok := req.Context().Deadline(); ok && time.Until(deadline) <= proxyRequestQuickFailTimeout {
+		return req, nil
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), proxyRequestQuickFailTimeout)
+	return req.WithContext(ctx), cancel
+}
+
+func attachProxyQuickFailCancel(resp *http.Response, cancel context.CancelFunc) *http.Response {
+	if cancel == nil {
+		return resp
+	}
+	if resp == nil || resp.Body == nil {
+		cancel()
+		return resp
+	}
+	resp.Body = &cancelOnCloseReadCloser{
+		ReadCloser: resp.Body,
+		cancel:     cancel,
+	}
+	return resp
+}
+
+func isProxyRequestFailover(failoverErr *UpstreamFailoverError) bool {
+	if failoverErr == nil {
+		return false
+	}
+	if failoverErr.FailedProxyID > 0 || strings.TrimSpace(failoverErr.FailedProxyURL) != "" {
+		return true
+	}
+	if failoverErr.StatusCode != http.StatusBadGateway || failoverErr.TempUnscheduleFor <= 0 {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason))
+	return strings.Contains(reason, "proxy") || strings.Contains(reason, "network")
+}
+
+func proxyFailoverHealthRank(info *ProxyLatencyInfo) int {
+	if info == nil {
+		return 2
+	}
+	if !info.Success {
+		return 5
+	}
+	switch strings.ToLower(strings.TrimSpace(info.QualityStatus)) {
+	case "healthy":
+		return 0
+	case "warn":
+		return 1
+	case "", "unknown":
+		return 2
+	case "challenge":
+		return 4
+	case "failed":
+		return 5
+	default:
+		return 3
+	}
+}
+
+func proxyFailoverLatencyValue(info *ProxyLatencyInfo) int64 {
+	if info == nil || info.LatencyMs == nil || *info.LatencyMs <= 0 {
+		return 1<<62 - 1
+	}
+	return *info.LatencyMs
+}
+
+func selectHealthyProxyFailoverCandidate(
+	proxies []ProxyWithAccountCount,
+	latencies map[int64]*ProxyLatencyInfo,
+	failedProxyID int64,
+) *ProxyWithAccountCount {
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	candidates := make([]ProxyWithAccountCount, 0, len(proxies))
+	for i := range proxies {
+		candidate := proxies[i]
+		if candidate.ID <= 0 || candidate.ID == failedProxyID {
+			continue
+		}
+		if info := latencies[candidate.ID]; info != nil {
+			if info.Success {
+				candidate.LatencyStatus = "success"
+				candidate.LatencyMs = info.LatencyMs
+			} else {
+				candidate.LatencyStatus = "failed"
+				candidate.LatencyMessage = info.Message
+			}
+			candidate.QualityStatus = info.QualityStatus
+			candidate.QualityScore = info.QualityScore
+			candidate.QualityGrade = info.QualityGrade
+			candidate.QualitySummary = info.QualitySummary
+			candidate.Country = info.Country
+			candidate.CountryCode = info.CountryCode
+			candidate.Region = info.Region
+			candidate.City = info.City
+			candidate.IPAddress = info.IPAddress
+		}
+		if proxyFailoverHealthRank(latencies[candidate.ID]) >= 4 {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftInfo := latencies[candidates[i].ID]
+		rightInfo := latencies[candidates[j].ID]
+		leftRank := proxyFailoverHealthRank(leftInfo)
+		rightRank := proxyFailoverHealthRank(rightInfo)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if candidates[i].AccountCount != candidates[j].AccountCount {
+			return candidates[i].AccountCount < candidates[j].AccountCount
+		}
+		leftLatency := proxyFailoverLatencyValue(leftInfo)
+		rightLatency := proxyFailoverLatencyValue(rightInfo)
+		if leftLatency != rightLatency {
+			return leftLatency < rightLatency
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+
+	best := candidates[0]
+	return &best
+}
+
+func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) bool {
+	if s == nil || s.accountRepo == nil || s.proxyRepo == nil || failoverErr == nil || !isProxyRequestFailover(failoverErr) {
+		return false
+	}
+
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		logger.LegacyPrintf("service.gateway", "[handler] load_account_for_proxy_reassign_failed account=%d error=%v", accountID, err)
+		return false
+	}
+	if account == nil || account.ProxyID == nil || *account.ProxyID <= 0 {
+		return false
+	}
+
+	failedProxyID := failoverErr.FailedProxyID
+	if failedProxyID <= 0 {
+		failedProxyID = *account.ProxyID
+	}
+	if *account.ProxyID != failedProxyID {
+		logger.LegacyPrintf(
+			"service.gateway",
+			"[handler] skip_proxy_reassign_stale_failure account=%d failed_proxy=%d current_proxy=%d",
+			account.ID,
+			failedProxyID,
+			*account.ProxyID,
+		)
+		account.TempUnschedulableUntil = nil
+		account.TempUnschedulableReason = ""
+		if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
+			logger.LegacyPrintf("service.gateway", "[handler] clear_stale_temp_unschedule_failed account=%d error=%v", account.ID, err)
+		}
+		if s.schedulerSnapshot != nil {
+			if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
+				logger.LegacyPrintf("service.gateway", "[handler] sync_stale_proxy_reassign_cache_failed account=%d error=%v", account.ID, err)
+			}
+		}
+		return true
+	}
+
+	proxies, err := s.proxyRepo.ListActiveWithAccountCount(ctx)
+	if err != nil {
+		logger.LegacyPrintf("service.gateway", "[handler] list_active_proxies_for_reassign_failed account=%d error=%v", account.ID, err)
+		return false
+	}
+
+	latencies := map[int64]*ProxyLatencyInfo{}
+	if s.proxyLatencyCache != nil {
+		proxyIDs := make([]int64, 0, len(proxies))
+		for i := range proxies {
+			proxyIDs = append(proxyIDs, proxies[i].ID)
+		}
+		latencies, err = s.proxyLatencyCache.GetProxyLatencies(ctx, proxyIDs)
+		if err != nil {
+			logger.LegacyPrintf("service.gateway", "[handler] load_proxy_latency_for_reassign_failed account=%d error=%v", account.ID, err)
+			latencies = map[int64]*ProxyLatencyInfo{}
+		}
+	}
+
+	candidate := selectHealthyProxyFailoverCandidate(proxies, latencies, failedProxyID)
+	if candidate == nil {
+		return false
+	}
+
+	newProxyID := candidate.ID
+	account.ProxyID = &newProxyID
+	account.Proxy = &candidate.Proxy
+	account.TempUnschedulableUntil = nil
+	account.TempUnschedulableReason = ""
+
+	if err := s.accountRepo.Update(ctx, account); err != nil {
+		logger.LegacyPrintf(
+			"service.gateway",
+			"[handler] proxy_reassign_update_failed account=%d old_proxy=%d new_proxy=%d error=%v",
+			account.ID,
+			failedProxyID,
+			newProxyID,
+			err,
+		)
+		return false
+	}
+	if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
+		logger.LegacyPrintf("service.gateway", "[handler] clear_temp_unschedule_after_proxy_reassign_failed account=%d error=%v", account.ID, err)
+	}
+	if s.schedulerSnapshot != nil {
+		if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
+			logger.LegacyPrintf("service.gateway", "[handler] sync_proxy_reassign_cache_failed account=%d error=%v", account.ID, err)
+		}
+	}
+
+	qualityStatus := ""
+	if info := latencies[newProxyID]; info != nil {
+		qualityStatus = strings.TrimSpace(info.QualityStatus)
+	}
+	logger.LegacyPrintf(
+		"service.gateway",
+		"[handler] proxy_reassigned account=%d old_proxy=%d new_proxy=%d new_proxy_accounts=%d new_proxy_quality=%q",
+		account.ID,
+		failedProxyID,
+		newProxyID,
+		candidate.AccountCount,
+		qualityStatus,
+	)
+	return true
+}
+
+// TempUnscheduleRetryableError 在需要切号时优先尝试代理自动迁移；
+// 迁移失败后再按既有策略执行临时下线。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
-	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
+	if failoverErr == nil {
+		return
+	}
+	if s.tryAutoReassignFailedProxy(ctx, accountID, failoverErr) {
+		return
+	}
+	if failoverErr.TempUnscheduleFor > 0 {
+		until := time.Now().Add(failoverErr.TempUnscheduleFor)
+		reason := strings.TrimSpace(failoverErr.TempUnscheduleReason)
+		if reason == "" {
+			reason = "auto temp-unschedule"
+		}
+		if err := s.accountRepo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+			logger.LegacyPrintf("service.gateway", "[handler] temp_unschedule_failed account=%d error=%v", accountID, err)
+		} else {
+			logger.LegacyPrintf("service.gateway", "[handler] temp_unscheduled account=%d until=%s reason=%q", accountID, until.Format(time.RFC3339), reason)
+		}
+		return
+	}
+	if !failoverErr.RetryableOnSameAccount {
 		return
 	}
 	// 根据状态码选择封禁策略
@@ -563,6 +859,8 @@ type GatewayService struct {
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
 	debugClaudeMimic      atomic.Bool
+	proxyRepo             ProxyRepository
+	proxyLatencyCache     ProxyLatencyCache
 }
 
 // NewGatewayService creates a new GatewayService
@@ -631,6 +929,14 @@ func NewGatewayService(
 	svc.debugModelRouting.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
 	svc.debugClaudeMimic.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
 	return svc
+}
+
+func (s *GatewayService) SetProxyFailoverDeps(proxyRepo ProxyRepository, proxyLatencyCache ProxyLatencyCache) {
+	if s == nil {
+		return
+	}
+	s.proxyRepo = proxyRepo
+	s.proxyLatencyCache = proxyLatencyCache
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -1671,21 +1977,29 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
+			readyTier, slotCap, slotFree := gatewayAccountReadyTier(acc, loadInfo)
 			if loadInfo.LoadRate < 100 {
 				available = append(available, accountWithLoad{
-					account:  acc,
-					loadInfo: loadInfo,
+					account:   acc,
+					loadInfo:  loadInfo,
+					slotCap:   slotCap,
+					slotFree:  slotFree,
+					readyTier: readyTier,
 				})
 			}
 		}
 
-		// 分层过滤选择：优先级 → 负载率 → LRU
+		// 分层过滤选择：优先级 → 即时可服务能力 → 剩余槽位 → 负载率 → LRU
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
-			// 2. 取负载率最低的集合
+			// 2. 取 ready tier 最佳的集合（优先有空槽且无排队）
+			candidates = filterByBestReadyTier(candidates)
+			// 3. 取剩余槽位最多的集合
+			candidates = filterByMaxSlotFree(candidates)
+			// 4. 取负载率最低的集合
 			candidates = filterByMinLoadRate(candidates)
-			// 3. LRU 选择最久未用的账号
+			// 5. LRU 选择最久未用的账号
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
@@ -2491,6 +2805,76 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	result := make([]accountWithLoad, 0, len(accounts))
 	for _, acc := range accounts {
 		if acc.loadInfo.LoadRate == minLoadRate {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
+func gatewayAccountSlotCapacity(account *Account) int {
+	if account == nil {
+		return 1
+	}
+	if account.Concurrency > 0 {
+		return account.Concurrency
+	}
+	if fallback := account.EffectiveLoadFactor(); fallback > 0 {
+		return fallback
+	}
+	return 1
+}
+
+func gatewayAccountReadyTier(account *Account, loadInfo *AccountLoadInfo) (tier int, slotCap int, slotFree int) {
+	slotCap = gatewayAccountSlotCapacity(account)
+	if loadInfo == nil {
+		return 0, slotCap, slotCap
+	}
+	slotFree = slotCap - loadInfo.CurrentConcurrency
+	if slotFree < 0 {
+		slotFree = 0
+	}
+	switch {
+	case slotFree > 0 && loadInfo.WaitingCount <= 0:
+		return 0, slotCap, slotFree
+	case slotFree > 0:
+		return 1, slotCap, slotFree
+	default:
+		return 2, slotCap, slotFree
+	}
+}
+
+func filterByBestReadyTier(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	bestTier := accounts[0].readyTier
+	for _, acc := range accounts[1:] {
+		if acc.readyTier < bestTier {
+			bestTier = acc.readyTier
+		}
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.readyTier == bestTier {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
+func filterByMaxSlotFree(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	maxSlotFree := accounts[0].slotFree
+	for _, acc := range accounts[1:] {
+		if acc.slotFree > maxSlotFree {
+			maxSlotFree = acc.slotFree
+		}
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.slotFree == maxSlotFree {
 			result = append(result, acc)
 		}
 	}
@@ -4135,12 +4519,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		// 发送请求
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 		if err != nil {
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -4151,15 +4538,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
@@ -4616,8 +4997,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, err
 		}
 
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 		if err != nil {
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
@@ -4632,15 +5017,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
@@ -5332,8 +5711,12 @@ func (s *GatewayService) executeBedrockUpstream(
 			return nil, err
 		}
 
+		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, false)
 		if err != nil {
+			if cancelQuickFail != nil {
+				cancelQuickFail()
+			}
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
@@ -5347,15 +5730,9 @@ func (s *GatewayService) executeBedrockUpstream(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+			return nil, newProxyRequestFailoverError(account, proxyURL, err)
 		}
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
@@ -8332,18 +8709,17 @@ func (s *GatewayService) countTokensError(c *gin.Context, status int, errType, m
 }
 
 func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
-		if err != nil {
-			return "", fmt.Errorf("invalid base_url: %w", err)
+	var allowInsecureHTTP bool
+	opts := urlvalidator.ValidationOptions{}
+	if s.cfg != nil {
+		allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		opts = urlvalidator.ValidationOptions{
+			AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+			RequireAllowlist: s.cfg.Security.URLAllowlist.Enabled,
+			AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
 		}
-		return normalized, nil
 	}
-	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
-		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
-	})
+	normalized, err := urlvalidator.ValidateHTTPURL(raw, allowInsecureHTTP, opts)
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
 	}
@@ -8388,11 +8764,18 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts = filtered
 	}
 
-	// Collect unique models from all accounts
+	// Collect unique models from fetched upstream lists first, then fall back to model_mapping.
 	modelSet := make(map[string]struct{})
 	hasAnyMapping := false
 
 	for _, acc := range accounts {
+		if fetched := acc.GetFetchedModelIDs(); len(fetched) > 0 {
+			hasAnyMapping = true
+			for _, model := range fetched {
+				modelSet[model] = struct{}{}
+			}
+			continue
+		}
 		mapping := acc.GetModelMapping()
 		if len(mapping) > 0 {
 			hasAnyMapping = true

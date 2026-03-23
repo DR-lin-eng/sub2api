@@ -119,8 +119,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if cancelQuickFail != nil {
+			cancelQuickFail()
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -131,9 +135,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream request failed")
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, newProxyRequestFailoverError(account, proxyURL, err)
 	}
+	resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
 	defer func() { _ = resp.Body.Close() }()
 
 	// 8. Handle error response with failover

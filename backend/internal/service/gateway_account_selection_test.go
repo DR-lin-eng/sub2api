@@ -151,6 +151,65 @@ func TestFilterByMinLoadRate_SelectsMinLoadRate(t *testing.T) {
 	require.Equal(t, int64(3), result[1].account.ID)
 }
 
+func TestGatewayAccountReadyTier(t *testing.T) {
+	account := &Account{Concurrency: 3}
+
+	tier, slotCap, slotFree := gatewayAccountReadyTier(account, nil)
+	require.Equal(t, 0, tier)
+	require.Equal(t, 3, slotCap)
+	require.Equal(t, 3, slotFree)
+
+	tier, slotCap, slotFree = gatewayAccountReadyTier(account, &AccountLoadInfo{
+		CurrentConcurrency: 1,
+		WaitingCount:       0,
+	})
+	require.Equal(t, 0, tier)
+	require.Equal(t, 3, slotCap)
+	require.Equal(t, 2, slotFree)
+
+	tier, slotCap, slotFree = gatewayAccountReadyTier(account, &AccountLoadInfo{
+		CurrentConcurrency: 1,
+		WaitingCount:       2,
+	})
+	require.Equal(t, 1, tier)
+	require.Equal(t, 2, slotFree)
+
+	tier, slotCap, slotFree = gatewayAccountReadyTier(account, &AccountLoadInfo{
+		CurrentConcurrency: 3,
+		WaitingCount:       0,
+	})
+	require.Equal(t, 2, tier)
+	require.Equal(t, 0, slotFree)
+}
+
+func TestFilterByBestReadyTier(t *testing.T) {
+	accounts := []accountWithLoad{
+		{account: &Account{ID: 1}, readyTier: 2},
+		{account: &Account{ID: 2}, readyTier: 0},
+		{account: &Account{ID: 3}, readyTier: 1},
+		{account: &Account{ID: 4}, readyTier: 0},
+	}
+
+	result := filterByBestReadyTier(accounts)
+	require.Len(t, result, 2)
+	require.Equal(t, int64(2), result[0].account.ID)
+	require.Equal(t, int64(4), result[1].account.ID)
+}
+
+func TestFilterByMaxSlotFree(t *testing.T) {
+	accounts := []accountWithLoad{
+		{account: &Account{ID: 1}, slotFree: 1},
+		{account: &Account{ID: 2}, slotFree: 3},
+		{account: &Account{ID: 3}, slotFree: 3},
+		{account: &Account{ID: 4}, slotFree: 2},
+	}
+
+	result := filterByMaxSlotFree(accounts)
+	require.Len(t, result, 2)
+	require.Equal(t, int64(2), result[0].account.ID)
+	require.Equal(t, int64(3), result[1].account.ID)
+}
+
 // --- selectByLRU ---
 
 func TestSelectByLRU_Empty(t *testing.T) {

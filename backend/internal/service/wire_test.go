@@ -35,3 +35,17 @@ func TestProvideTimingWheelService_Success(t *testing.T) {
 	}
 	svc.Stop()
 }
+
+func TestProvideTimingWheelService_SuccessWithCoordinatorRole(t *testing.T) {
+	t.Setenv(processRoleEnvVar, "coordinator")
+	t.Setenv(backgroundServicesEnvVar, "false")
+
+	svc, err := ProvideTimingWheelService()
+	if err != nil {
+		t.Fatalf("期望 err 为 nil，但得到: %v", err)
+	}
+	if svc == nil {
+		t.Fatalf("期望 svc 非空，但得到 nil")
+	}
+	svc.Stop()
+}

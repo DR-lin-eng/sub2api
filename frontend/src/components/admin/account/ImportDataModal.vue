@@ -40,6 +40,16 @@
         />
       </div>
 
+      <div v-if="groups.length > 0" class="space-y-2">
+        <div class="text-sm text-gray-700 dark:text-dark-200">
+          {{ t('admin.accounts.importBindGroups') }}
+        </div>
+        <div class="text-xs text-gray-500 dark:text-dark-400">
+          {{ t('admin.accounts.importBindGroupsHint') }}
+        </div>
+        <GroupSelector v-model="selectedGroupIDs" :groups="groups" />
+      </div>
+
       <div
         v-if="result"
         class="space-y-2 rounded-xl border border-gray-200 p-4 dark:border-dark-700"
@@ -88,12 +98,14 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import GroupSelector from '@/components/common/GroupSelector.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminDataImportResult } from '@/types'
+import type { AdminDataImportResult, AdminGroup } from '@/types'
 
 interface Props {
   show: boolean
+  groups?: AdminGroup[]
 }
 
 interface Emits {
@@ -110,9 +122,11 @@ const appStore = useAppStore()
 const importing = ref(false)
 const file = ref<File | null>(null)
 const result = ref<AdminDataImportResult | null>(null)
+const selectedGroupIDs = ref<number[]>([])
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
+const groups = computed(() => props.groups || [])
 
 const errorItems = computed(() => result.value?.errors || [])
 
@@ -122,6 +136,7 @@ watch(
     if (open) {
       file.value = null
       result.value = null
+      selectedGroupIDs.value = []
       if (fileInput.value) {
         fileInput.value.value = ''
       }
@@ -174,6 +189,7 @@ const handleImport = async () => {
 
     const res = await adminAPI.accounts.importData({
       data: dataPayload,
+      group_ids: selectedGroupIDs.value,
       skip_default_group_bind: true
     })
 

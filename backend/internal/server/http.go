@@ -59,10 +59,11 @@ func ProvideRouter(
 	return SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
 }
 
-// ProvideHTTPServer 提供 HTTP 服务器
-func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
-	httpHandler := http.Handler(router)
-
+// BuildHTTPHandler wraps the base HTTP handler with server-level transport features
+// such as max request body size and optional h2c support. The returned handler can
+// be attached to any http.Server and served from an injected listener.
+func BuildHTTPHandler(cfg *config.Config, base http.Handler) http.Handler {
+	httpHandler := base
 	globalMaxSize := cfg.Server.MaxRequestBodySize
 	if globalMaxSize <= 0 {
 		globalMaxSize = cfg.Gateway.MaxBodySize
@@ -75,7 +76,7 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 	// 根据配置决定是否启用 H2C
 	if cfg.Server.H2C.Enabled {
 		h2cConfig := cfg.Server.H2C
-		httpHandler = h2c.NewHandler(router, &http2.Server{
+		httpHandler = h2c.NewHandler(httpHandler, &http2.Server{
 			MaxConcurrentStreams:         h2cConfig.MaxConcurrentStreams,
 			IdleTimeout:                  time.Duration(h2cConfig.IdleTimeout) * time.Second,
 			MaxReadFrameSize:             uint32(h2cConfig.MaxReadFrameSize),
@@ -91,9 +92,16 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 		)
 	}
 
+	return httpHandler
+}
+
+// NewHTTPServer constructs an http.Server from config and a prebuilt handler.
+// It is safe to call Serve(listener) on the returned server for injected-listener
+// runtimes such as master-worker supervision.
+func NewHTTPServer(cfg *config.Config, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:    cfg.Server.Address(),
-		Handler: httpHandler,
+		Handler: handler,
 		// ReadHeaderTimeout: 读取请求头的超时时间，防止慢速请求头攻击
 		ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout) * time.Second,
 		// IdleTimeout: 空闲连接超时时间，释放不活跃的连接资源
@@ -101,4 +109,9 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 		// 注意：不设置 WriteTimeout，因为流式响应可能持续十几分钟
 		// 不设置 ReadTimeout，因为大请求体可能需要较长时间读取
 	}
+}
+
+// ProvideHTTPServer 提供 HTTP 服务器
+func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
+	return NewHTTPServer(cfg, BuildHTTPHandler(cfg, router))
 }

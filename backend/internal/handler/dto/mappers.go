@@ -196,7 +196,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Notes:                   a.Notes,
 		Platform:                a.Platform,
 		Type:                    a.Type,
-		Credentials:             a.Credentials,
+		Credentials:             service.MaskSensitiveCredentials(a.Credentials),
 		Extra:                   a.Extra,
 		ProxyID:                 a.ProxyID,
 		Concurrency:             a.Concurrency,

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -15,8 +16,10 @@ import (
 )
 
 const (
-	RunModeStandard = "standard"
-	RunModeSimple   = "simple"
+	RunModeStandard         = "standard"
+	RunModeSimple           = "simple"
+	ProcessModeSingle       = "single"
+	ProcessModeMasterWorker = "master_worker"
 )
 
 // 使用量记录队列溢出策略
@@ -76,6 +79,7 @@ type Config struct {
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
+	Process                 ProcessConfig                 `mapstructure:"process"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	Sora                    SoraConfig                    `mapstructure:"sora"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -301,6 +305,18 @@ type CircuitBreakerConfig struct {
 type ConcurrencyConfig struct {
 	// PingInterval: 并发等待期间的 SSE ping 间隔（秒）
 	PingInterval int `mapstructure:"ping_interval"`
+}
+
+type ProcessConfig struct {
+	Mode                           string `mapstructure:"mode"`
+	WorkerCount                    int    `mapstructure:"worker_count"`
+	GracefulShutdownTimeoutSeconds int    `mapstructure:"graceful_shutdown_timeout_seconds"`
+	WorkerReadyTimeoutSeconds      int    `mapstructure:"worker_ready_timeout_seconds"`
+	ReloadTimeoutSeconds           int    `mapstructure:"reload_timeout_seconds"`
+	RespawnBackoffMS               int    `mapstructure:"respawn_backoff_ms"`
+	LogReopenSignalEnabled         bool   `mapstructure:"log_reopen_signal_enabled"`
+	ConfigReloadSignalEnabled      bool   `mapstructure:"config_reload_signal_enabled"`
+	EnableCPUAffinity              bool   `mapstructure:"enable_cpu_affinity"`
 }
 
 // SoraConfig 直连 Sora 配置
@@ -1043,6 +1059,10 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	cfg.Process.Mode = strings.ToLower(strings.TrimSpace(cfg.Process.Mode))
+	if cfg.Process.Mode == "" {
+		cfg.Process.Mode = ProcessModeSingle
+	}
 
 	// 兼容旧键 gateway.openai_ws.sticky_previous_response_ttl_seconds。
 	// 新键未配置（<=0）时回退旧键；新键优先。
@@ -1449,6 +1469,17 @@ func setDefaults() {
 	viper.SetDefault("gateway.tls_fingerprint.enabled", true)
 	viper.SetDefault("concurrency.ping_interval", 10)
 
+	// Process model
+	viper.SetDefault("process.mode", ProcessModeSingle)
+	viper.SetDefault("process.worker_count", 0)
+	viper.SetDefault("process.graceful_shutdown_timeout_seconds", 30)
+	viper.SetDefault("process.worker_ready_timeout_seconds", 20)
+	viper.SetDefault("process.reload_timeout_seconds", 60)
+	viper.SetDefault("process.respawn_backoff_ms", 2000)
+	viper.SetDefault("process.log_reopen_signal_enabled", true)
+	viper.SetDefault("process.config_reload_signal_enabled", true)
+	viper.SetDefault("process.enable_cpu_affinity", false)
+
 	// Sora 直连配置
 	viper.SetDefault("sora.client.base_url", "https://sora.chatgpt.com/backend")
 	viper.SetDefault("sora.client.timeout_seconds", 120)
@@ -1592,6 +1623,31 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("server.frontend_url invalid: must not include userinfo")
 		}
 		warnIfInsecureURL("server.frontend_url", c.Server.FrontendURL)
+	}
+	switch c.Process.Mode {
+	case ProcessModeSingle, ProcessModeMasterWorker:
+	case "":
+		return fmt.Errorf("process.mode is required")
+	default:
+		return fmt.Errorf("process.mode must be one of: %s/%s", ProcessModeSingle, ProcessModeMasterWorker)
+	}
+	if c.Process.WorkerCount < 0 {
+		return fmt.Errorf("process.worker_count must be non-negative")
+	}
+	if c.Process.GracefulShutdownTimeoutSeconds <= 0 {
+		return fmt.Errorf("process.graceful_shutdown_timeout_seconds must be positive")
+	}
+	if c.Process.WorkerReadyTimeoutSeconds <= 0 {
+		return fmt.Errorf("process.worker_ready_timeout_seconds must be positive")
+	}
+	if c.Process.ReloadTimeoutSeconds <= 0 {
+		return fmt.Errorf("process.reload_timeout_seconds must be positive")
+	}
+	if c.Process.RespawnBackoffMS < 0 {
+		return fmt.Errorf("process.respawn_backoff_ms must be non-negative")
+	}
+	if c.Process.Mode == ProcessModeMasterWorker && c.Process.EnableCPUAffinity && runtime.GOOS != "linux" {
+		slog.Warn("process.enable_cpu_affinity is only effective on linux; ignoring on current platform", "goos", runtime.GOOS)
 	}
 	if c.JWT.ExpireHour <= 0 {
 		return fmt.Errorf("jwt.expire_hour must be positive")

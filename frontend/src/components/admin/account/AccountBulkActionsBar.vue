@@ -19,6 +19,7 @@
       </button>
     </div>
     <div class="flex gap-2">
+      <button @click="$emit('batch-test')" class="btn btn-secondary btn-sm">{{ t('admin.accounts.bulkActions.batchTest') }}</button>
       <button @click="$emit('delete')" class="btn btn-danger btn-sm">{{ t('admin.accounts.bulkActions.delete') }}</button>
       <button @click="$emit('reset-status')" class="btn btn-secondary btn-sm">{{ t('admin.accounts.bulkActions.resetStatus') }}</button>
       <button @click="$emit('refresh-token')" class="btn btn-secondary btn-sm">{{ t('admin.accounts.bulkActions.refreshToken') }}</button>
@@ -31,5 +32,5 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-defineProps(['selectedIds']); defineEmits(['delete', 'edit', 'clear', 'select-page', 'toggle-schedulable', 'reset-status', 'refresh-token']); const { t } = useI18n()
+defineProps(['selectedIds']); defineEmits(['batch-test', 'delete', 'edit', 'clear', 'select-page', 'toggle-schedulable', 'reset-status', 'refresh-token']); const { t } = useI18n()
 </script>
