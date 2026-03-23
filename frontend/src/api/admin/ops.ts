@@ -459,6 +459,21 @@ export interface OpenAIWSRuntimeResponse {
     retry_exhausted_total?: number
     non_retryable_fast_fallback_total?: number
   }
+  passthrough?: Record<string, number>
+  relay?: {
+    incomplete_close_total?: number
+    client_write_blocked_total?: number
+    final_flush_fail_total?: number
+    first_token_after_header_ms_total?: number
+    first_token_after_header_count?: number
+    stream_closed_after_content_total?: number
+  }
+  circuits?: {
+    open_proxy_count?: number
+    open_account_count?: number
+    proxies?: Array<Record<string, any>>
+    accounts?: Array<Record<string, any>>
+  }
   transport?: Record<string, any>
   timestamp: string
 }
@@ -481,10 +496,11 @@ export async function getUserConcurrencyStats(): Promise<OpsUserConcurrencyStats
   return data
 }
 
-export async function getGatewaySchedulerRuntime(platform?: string, groupId?: number | null): Promise<GatewaySchedulerRuntimeResponse> {
+export async function getGatewaySchedulerRuntime(platform?: string, groupId?: number | null, limit?: number): Promise<GatewaySchedulerRuntimeResponse> {
   const params: Record<string, any> = {}
   if (platform) params.platform = platform
   if (typeof groupId === 'number' && groupId > 0) params.group_id = groupId
+  if (typeof limit === 'number' && limit > 0) params.limit = limit
   const { data } = await apiClient.get<GatewaySchedulerRuntimeResponse>('/admin/ops/gateway-scheduler', { params })
   return data
 }
@@ -930,6 +946,9 @@ export interface OpsAdvancedSettings {
   display_alert_events: boolean
   auto_refresh_enabled: boolean
   auto_refresh_interval_seconds: number
+  lazy_runtime_cards: boolean
+  realtime_summary_limit: number
+  pause_refresh_when_hidden: boolean
 }
 
 export interface OpsDataRetentionSettings {

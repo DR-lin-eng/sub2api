@@ -103,6 +103,9 @@ type OpsAdvancedSettings struct {
 	DisplayAlertEvents              bool                     `json:"display_alert_events"`
 	AutoRefreshEnabled              bool                     `json:"auto_refresh_enabled"`
 	AutoRefreshIntervalSec          int                      `json:"auto_refresh_interval_seconds"`
+	LazyRuntimeCards                bool                     `json:"lazy_runtime_cards"`
+	RealtimeSummaryLimit            int                      `json:"realtime_summary_limit"`
+	PauseRefreshWhenHidden          bool                     `json:"pause_refresh_when_hidden"`
 }
 
 type OpsDataRetentionSettings struct {

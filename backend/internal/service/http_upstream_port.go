@@ -1,6 +1,10 @@
 package service
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+	"time"
+)
 
 // HTTPUpstream 上游 HTTP 请求接口
 // 用于向上游 API（Claude、OpenAI、Gemini 等）发送请求
@@ -68,4 +72,36 @@ type HTTPUpstreamMetricsSnapshot struct {
 
 type HTTPUpstreamMetricsProvider interface {
 	SnapshotMetrics() HTTPUpstreamMetricsSnapshot
+}
+
+type upstreamTransportOverrideContextKey struct{}
+
+// UpstreamTransportOverride carries request-scoped transport timeout overrides.
+type UpstreamTransportOverride struct {
+	DialTimeout           time.Duration
+	ResponseHeaderTimeout time.Duration
+}
+
+func WithUpstreamTransportOverride(ctx context.Context, override UpstreamTransportOverride) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if override.DialTimeout <= 0 && override.ResponseHeaderTimeout <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamTransportOverrideContextKey{}, override)
+}
+
+func GetUpstreamTransportOverride(ctx context.Context) (UpstreamTransportOverride, bool) {
+	if ctx == nil {
+		return UpstreamTransportOverride{}, false
+	}
+	override, ok := ctx.Value(upstreamTransportOverrideContextKey{}).(UpstreamTransportOverride)
+	if !ok {
+		return UpstreamTransportOverride{}, false
+	}
+	if override.DialTimeout <= 0 && override.ResponseHeaderTimeout <= 0 {
+		return UpstreamTransportOverride{}, false
+	}
+	return override, true
 }

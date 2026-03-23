@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -61,11 +63,32 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	require.Equal(s.T(), 7*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
+func (s *HTTPUpstreamSuite) TestRequestScopedTransportOverride() {
+	svc := s.newService()
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/test", nil)
+	require.NoError(s.T(), err)
+	req = req.WithContext(service.WithUpstreamTransportOverride(context.Background(), service.UpstreamTransportOverride{
+		DialTimeout:           3 * time.Second,
+		ResponseHeaderTimeout: 11 * time.Second,
+	}))
+
+	settings := svc.resolvePoolSettingsForRequest(req, config.ConnectionPoolIsolationAccount, 1)
+	require.Equal(s.T(), 3*time.Second, settings.dialTimeout)
+	require.Equal(s.T(), 11*time.Second, settings.responseHeaderTimeout)
+
+	entry, err := svc.getClientEntry(req, "", 1, 1, false, false)
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.NotNil(s.T(), transport.DialContext)
+	require.Equal(s.T(), 11*time.Second, transport.ResponseHeaderTimeout)
+}
+
 // TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
 // 验证解析失败时拒绝回退到直连模式
 func (s *HTTPUpstreamSuite) TestGetOrCreateClient_InvalidURLReturnsError() {
 	svc := s.newService()
-	_, err := svc.getClientEntry("://bad-proxy-url", 1, 1, false, false)
+	_, err := svc.getClientEntry(nil, "://bad-proxy-url", 1, 1, false, false)
 	require.Error(s.T(), err, "expected error for invalid proxy URL")
 }
 
@@ -87,11 +110,11 @@ func (s *HTTPUpstreamSuite) TestAcquireClient_OverLimitReturnsError() {
 		MaxUpstreamClients:      1,
 	}
 	svc := s.newService()
-	entry1, err := svc.acquireClient("http://proxy-a:8080", 1, 1)
+	entry1, err := svc.acquireClient(nil, "http://proxy-a:8080", 1, 1)
 	require.NoError(s.T(), err, "expected first acquire to succeed")
 	require.NotNil(s.T(), entry1, "expected entry")
 
-	entry2, err := svc.acquireClient("http://proxy-b:8080", 2, 1)
+	entry2, err := svc.acquireClient(nil, "http://proxy-b:8080", 2, 1)
 	require.Error(s.T(), err, "expected error when cache limit reached")
 	require.Nil(s.T(), entry2, "expected nil entry when cache limit reached")
 }

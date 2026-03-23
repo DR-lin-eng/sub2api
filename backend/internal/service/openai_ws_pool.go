@@ -21,6 +21,7 @@ const (
 	openAIWSConnMaxAge             = 60 * time.Minute
 	openAIWSConnHealthCheckIdle    = 90 * time.Second
 	openAIWSConnHealthCheckTO      = 2 * time.Second
+	openAIWSBackgroundPingTimeout  = 5 * time.Second
 	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
 	openAIWSAcquireCleanupInterval = 3 * time.Second
 	openAIWSBackgroundPingInterval = 30 * time.Second
@@ -430,6 +431,7 @@ func (c *openAIWSConn) pingWithTimeout(timeout time.Duration) error {
 	if err := c.ws.Ping(pingCtx); err != nil {
 		return err
 	}
+	c.touch()
 	return nil
 }
 
@@ -685,7 +687,7 @@ func (p *openAIWSConnPool) runBackgroundPingSweep() {
 			continue
 		}
 		g.Go(func() error {
-			if err := item.conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+			if err := item.conn.pingWithTimeout(openAIWSBackgroundPingTimeout); err != nil {
 				p.evictConn(item.accountID, item.conn.id)
 			}
 			return nil
@@ -699,6 +701,7 @@ func (p *openAIWSConnPool) snapshotIdleConnsForPing() []openAIWSIdlePingCandidat
 		return nil
 	}
 	candidates := make([]openAIWSIdlePingCandidate, 0)
+	now := time.Now()
 	p.accounts.Range(func(key, value any) bool {
 		accountID, ok := key.(int64)
 		if !ok || accountID <= 0 {
@@ -711,6 +714,9 @@ func (p *openAIWSConnPool) snapshotIdleConnsForPing() []openAIWSIdlePingCandidat
 		ap.mu.Lock()
 		for _, conn := range ap.conns {
 			if conn == nil || conn.isLeased() || conn.waiters.Load() > 0 {
+				continue
+			}
+			if conn.idleDuration(now) < openAIWSConnHealthCheckIdle {
 				continue
 			}
 			candidates = append(candidates, openAIWSIdlePingCandidate{

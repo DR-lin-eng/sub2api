@@ -93,15 +93,22 @@
         />
       </div>
 
-      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <div
+        v-if="opsEnabled && !(loading && !hasLoadedOnce)"
+        ref="runtimeCardsSection"
+        class="grid grid-cols-1 gap-6 xl:grid-cols-2"
+      >
         <OpsGatewaySchedulerCard
           :platform-filter="platform"
           :group-id-filter="groupId"
           :refresh-token="dashboardRefreshToken"
+          :active="runtimeCardsActive"
+          :summary-limit="runtimeSummaryLimit"
         />
         <OpsOpenAIWSRuntimeCard
           :platform-filter="platform"
           :refresh-token="dashboardRefreshToken"
+          :active="runtimeCardsActive"
         />
       </div>
 
@@ -400,6 +407,19 @@ const showOpenAITokenStats = ref(false)
 const autoRefreshEnabled = ref(false)
 const autoRefreshIntervalMs = ref(30000) // default 30 seconds
 const autoRefreshCountdown = ref(0)
+const lazyRuntimeCards = ref(true)
+const runtimeSummaryLimit = ref(6)
+const pauseRefreshWhenHidden = ref(true)
+const pageVisible = ref(typeof document === 'undefined' ? true : document.visibilityState !== 'hidden')
+const runtimeCardsVisible = ref(false)
+const runtimeCardsSection = ref<HTMLElement | null>(null)
+let runtimeCardsObserver: IntersectionObserver | null = null
+const runtimeCardsActive = computed(() => {
+  const visibleForRefresh = !pauseRefreshWhenHidden.value || pageVisible.value
+  if (!visibleForRefresh) return false
+  if (!lazyRuntimeCards.value) return true
+  return runtimeCardsVisible.value
+})
 
 // Used to trigger child component refreshes in a single shared cadence.
 const dashboardRefreshToken = ref(0)
@@ -409,6 +429,7 @@ const { pause: pauseCountdown, resume: resumeCountdown } = useIntervalFn(
   () => {
     if (!autoRefreshEnabled.value) return
     if (!opsEnabled.value) return
+    if (pauseRefreshWhenHidden.value && !pageVisible.value) return
     if (loading.value) return
 
     if (autoRefreshCountdown.value <= 0) {
@@ -433,6 +454,9 @@ async function loadDashboardAdvancedSettings() {
     autoRefreshEnabled.value = settings.auto_refresh_enabled
     autoRefreshIntervalMs.value = settings.auto_refresh_interval_seconds * 1000
     autoRefreshCountdown.value = settings.auto_refresh_interval_seconds
+    lazyRuntimeCards.value = settings.lazy_runtime_cards
+    runtimeSummaryLimit.value = settings.realtime_summary_limit
+    pauseRefreshWhenHidden.value = settings.pause_refresh_when_hidden
   } catch (err) {
     console.error('[OpsDashboard] Failed to load dashboard advanced settings', err)
     showAlertEvents.value = true
@@ -440,7 +464,42 @@ async function loadDashboardAdvancedSettings() {
     autoRefreshEnabled.value = false
     autoRefreshIntervalMs.value = 30000
     autoRefreshCountdown.value = 0
+    lazyRuntimeCards.value = true
+    runtimeSummaryLimit.value = 6
+    pauseRefreshWhenHidden.value = true
   }
+}
+
+function handleVisibilityChange() {
+  pageVisible.value = document.visibilityState !== 'hidden'
+  if (pageVisible.value && opsEnabled.value) {
+    fetchData()
+  }
+}
+
+function resetRuntimeCardsObserver() {
+  runtimeCardsObserver?.disconnect()
+  runtimeCardsObserver = null
+
+  if (!lazyRuntimeCards.value) {
+    runtimeCardsVisible.value = true
+    return
+  }
+
+  const target = runtimeCardsSection.value
+  if (!target || typeof window === 'undefined' || !('IntersectionObserver' in window)) {
+    runtimeCardsVisible.value = true
+    return
+  }
+
+  runtimeCardsObserver = new IntersectionObserver((entries) => {
+    if (entries.some(entry => entry.isIntersecting)) {
+      runtimeCardsVisible.value = true
+      runtimeCardsObserver?.disconnect()
+      runtimeCardsObserver = null
+    }
+  }, { rootMargin: '200px 0px' })
+  runtimeCardsObserver.observe(target)
 }
 
 function handleThroughputSelectPlatform(nextPlatform: string) {
@@ -787,6 +846,7 @@ watch(
 onMounted(async () => {
   // Fullscreen mode: listen for ESC key
   window.addEventListener('keydown', handleKeydown)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   await adminSettingsStore.fetch()
   if (!adminSettingsStore.opsMonitoringEnabled) {
@@ -799,6 +859,7 @@ onMounted(async () => {
 
   // Load auto refresh settings
   await loadDashboardAdvancedSettings()
+  resetRuntimeCardsObserver()
 
   if (opsEnabled.value) {
     await fetchData()
@@ -822,6 +883,9 @@ async function loadThresholds() {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  runtimeCardsObserver?.disconnect()
+  runtimeCardsObserver = null
   abortDashboardFetch()
   pauseCountdown()
 })
@@ -841,6 +905,11 @@ watch(autoRefreshEnabled, (enabled) => {
 watch(showSettingsDialog, async (show) => {
   if (!show) {
     await loadDashboardAdvancedSettings()
+    resetRuntimeCardsObserver()
   }
+})
+
+watch([lazyRuntimeCards, runtimeCardsSection], () => {
+  resetRuntimeCardsObserver()
 })
 </script>

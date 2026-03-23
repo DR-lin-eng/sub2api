@@ -51,6 +51,17 @@ func TestConfigureTransportProxy_SOCKS5(t *testing.T) {
 	assert.NotNil(t, transport.DialContext, "SOCKS5 proxy should set DialContext")
 }
 
+func TestConfigureTransportProxy_SOCKS4(t *testing.T) {
+	transport := &http.Transport{}
+	proxyURL, _ := url.Parse("socks4://socks.example.com:1080")
+
+	err := ConfigureTransportProxy(transport, proxyURL)
+
+	require.NoError(t, err)
+	assert.Nil(t, transport.Proxy, "SOCKS4 proxy should not set Proxy")
+	assert.NotNil(t, transport.DialContext, "SOCKS4 proxy should set DialContext")
+}
+
 func TestConfigureTransportProxy_SOCKS5H(t *testing.T) {
 	transport := &http.Transport{}
 	proxyURL, _ := url.Parse("socks5h://socks.example.com:1080")
@@ -71,6 +82,8 @@ func TestConfigureTransportProxy_CaseInsensitive(t *testing.T) {
 		{"Http://proxy.example.com:8080", true},
 		{"HTTPS://proxy.example.com:8443", true},
 		{"Https://proxy.example.com:8443", true},
+		{"SOCKS4://socks.example.com:1080", false},
+		{"Socks4://socks.example.com:1080", false},
 		{"SOCKS5://socks.example.com:1080", false},
 		{"Socks5://socks.example.com:1080", false},
 		{"SOCKS5H://socks.example.com:1080", false},
@@ -160,6 +173,7 @@ func TestConfigureTransportProxy_IPv6(t *testing.T) {
 	}{
 		{"SOCKS5H with IPv6 loopback", "socks5h://[::1]:1080"},
 		{"SOCKS5 with full IPv6", "socks5://[2001:db8::1]:1080"},
+		{"SOCKS4 with IPv6 loopback host literal", "socks4://[::1]:1080"},
 		{"HTTP with IPv6", "http://[::1]:8080"},
 	}
 

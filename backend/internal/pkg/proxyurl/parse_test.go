@@ -57,6 +57,19 @@ func TestParse_有效HTTPS代理(t *testing.T) {
 	}
 }
 
+func TestParse_有效SOCKS4代理(t *testing.T) {
+	trimmed, parsed, err := Parse("socks4://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("有效 SOCKS4 代理应成功: %v", err)
+	}
+	if trimmed != "socks4://127.0.0.1:1080" {
+		t.Errorf("trimmed 不匹配: got %q", trimmed)
+	}
+	if parsed == nil || parsed.Scheme != "socks4" {
+		t.Fatalf("Scheme 应保持 socks4: got %v", parsed)
+	}
+}
+
 func TestParse_有效SOCKS5代理_自动升级为SOCKS5H(t *testing.T) {
 	trimmed, parsed, err := Parse("socks5://127.0.0.1:1080")
 	if err != nil {
@@ -147,6 +160,18 @@ func TestParse_带空白的有效URL(t *testing.T) {
 }
 
 func TestParse_Scheme大小写不敏感(t *testing.T) {
+	// 大写 SOCKS4 应被接受（不变）
+	trimmed, parsed, err := Parse("SOCKS4://proxy.example.com:1080")
+	if err != nil {
+		t.Fatalf("大写 SOCKS4 应被接受: %v", err)
+	}
+	if parsed.Scheme != "socks4" {
+		t.Errorf("大写 SOCKS4 Scheme 应保持 socks4: got %q", parsed.Scheme)
+	}
+	if trimmed != "socks4://proxy.example.com:1080" {
+		t.Errorf("大写 SOCKS4 trimmed 应规范化为 socks4://: got %q", trimmed)
+	}
+
 	// 大写 SOCKS5 应被接受并升级为 socks5h
 	trimmed, parsed, err := Parse("SOCKS5://proxy.example.com:1080")
 	if err != nil {

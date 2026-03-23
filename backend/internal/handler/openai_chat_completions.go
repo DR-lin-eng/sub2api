@@ -210,7 +210,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
-				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream, h.cfg)
+				h.gatewayService.RegisterOpenAIRuntimeFailure(account, failoverErr)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// Pool mode: retry on the same account
 				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
@@ -231,6 +232,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						continue
 					}
 				}
+				_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -261,6 +263,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		}
+		h.gatewayService.MarkOpenAIAccountHealthy(account)
+		if err := h.gatewayService.PromoteStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+			reqLog.Warn("openai_chat_completions.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
 		userAgent := c.GetHeader("User-Agent")

@@ -262,6 +262,18 @@ func (h *OpsHandler) GetGatewaySchedulerRuntime(c *gin.Context) {
 	}
 
 	platform := strings.TrimSpace(c.Query("platform"))
+	limit := 6
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			response.BadRequest(c, "Invalid limit")
+			return
+		}
+		if parsed > 100 {
+			parsed = 100
+		}
+		limit = parsed
+	}
 	var groupID *int64
 	if v := strings.TrimSpace(c.Query("group_id")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -272,7 +284,7 @@ func (h *OpsHandler) GetGatewaySchedulerRuntime(c *gin.Context) {
 		groupID = &id
 	}
 
-	data, err := h.opsService.GetGatewaySchedulerRuntime(c.Request.Context(), platform, groupID)
+	data, err := h.opsService.GetGatewaySchedulerRuntime(c.Request.Context(), platform, groupID, limit)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

@@ -127,15 +127,16 @@ func (h *OpenAIGatewayHandler) resolveOpenAIFailoverPolicy(body []byte, reqStrea
 		return policy
 	}
 
+	large, xlarge, huge := h.openAIStreamingBodyThresholds()
 	bodySize := len(body)
 	switch {
-	case bodySize >= openAIStreamHugeBodyThresholdBytes:
+	case huge > 0 && bodySize >= huge:
 		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 0)
 		policy.AllowSameAccountRetry = false
-	case bodySize >= openAIStreamXLargeBodyThresholdBytes:
+	case xlarge > 0 && bodySize >= xlarge:
 		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 1)
 		policy.AllowSameAccountRetry = false
-	case bodySize >= openAIStreamLargeBodyThresholdBytes:
+	case large > 0 && bodySize >= large:
 		policy.MaxSwitches = clampOpenAIMaxSwitches(limit, 2)
 		policy.AllowSameAccountRetry = false
 	}
@@ -146,12 +147,14 @@ func adjustOpenAIFailoverForLargeStreamingRequest(
 	failoverErr *service.UpstreamFailoverError,
 	body []byte,
 	reqStream bool,
+	cfg *config.Config,
 ) *service.UpstreamFailoverError {
 	if failoverErr == nil || !reqStream {
 		return failoverErr
 	}
+	large, xlarge, huge := resolveOpenAIStreamingThresholds(cfg)
 	bodySize := len(body)
-	if bodySize < openAIStreamLargeBodyThresholdBytes {
+	if large <= 0 || bodySize < large {
 		return failoverErr
 	}
 
@@ -159,9 +162,9 @@ func adjustOpenAIFailoverForLargeStreamingRequest(
 	adjusted.RetryableOnSameAccount = false
 	if adjusted.TempUnscheduleFor <= 0 {
 		switch {
-		case bodySize >= openAIStreamHugeBodyThresholdBytes:
+		case huge > 0 && bodySize >= huge:
 			adjusted.TempUnscheduleFor = openAIStreamLongContextTimeoutCooldown
-		case bodySize >= openAIStreamXLargeBodyThresholdBytes:
+		case xlarge > 0 && bodySize >= xlarge:
 			adjusted.TempUnscheduleFor = 4 * time.Minute
 		default:
 			adjusted.TempUnscheduleFor = 2 * time.Minute
@@ -171,6 +174,33 @@ func adjustOpenAIFailoverForLargeStreamingRequest(
 		}
 	}
 	return &adjusted
+}
+
+func resolveOpenAIStreamingThresholds(cfg *config.Config) (int, int, int) {
+	large := openAIStreamLargeBodyThresholdBytes
+	xlarge := openAIStreamXLargeBodyThresholdBytes
+	huge := openAIStreamHugeBodyThresholdBytes
+	if cfg == nil {
+		return large, xlarge, huge
+	}
+	streaming := cfg.Gateway.OpenAI.Streaming
+	if streaming.LargeBodyThresholdBytes > 0 {
+		large = streaming.LargeBodyThresholdBytes
+	}
+	if streaming.XLargeBodyThresholdBytes > 0 {
+		xlarge = streaming.XLargeBodyThresholdBytes
+	}
+	if streaming.HugeBodyThresholdBytes > 0 {
+		huge = streaming.HugeBodyThresholdBytes
+	}
+	return large, xlarge, huge
+}
+
+func (h *OpenAIGatewayHandler) openAIStreamingBodyThresholds() (int, int, int) {
+	if h == nil {
+		return resolveOpenAIStreamingThresholds(nil)
+	}
+	return resolveOpenAIStreamingThresholds(h.cfg)
 }
 
 func adjustOpenAINetworkFailoverCooldown(
@@ -463,7 +493,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
-				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream, h.cfg)
+				h.gatewayService.RegisterOpenAIRuntimeFailure(account, failoverErr)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// 池模式：同账号重试
 				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
@@ -484,6 +515,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						continue
 					}
 				}
+				_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -522,6 +554,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		}
+		h.gatewayService.MarkOpenAIAccountHealthy(account)
+		if err := h.gatewayService.PromoteStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+			reqLog.Warn("openai.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -863,7 +899,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverErr = adjustOpenAINetworkFailoverCooldown(failoverErr)
-				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream)
+				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream, h.cfg)
+				h.gatewayService.RegisterOpenAIRuntimeFailure(account, failoverErr)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				// 池模式：同账号重试
 				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
@@ -884,6 +921,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						continue
 					}
 				}
+				_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -914,6 +952,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		}
+		h.gatewayService.MarkOpenAIAccountHealthy(account)
+		if err := h.gatewayService.PromoteStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+			reqLog.Warn("openai_messages.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
 		userAgent := c.GetHeader("User-Agent")

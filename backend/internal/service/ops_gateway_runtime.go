@@ -45,6 +45,9 @@ type OpenAIWSRuntimeResponse struct {
 	FallbackReasonCounts map[string]int64                 `json:"fallback_reason_counts"`
 	Retry                OpenAIWSRetryMetricsSnapshot     `json:"retry"`
 	Transport            OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Passthrough          map[string]int64                 `json:"passthrough,omitempty"`
+	Relay                OpenAIStreamRelayMetricsSnapshot `json:"relay"`
+	Circuits             OpenAICircuitRuntimeSnapshot     `json:"circuits"`
 	Timestamp            time.Time                        `json:"timestamp"`
 }
 
@@ -52,6 +55,7 @@ func (s *OpsService) GetGatewaySchedulerRuntime(
 	ctx context.Context,
 	platformFilter string,
 	groupIDFilter *int64,
+	limit int,
 ) (*GatewaySchedulerRuntimeResponse, error) {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, err
@@ -120,6 +124,9 @@ func (s *OpsService) GetGatewaySchedulerRuntime(
 		}
 		return items[i].AccountID < items[j].AccountID
 	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
 
 	transport := HTTPUpstreamMetricsSnapshot{}
 	if provider, ok := s.gatewayService.httpUpstream.(HTTPUpstreamMetricsProvider); ok {
@@ -147,6 +154,7 @@ func (s *OpsService) GetOpenAIWSRuntime(
 	if platform := strings.TrimSpace(platformFilter); platform != "" && !strings.EqualFold(platform, PlatformOpenAI) {
 		return &OpenAIWSRuntimeResponse{
 			FallbackReasonCounts: map[string]int64{},
+			Passthrough:          map[string]int64{},
 			Timestamp:            time.Now().UTC(),
 		}, nil
 	}
@@ -165,6 +173,14 @@ func (s *OpsService) GetOpenAIWSRuntime(
 		FallbackReasonCounts: snapshot.Retry.FallbackReasonCounts,
 		Retry:                snapshot.Retry,
 		Transport:            snapshot.Transport,
-		Timestamp:            time.Now().UTC(),
+		Passthrough: map[string]int64{
+			"semantic_mutation_total":           snapshot.Passthrough.SemanticMutationTotal,
+			"usage_parse_failure_total":         snapshot.Passthrough.UsageParseFailureTotal,
+			"incomplete_close_total":            snapshot.Passthrough.IncompleteCloseTotal,
+			"stream_closed_after_content_total": snapshot.Passthrough.StreamClosedAfterContentTotal,
+		},
+		Relay:     snapshot.Relay,
+		Circuits:  snapshot.Circuits,
+		Timestamp: time.Now().UTC(),
 	}, nil
 }

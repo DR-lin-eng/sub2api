@@ -2,6 +2,7 @@
 //
 // 支持的代理协议：
 //   - HTTP/HTTPS: 通过 Transport.Proxy 设置
+//   - SOCKS4: 通过 Transport.DialContext 设置
 //   - SOCKS5: 通过 Transport.DialContext 设置（客户端本地解析 DNS）
 //   - SOCKS5H: 通过 Transport.DialContext 设置（代理端远程解析 DNS，推荐）
 //
@@ -17,13 +18,26 @@ import (
 	"net/url"
 	"strings"
 
+	_ "github.com/bdandy/go-socks4"
 	"golang.org/x/net/proxy"
 )
+
+type contextDialerFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+func (f contextDialerFunc) Dial(network, addr string) (net.Conn, error) {
+	return f(context.Background(), network, addr)
+}
+
+func (f contextDialerFunc) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return f(ctx, network, addr)
+}
 
 // ConfigureTransportProxy 根据代理 URL 配置 Transport
 //
 // 支持的协议：
 //   - http/https: 设置 transport.Proxy
+//   - socks4: 设置 transport.DialContext
+//   - socks4a: 设置 transport.DialContext（代理端远程解析 DNS）
 //   - socks5: 设置 transport.DialContext（客户端本地解析 DNS）
 //   - socks5h: 设置 transport.DialContext（代理端远程解析 DNS，推荐）
 //
@@ -44,10 +58,14 @@ func ConfigureTransportProxy(transport *http.Transport, proxyURL *url.URL) error
 		transport.Proxy = http.ProxyURL(proxyURL)
 		return nil
 
-	case "socks5", "socks5h":
-		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
+	case "socks4", "socks4a", "socks5", "socks5h":
+		forward := proxy.Dialer(proxy.Direct)
+		if transport != nil && transport.DialContext != nil {
+			forward = contextDialerFunc(transport.DialContext)
+		}
+		dialer, err := proxy.FromURL(proxyURL, forward)
 		if err != nil {
-			return fmt.Errorf("create socks5 dialer: %w", err)
+			return fmt.Errorf("create socks dialer: %w", err)
 		}
 		// 优先使用支持 context 的 DialContext，以支持请求取消和超时
 		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {

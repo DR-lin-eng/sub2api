@@ -376,6 +376,9 @@ func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 		DisplayAlertEvents:              true,
 		AutoRefreshEnabled:              false,
 		AutoRefreshIntervalSec:          30,
+		LazyRuntimeCards:                true,
+		RealtimeSummaryLimit:            6,
+		PauseRefreshWhenHidden:          true,
 	}
 }
 
@@ -400,6 +403,9 @@ func normalizeOpsAdvancedSettings(cfg *OpsAdvancedSettings) {
 	if cfg.AutoRefreshIntervalSec <= 0 {
 		cfg.AutoRefreshIntervalSec = 30
 	}
+	if cfg.RealtimeSummaryLimit <= 0 {
+		cfg.RealtimeSummaryLimit = 6
+	}
 }
 
 func validateOpsAdvancedSettings(cfg *OpsAdvancedSettings) error {
@@ -417,6 +423,9 @@ func validateOpsAdvancedSettings(cfg *OpsAdvancedSettings) error {
 	}
 	if cfg.AutoRefreshIntervalSec < 15 || cfg.AutoRefreshIntervalSec > 300 {
 		return errors.New("auto_refresh_interval_seconds must be between 15 and 300")
+	}
+	if cfg.RealtimeSummaryLimit < 1 || cfg.RealtimeSummaryLimit > 100 {
+		return errors.New("realtime_summary_limit must be between 1 and 100")
 	}
 	return nil
 }

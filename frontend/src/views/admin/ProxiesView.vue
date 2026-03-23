@@ -117,7 +117,7 @@
           <template #cell-protocol="{ value }">
             <span
               v-if="value"
-              :class="['badge', value.startsWith('socks5') ? 'badge-primary' : 'badge-gray']"
+              :class="['badge', value.startsWith('socks') ? 'badge-primary' : 'badge-gray']"
             >
               {{ value.toUpperCase() }}
             </span>
@@ -908,6 +908,7 @@ const protocolOptions = computed(() => [
   { value: '', label: t('admin.proxies.allProtocols') },
   { value: 'http', label: 'HTTP' },
   { value: 'https', label: 'HTTPS' },
+  { value: 'socks4', label: 'SOCKS4' },
   { value: 'socks5', label: 'SOCKS5' },
   { value: 'socks5h', label: 'SOCKS5H' }
 ])
@@ -922,6 +923,7 @@ const statusOptions = computed(() => [
 const protocolSelectOptions = computed(() => [
   { value: 'http', label: t('admin.proxies.protocols.http') },
   { value: 'https', label: t('admin.proxies.protocols.https') },
+  { value: 'socks4', label: t('admin.proxies.protocols.socks4') },
   { value: 'socks5', label: t('admin.proxies.protocols.socks5') },
   { value: 'socks5h', label: t('admin.proxies.protocols.socks5h') }
 ])
@@ -1139,8 +1141,8 @@ const parseProxyUrl = (
   const trimmed = line.trim()
   if (!trimmed) return null
 
-  // Regex to parse proxy URL (supports http, https, socks5, socks5h)
-  const regex = /^(https?|socks5h?):\/\/(?:([^:@]+):([^@]+)@)?([^:]+):(\d+)$/i
+  // Regex to parse proxy URL (supports http, https, socks4, socks5, socks5h)
+  const regex = /^(https?|socks4|socks5h?):\/\/(?:([^:@]+):([^@]+)@)?([^:]+):(\d+)$/i
   const match = trimmed.match(regex)
 
   if (!match) return null

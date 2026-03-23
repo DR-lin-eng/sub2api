@@ -682,6 +682,7 @@ func TestOpenAIWSConnPool_BackgroundPingSweep_EvictsDeadIdleConn(t *testing.T) {
 	accountID := int64(301)
 	ap := pool.getOrCreateAccountPool(accountID)
 	conn := newOpenAIWSConn("dead_idle", accountID, &openAIWSPingFailConn{}, nil)
+	conn.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle - time.Second).UnixNano())
 	ap.mu.Lock()
 	ap.conns[conn.id] = conn
 	ap.mu.Unlock()
@@ -692,6 +693,27 @@ func TestOpenAIWSConnPool_BackgroundPingSweep_EvictsDeadIdleConn(t *testing.T) {
 	_, exists := ap.conns[conn.id]
 	ap.mu.Unlock()
 	require.False(t, exists, "后台 ping 失败的空闲连接应被回收")
+}
+
+func TestOpenAIWSConnPool_BackgroundPingSweep_SkipsRecentIdleConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	pool := newOpenAIWSConnPool(cfg)
+
+	accountID := int64(3011)
+	ap := pool.getOrCreateAccountPool(accountID)
+	conn := newOpenAIWSConn("recent_idle", accountID, &openAIWSPingFailConn{}, nil)
+	conn.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle + 10*time.Second).UnixNano())
+	ap.mu.Lock()
+	ap.conns[conn.id] = conn
+	ap.mu.Unlock()
+
+	pool.runBackgroundPingSweep()
+
+	ap.mu.Lock()
+	_, exists := ap.conns[conn.id]
+	ap.mu.Unlock()
+	require.True(t, exists, "最近仍活跃的 idle 连接不应被后台 ping sweep 探测并驱逐")
 }
 
 func TestOpenAIWSConnPool_BackgroundCleanupSweep_WithoutAcquire(t *testing.T) {
@@ -780,7 +802,12 @@ func TestOpenAIWSConnPool_SnapshotIdleConnsForPing_SkipsInvalidEntries(t *testin
 	ap.conns[waiting.id] = waiting
 
 	idle := newOpenAIWSConn("idle", accountID, &openAIWSFakeConn{}, nil)
+	idle.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle - time.Second).UnixNano())
 	ap.conns[idle.id] = idle
+
+	recentIdle := newOpenAIWSConn("recent_idle", accountID, &openAIWSFakeConn{}, nil)
+	recentIdle.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle + 5*time.Second).UnixNano())
+	ap.conns[recentIdle.id] = recentIdle
 
 	pool.accounts.Store(accountID, ap)
 	candidates := pool.snapshotIdleConnsForPing()
@@ -1278,7 +1305,9 @@ func TestOpenAIWSConn_AdditionalGuardBranches(t *testing.T) {
 	require.NoError(t, connOK.writeJSON(map[string]any{"k": "v"}, nil))
 	_, err = connOK.readMessageWithContextTimeout(context.Background(), 0)
 	require.NoError(t, err)
+	beforePing := time.Now()
 	require.NoError(t, connOK.pingWithTimeout(0))
+	require.False(t, connOK.lastUsedAt().Before(beforePing), "successful ping should refresh lastUsed timestamp")
 
 	connZero := newOpenAIWSConn("zero_ts", 1, &openAIWSFakeConn{}, nil)
 	connZero.createdAtNano.Store(0)

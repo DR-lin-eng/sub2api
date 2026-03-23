@@ -8,6 +8,8 @@ interface Props {
   platformFilter?: string
   groupIdFilter?: number | null
   refreshToken?: number
+  active?: boolean
+  summaryLimit?: number
 }
 
 const props = defineProps<Props>()
@@ -27,10 +29,11 @@ const cacheHitRate = computed(() => {
 })
 
 async function fetchData() {
+  if (props.active === false) return
   loading.value = true
   errorMessage.value = ''
   try {
-    runtime.value = await opsAPI.getGatewaySchedulerRuntime(props.platformFilter, props.groupIdFilter ?? null)
+    runtime.value = await opsAPI.getGatewaySchedulerRuntime(props.platformFilter, props.groupIdFilter ?? null, props.summaryLimit ?? 6)
   } catch (err: any) {
     runtime.value = null
     errorMessage.value = err?.response?.data?.detail || err?.message || t('common.loadFailed')
@@ -56,8 +59,12 @@ function formatTs(value?: string | null) {
   return parsed.toLocaleTimeString()
 }
 
-watch(() => [props.platformFilter, props.groupIdFilter, props.refreshToken], fetchData)
-onMounted(fetchData)
+watch(() => [props.platformFilter, props.groupIdFilter, props.refreshToken, props.active, props.summaryLimit], fetchData)
+onMounted(() => {
+  if (props.active !== false) {
+    fetchData()
+  }
+})
 </script>
 
 <template>

@@ -395,6 +395,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAI: OpenAI HTTP/streaming stabilization config
+	OpenAI GatewayOpenAIConfig `mapstructure:"openai"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -613,6 +615,34 @@ type GatewayOpenAIWSConfig struct {
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
 }
 
+// GatewayOpenAIConfig contains OpenAI HTTP streaming stabilization settings.
+type GatewayOpenAIConfig struct {
+	Streaming             GatewayOpenAIStreamingConfig             `mapstructure:"streaming"`
+	ProxyCircuitBreaker   GatewayOpenAIProxyCircuitBreakerConfig   `mapstructure:"proxy_circuit_breaker"`
+	AccountCircuitBreaker GatewayOpenAIAccountCircuitBreakerConfig `mapstructure:"account_circuit_breaker"`
+}
+
+// GatewayOpenAIStreamingConfig controls request-phase budgets and HTTP relay flushing.
+type GatewayOpenAIStreamingConfig struct {
+	ConnectQuickFailMS        int `mapstructure:"connect_quick_fail_ms"`
+	HeaderQuickFailMS         int `mapstructure:"header_quick_fail_ms"`
+	StreamIdleTimeoutMS       int `mapstructure:"stream_idle_timeout_ms"`
+	LargeBodyThresholdBytes   int `mapstructure:"large_body_threshold_bytes"`
+	XLargeBodyThresholdBytes  int `mapstructure:"xlarge_body_threshold_bytes"`
+	HugeBodyThresholdBytes    int `mapstructure:"huge_body_threshold_bytes"`
+	HTTPStreamFlushBatchSize  int `mapstructure:"http_stream_flush_batch_size"`
+	HTTPStreamFlushIntervalMS int `mapstructure:"http_stream_flush_interval_ms"`
+}
+
+type GatewayOpenAIProxyCircuitBreakerConfig struct {
+	FailureThreshold int `mapstructure:"failure_threshold"`
+	CooldownMS       int `mapstructure:"cooldown_ms"`
+}
+
+type GatewayOpenAIAccountCircuitBreakerConfig struct {
+	CooldownMS int `mapstructure:"cooldown_ms"`
+}
+
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
 type GatewayOpenAIWSSchedulerScoreWeights struct {
 	Priority  float64 `mapstructure:"priority"`
@@ -706,6 +736,8 @@ type GatewaySchedulingConfig struct {
 	RuntimeStatsAlpha float64 `mapstructure:"runtime_stats_alpha"`
 	// FairWaitQueueEnabled: 是否启用 ticket 化公平等待队列
 	FairWaitQueueEnabled bool `mapstructure:"fair_wait_queue_enabled"`
+	// RuntimeSyncBatchMS: OpenAI/runtime state sync debounce window (milliseconds)
+	RuntimeSyncBatchMS int `mapstructure:"runtime_sync_batch_ms"`
 	// SchedulerScoreWeights: 通用 Gateway 调度器打分权重
 	SchedulerScoreWeights GatewaySchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
 
@@ -1417,6 +1449,17 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
+	viper.SetDefault("gateway.openai.streaming.connect_quick_fail_ms", 5000)
+	viper.SetDefault("gateway.openai.streaming.header_quick_fail_ms", 12000)
+	viper.SetDefault("gateway.openai.streaming.stream_idle_timeout_ms", 120000)
+	viper.SetDefault("gateway.openai.streaming.large_body_threshold_bytes", 64*1024)
+	viper.SetDefault("gateway.openai.streaming.xlarge_body_threshold_bytes", 256*1024)
+	viper.SetDefault("gateway.openai.streaming.huge_body_threshold_bytes", 1024*1024)
+	viper.SetDefault("gateway.openai.streaming.http_stream_flush_batch_size", 8)
+	viper.SetDefault("gateway.openai.streaming.http_stream_flush_interval_ms", 25)
+	viper.SetDefault("gateway.openai.proxy_circuit_breaker.failure_threshold", 2)
+	viper.SetDefault("gateway.openai.proxy_circuit_breaker.cooldown_ms", 300000)
+	viper.SetDefault("gateway.openai.account_circuit_breaker.cooldown_ms", 120000)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -1451,6 +1494,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.lb_top_k", 5)
 	viper.SetDefault("gateway.scheduling.runtime_stats_alpha", 0.2)
 	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", false)
+	viper.SetDefault("gateway.scheduling.runtime_sync_batch_ms", 1000)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.priority", 1.0)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.load", 1.0)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.queue", 0.7)
@@ -2184,6 +2228,49 @@ func (c *Config) Validate() error {
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
 	}
+	if c.Gateway.OpenAI.Streaming.ConnectQuickFailMS < 0 {
+		return fmt.Errorf("gateway.openai.streaming.connect_quick_fail_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.HeaderQuickFailMS < 0 {
+		return fmt.Errorf("gateway.openai.streaming.header_quick_fail_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.StreamIdleTimeoutMS < 0 {
+		return fmt.Errorf("gateway.openai.streaming.stream_idle_timeout_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.LargeBodyThresholdBytes < 0 {
+		return fmt.Errorf("gateway.openai.streaming.large_body_threshold_bytes must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.XLargeBodyThresholdBytes < 0 {
+		return fmt.Errorf("gateway.openai.streaming.xlarge_body_threshold_bytes must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.HugeBodyThresholdBytes < 0 {
+		return fmt.Errorf("gateway.openai.streaming.huge_body_threshold_bytes must be non-negative")
+	}
+	if c.Gateway.OpenAI.Streaming.LargeBodyThresholdBytes > 0 &&
+		c.Gateway.OpenAI.Streaming.XLargeBodyThresholdBytes > 0 &&
+		c.Gateway.OpenAI.Streaming.XLargeBodyThresholdBytes < c.Gateway.OpenAI.Streaming.LargeBodyThresholdBytes {
+		return fmt.Errorf("gateway.openai.streaming.xlarge_body_threshold_bytes must be >= large_body_threshold_bytes")
+	}
+	if c.Gateway.OpenAI.Streaming.XLargeBodyThresholdBytes > 0 &&
+		c.Gateway.OpenAI.Streaming.HugeBodyThresholdBytes > 0 &&
+		c.Gateway.OpenAI.Streaming.HugeBodyThresholdBytes < c.Gateway.OpenAI.Streaming.XLargeBodyThresholdBytes {
+		return fmt.Errorf("gateway.openai.streaming.huge_body_threshold_bytes must be >= xlarge_body_threshold_bytes")
+	}
+	if c.Gateway.OpenAI.Streaming.HTTPStreamFlushBatchSize <= 0 {
+		return fmt.Errorf("gateway.openai.streaming.http_stream_flush_batch_size must be positive")
+	}
+	if c.Gateway.OpenAI.Streaming.HTTPStreamFlushIntervalMS < 0 {
+		return fmt.Errorf("gateway.openai.streaming.http_stream_flush_interval_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.ProxyCircuitBreaker.FailureThreshold <= 0 {
+		return fmt.Errorf("gateway.openai.proxy_circuit_breaker.failure_threshold must be positive")
+	}
+	if c.Gateway.OpenAI.ProxyCircuitBreaker.CooldownMS < 0 {
+		return fmt.Errorf("gateway.openai.proxy_circuit_breaker.cooldown_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.AccountCircuitBreaker.CooldownMS < 0 {
+		return fmt.Errorf("gateway.openai.account_circuit_breaker.cooldown_ms must be non-negative")
+	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")
 	}
@@ -2271,6 +2358,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.RuntimeStatsAlpha <= 0 || c.Gateway.Scheduling.RuntimeStatsAlpha > 1 {
 		return fmt.Errorf("gateway.scheduling.runtime_stats_alpha must be within (0,1]")
+	}
+	if c.Gateway.Scheduling.RuntimeSyncBatchMS < 0 {
+		return fmt.Errorf("gateway.scheduling.runtime_sync_batch_ms must be non-negative")
 	}
 	weights := c.Gateway.Scheduling.SchedulerScoreWeights
 	if weights.Priority < 0 || weights.Load < 0 || weights.Queue < 0 || weights.ErrorRate < 0 || weights.TTFT < 0 {

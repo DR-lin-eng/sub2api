@@ -278,6 +278,7 @@ func Relay(
 	}
 	if firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
 		if relayShouldFailIncompleteGracefulClose(state, combinedWroteDownstream, terminalObserved) {
+			recordIncompleteClose(combinedWroteDownstream)
 			incompleteExit := firstExit
 			if hasSecondExit && secondExit.stage != "" {
 				incompleteExit = secondExit
@@ -295,6 +296,9 @@ func Relay(
 				Err:             exitErr,
 				WroteDownstream: combinedWroteDownstream,
 			}
+		}
+		if !terminalObserved && combinedWroteDownstream {
+			recordIncompleteClose(true)
 		}
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_complete",
@@ -762,6 +766,9 @@ func relayShouldFailIncompleteGracefulClose(state *relayState, wroteDownstream b
 	}
 	if !wroteDownstream {
 		return true
+	}
+	if wroteDownstream {
+		return false
 	}
 	return state != nil && state.observedProtocol
 }

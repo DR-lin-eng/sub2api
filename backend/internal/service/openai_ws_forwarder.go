@@ -17,6 +17,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,9 @@ const (
 	openAIWSEventFlushIntervalDefault     = 25 * time.Millisecond
 	openAIWSPayloadLogSampleDefault       = 0.2
 	openAIWSPassthroughIdleTimeoutDefault = time.Hour
+	openAIWSIngressHeartbeatDefault       = 20 * time.Second
+	openAIWSIngressHeartbeatMin           = time.Second
+	openAIWSIngressHeartbeatPingTimeout   = 5 * time.Second
 
 	openAIWSStoreDisabledConnModeStrict   = "strict"
 	openAIWSStoreDisabledConnModeAdaptive = "adaptive"
@@ -221,6 +225,12 @@ func (e *OpenAIWSClientCloseError) Reason() string {
 type OpenAIWSIngressHooks struct {
 	BeforeTurn func(turn int) error
 	AfterTurn  func(turn int, result *OpenAIForwardResult, turnErr error)
+}
+
+type openAIWSIngressClientConn interface {
+	Read(ctx context.Context) (coderws.MessageType, []byte, error)
+	Write(ctx context.Context, typ coderws.MessageType, p []byte) error
+	Ping(ctx context.Context) error
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -927,15 +937,21 @@ func (s *OpenAIGatewayService) SnapshotOpenAIWSPoolMetrics() OpenAIWSPoolMetrics
 }
 
 type OpenAIWSPerformanceMetricsSnapshot struct {
-	Pool      OpenAIWSPoolMetricsSnapshot      `json:"pool"`
-	Retry     OpenAIWSRetryMetricsSnapshot     `json:"retry"`
-	Transport OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Pool        OpenAIWSPoolMetricsSnapshot      `json:"pool"`
+	Retry       OpenAIWSRetryMetricsSnapshot     `json:"retry"`
+	Transport   OpenAIWSTransportMetricsSnapshot `json:"transport"`
+	Passthrough openaiwsv2.MetricsSnapshot       `json:"passthrough"`
+	Relay       OpenAIStreamRelayMetricsSnapshot `json:"relay"`
+	Circuits    OpenAICircuitRuntimeSnapshot     `json:"circuits"`
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIWSPerformanceMetrics() OpenAIWSPerformanceMetricsSnapshot {
 	pool := s.getOpenAIWSConnPool()
 	snapshot := OpenAIWSPerformanceMetricsSnapshot{
-		Retry: s.SnapshotOpenAIWSRetryMetrics(),
+		Retry:       s.SnapshotOpenAIWSRetryMetrics(),
+		Passthrough: openaiwsv2.SnapshotMetrics(),
+		Relay:       s.openaiRelayMetrics.snapshot(),
+		Circuits:    s.snapshotOpenAICircuitRuntime(6),
 	}
 	if pool == nil {
 		return snapshot
@@ -993,6 +1009,89 @@ func (s *OpenAIGatewayService) openAIWSWriteTimeout() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second
 	}
 	return 2 * time.Minute
+}
+
+func (s *OpenAIGatewayService) openAIWSIngressHeartbeatInterval() time.Duration {
+	readTimeout := s.openAIWSReadTimeout()
+	if readTimeout <= 0 {
+		return openAIWSIngressHeartbeatDefault
+	}
+	interval := readTimeout / 3
+	if interval <= 0 {
+		interval = openAIWSIngressHeartbeatMin
+	}
+	if interval > openAIWSIngressHeartbeatDefault {
+		interval = openAIWSIngressHeartbeatDefault
+	}
+	if interval < openAIWSIngressHeartbeatMin {
+		interval = openAIWSIngressHeartbeatMin
+	}
+	return interval
+}
+
+func (s *OpenAIGatewayService) openAIWSIngressHeartbeatPingTimeout() time.Duration {
+	writeTimeout := s.openAIWSWriteTimeout()
+	if writeTimeout <= 0 {
+		return openAIWSIngressHeartbeatPingTimeout
+	}
+	if writeTimeout < openAIWSIngressHeartbeatPingTimeout {
+		if writeTimeout < time.Second {
+			return time.Second
+		}
+		return writeTimeout
+	}
+	return openAIWSIngressHeartbeatPingTimeout
+}
+
+func sendOpenAIWSIngressHeartbeat(ctx context.Context, clientConn openAIWSIngressClientConn, timeout time.Duration) error {
+	if clientConn == nil {
+		return errors.New("client websocket is nil")
+	}
+	if timeout <= 0 {
+		timeout = openAIWSIngressHeartbeatPingTimeout
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return clientConn.Ping(pingCtx)
+}
+
+func readOpenAIWSIngressClientMessage(
+	ctx context.Context,
+	clientConn openAIWSIngressClientConn,
+	heartbeatInterval time.Duration,
+	pingTimeout time.Duration,
+) ([]byte, error) {
+	if clientConn == nil {
+		return nil, errors.New("client websocket is nil")
+	}
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = openAIWSIngressHeartbeatDefault
+	}
+	for {
+		readCtx, cancel := context.WithTimeout(ctx, heartbeatInterval)
+		msgType, payload, readErr := clientConn.Read(readCtx)
+		cancel()
+		if readErr == nil {
+			if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+				return nil, NewOpenAIWSClientCloseError(
+					coderws.StatusPolicyViolation,
+					fmt.Sprintf("unsupported websocket client message type: %s", msgType.String()),
+					nil,
+				)
+			}
+			return payload, nil
+		}
+		if ctx.Err() != nil {
+			return nil, readErr
+		}
+		if errors.Is(readErr, context.DeadlineExceeded) {
+			if pingErr := sendOpenAIWSIngressHeartbeat(ctx, clientConn, pingTimeout); pingErr != nil {
+				return nil, pingErr
+			}
+			continue
+		}
+		return nil, readErr
+	}
 }
 
 func (s *OpenAIGatewayService) openAIWSEventFlushBatchSize() int {
@@ -2720,18 +2819,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	readClientMessage := func() ([]byte, error) {
-		msgType, payload, readErr := clientConn.Read(ctx)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
-			return nil, NewOpenAIWSClientCloseError(
-				coderws.StatusPolicyViolation,
-				fmt.Sprintf("unsupported websocket client message type: %s", msgType.String()),
-				nil,
-			)
-		}
-		return payload, nil
+		return readOpenAIWSIngressClientMessage(
+			ctx,
+			clientConn,
+			s.openAIWSIngressHeartbeatInterval(),
+			s.openAIWSIngressHeartbeatPingTimeout(),
+		)
 	}
 
 	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string) (*OpenAIForwardResult, error) {
@@ -2785,10 +2878,79 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				mappedModelBytes = []byte(mappedModel)
 			}
 		}
+		heartbeatInterval := s.openAIWSIngressHeartbeatInterval()
+		heartbeatPingTimeout := s.openAIWSIngressHeartbeatPingTimeout()
+		readTimeout := s.openAIWSReadTimeout()
+		readUpstreamMessage := func() ([]byte, error) {
+			lastActivity := time.Now()
+			for {
+				stepTimeout := heartbeatInterval
+				if stepTimeout <= 0 {
+					stepTimeout = readTimeout
+				}
+				if readTimeout > 0 {
+					remaining := readTimeout - time.Since(lastActivity)
+					if remaining <= 0 {
+						return nil, context.DeadlineExceeded
+					}
+					if stepTimeout <= 0 || stepTimeout > remaining {
+						stepTimeout = remaining
+					}
+				}
+
+				upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, stepTimeout)
+				if readErr == nil {
+					return upstreamMessage, nil
+				}
+				if ctx.Err() != nil {
+					return nil, readErr
+				}
+				if errors.Is(readErr, context.DeadlineExceeded) && heartbeatInterval > 0 {
+					if pingErr := sendOpenAIWSIngressHeartbeat(ctx, clientConn, heartbeatPingTimeout); pingErr != nil {
+						return nil, pingErr
+					}
+					continue
+				}
+				return nil, readErr
+			}
+		}
 		for {
-			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
+			upstreamMessage, readErr := readUpstreamMessage()
 			if readErr != nil {
 				lease.MarkBroken()
+				if reqStream && wroteDownstream {
+					firstTokenMsValue := -1
+					if firstTokenMs != nil {
+						firstTokenMsValue = *firstTokenMs
+					}
+					logOpenAIWSModeInfo(
+						"ingress_ws_upstream_incomplete_close account_id=%d turn=%d conn_id=%s cause=%s events=%d token_events=%d terminal_events=%d first_event=%s last_event=%s first_token_ms=%d client_disconnected=%v",
+						account.ID,
+						turn,
+						truncateOpenAIWSLogValue(lease.ConnID(), openAIWSIDValueMaxLen),
+						truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen),
+						eventCount,
+						tokenEventCount,
+						terminalEventCount,
+						truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
+						truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
+						firstTokenMsValue,
+						clientDisconnected,
+					)
+					return &OpenAIForwardResult{
+						RequestID:       responseID,
+						Usage:           usage,
+						Model:           originalModel,
+						UpstreamModel:   mappedModel,
+						ServiceTier:     extractOpenAIServiceTierFromBody(payload),
+						ReasoningEffort: extractOpenAIReasoningEffortFromBody(payload, originalModel),
+						Stream:          reqStream,
+						OpenAIWSMode:    true,
+						ResponseHeaders: lease.HandshakeHeaders(),
+						Duration:        time.Since(turnStart),
+						FirstTokenMs:    firstTokenMs,
+					}, nil
+				}
 				return nil, wrapOpenAIWSIngressTurnError(
 					"read_upstream",
 					fmt.Errorf("read upstream websocket event: %w", readErr),
@@ -3020,6 +3182,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	turn := 1
 	turnRetry := 0
+	turnFreshReacquireTried := false
 	turnPrevRecoveryTried := false
 	lastTurnFinishedAt := time.Time{}
 	lastTurnResponseID := ""
@@ -3297,7 +3460,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		if shouldPreflightPing {
-			if pingErr := sessionLease.PingWithTimeout(openAIWSConnHealthCheckTO); pingErr != nil {
+			if pingErr := sessionLease.PingWithTimeout(s.openAIWSIngressHeartbeatPingTimeout()); pingErr != nil {
 				logOpenAIWSModeInfo(
 					"ingress_ws_upstream_preflight_ping_fail account_id=%d turn=%d conn_id=%s cause=%s",
 					account.ID,
@@ -3352,6 +3515,34 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 								continue
 							}
 						}
+					}
+					if !turnFreshReacquireTried {
+						turnFreshReacquireTried = true
+						logOpenAIWSModeInfo(
+							"ingress_ws_preflight_ping_fresh_reacquire account_id=%d turn=%d conn_id=%s action=fresh_reacquire_after_ping_fail",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+						)
+						resetSessionLease(true)
+						acquiredLease, acquireErr := acquireTurnLease(turn, "", false)
+						if acquireErr == nil {
+							sessionLease = acquiredLease
+							sessionConnID = strings.TrimSpace(sessionLease.ConnID())
+							if storeDisabled {
+								pinSessionConn(sessionConnID)
+							} else {
+								unpinSessionConn(sessionConnID)
+							}
+							continue
+						}
+						logOpenAIWSModeInfo(
+							"ingress_ws_preflight_ping_fresh_reacquire_fail account_id=%d turn=%d conn_id=%s cause=%s",
+							account.ID,
+							turn,
+							truncateOpenAIWSLogValue(sessionConnID, openAIWSIDValueMaxLen),
+							truncateOpenAIWSLogValue(acquireErr.Error(), openAIWSLogValueMaxLen),
+						)
 					}
 					resetSessionLease(true)
 					return NewOpenAIWSClientCloseError(
@@ -3416,6 +3607,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return finalErr
 		}
 		turnRetry = 0
+		turnFreshReacquireTried = false
 		turnPrevRecoveryTried = false
 		lastTurnFinishedAt = time.Now()
 		lastTurnClean = true

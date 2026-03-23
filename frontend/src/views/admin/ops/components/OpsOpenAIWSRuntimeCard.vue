@@ -7,6 +7,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 interface Props {
   platformFilter?: string
   refreshToken?: number
+  active?: boolean
 }
 
 const props = defineProps<Props>()
@@ -34,7 +35,10 @@ const hasAnyRuntimeData = computed(() => {
     current.scale_up_total > 0 ||
     current.scale_down_total > 0 ||
     current.prewarm_success_total > 0 ||
-    current.prewarm_fallback_total > 0
+    current.prewarm_fallback_total > 0 ||
+    (current.relay?.incomplete_close_total ?? 0) > 0 ||
+    (current.circuits?.open_proxy_count ?? 0) > 0 ||
+    (current.circuits?.open_account_count ?? 0) > 0
   )
 })
 
@@ -45,6 +49,7 @@ const reuseRate = computed(() => {
 })
 
 async function fetchData() {
+  if (props.active === false) return
   loading.value = true
   errorMessage.value = ''
   try {
@@ -67,8 +72,12 @@ function formatInt(value?: number | null) {
   return Intl.NumberFormat().format(value)
 }
 
-watch(() => [props.platformFilter, props.refreshToken], fetchData)
-onMounted(fetchData)
+watch(() => [props.platformFilter, props.refreshToken, props.active], fetchData)
+onMounted(() => {
+  if (props.active !== false) {
+    fetchData()
+  }
+})
 </script>
 
 <template>
@@ -119,6 +128,16 @@ onMounted(fetchData)
       <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
         <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Retry</div>
         <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.retry?.retry_attempts_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Incomplete</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.relay?.incomplete_close_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Open Circuits</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+          P{{ formatInt(runtime?.circuits?.open_proxy_count) }} / A{{ formatInt(runtime?.circuits?.open_account_count) }}
+        </div>
       </div>
     </div>
 

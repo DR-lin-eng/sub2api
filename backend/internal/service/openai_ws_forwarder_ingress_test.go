@@ -6,13 +6,52 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type openAIWSIngressClientConnStub struct {
+	mu        sync.Mutex
+	readCalls int
+	pingCalls int
+	payload   []byte
+}
+
+func (s *openAIWSIngressClientConnStub) Read(ctx context.Context) (coderws.MessageType, []byte, error) {
+	s.mu.Lock()
+	s.readCalls++
+	call := s.readCalls
+	payload := append([]byte(nil), s.payload...)
+	s.mu.Unlock()
+	if call == 1 {
+		<-ctx.Done()
+		return coderws.MessageText, nil, ctx.Err()
+	}
+	return coderws.MessageText, payload, nil
+}
+
+func (s *openAIWSIngressClientConnStub) Write(context.Context, coderws.MessageType, []byte) error {
+	return nil
+}
+
+func (s *openAIWSIngressClientConnStub) Ping(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pingCalls++
+	return nil
+}
+
+func (s *openAIWSIngressClientConnStub) PingCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pingCalls
+}
 
 func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 	t.Parallel()
@@ -43,6 +82,21 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 			require.Equal(t, tt.want, isOpenAIWSClientDisconnectError(tt.err))
 		})
 	}
+}
+
+func TestReadOpenAIWSIngressClientMessage_SendsHeartbeatBeforeNextPayload(t *testing.T) {
+	t.Parallel()
+
+	stub := &openAIWSIngressClientConnStub{
+		payload: []byte(`{"type":"response.create","model":"gpt-5.4"}`),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	payload, err := readOpenAIWSIngressClientMessage(ctx, stub, 20*time.Millisecond, 50*time.Millisecond)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"response.create","model":"gpt-5.4"}`, string(payload))
+	require.Equal(t, 1, stub.PingCalls(), "expected one heartbeat ping during idle wait")
 }
 
 func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {

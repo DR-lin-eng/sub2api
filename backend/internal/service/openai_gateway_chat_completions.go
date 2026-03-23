@@ -120,7 +120,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
+	var cancelQuickFail context.CancelFunc
+	if clientStream {
+		upstreamReq = s.applyOpenAITransportOverride(upstreamReq, responsesBody, true)
+	} else {
+		upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
+	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		if cancelQuickFail != nil {
@@ -138,7 +143,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		})
 		return nil, newProxyRequestFailoverError(account, proxyURL, err)
 	}
-	resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
+	if cancelQuickFail != nil {
+		resp = attachProxyQuickFailCancel(resp, cancelQuickFail)
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// 8. Handle error response with failover
@@ -171,7 +178,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			s.syncAccountRuntimeStateToSchedulerCache(ctx, account)
+			s.queueOpenAIRuntimeStateSync(account.ID)
 			return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account)
@@ -331,6 +338,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	firstChunk := true
+	flushController := s.newOpenAIHTTPStreamFlushController()
+	flusher, _ := c.Writer.(http.Flusher)
+	flushClient := func() {
+		if flusher != nil {
+			flusher.Flush()
+			flushController.markFlushed()
+		}
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -353,6 +368,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	processDataLine := func(payload string) bool {
+		isFirstTokenEvent := firstChunk
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
@@ -397,8 +413,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				return true
 			}
 		}
-		if len(chunks) > 0 {
-			c.Writer.Flush()
+		if len(chunks) > 0 && flushController.shouldFlush(isFirstTokenEvent || event.Type == "response.completed" || event.Type == "response.done" || event.Type == "response.failed") {
+			flushClient()
 		}
 		return false
 	}
@@ -415,7 +431,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		// Send [DONE] sentinel
 		fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
-		c.Writer.Flush()
+		flushClient()
 		return resultWithUsage(), nil
 	}
 
@@ -511,7 +527,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				)
 				return resultWithUsage(), nil
 			}
-			c.Writer.Flush()
+			flushClient()
 		}
 	}
 }
