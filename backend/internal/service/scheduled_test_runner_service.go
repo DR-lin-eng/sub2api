@@ -12,7 +12,10 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-const scheduledTestDefaultMaxWorkers = 10
+const (
+	scheduledTestDefaultMaxWorkers = 3
+	scheduledTestPerPlanTimeout    = 45 * time.Second
+)
 
 // ScheduledTestRunnerService periodically scans due test plans and executes them.
 type ScheduledTestRunnerService struct {
@@ -122,8 +125,18 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 }
 
 func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *ScheduledTestPlan) {
+	if plan == nil {
+		return
+	}
+	planCtx := ctx
+	var cancel context.CancelFunc
+	if scheduledTestPerPlanTimeout > 0 {
+		planCtx, cancel = context.WithTimeout(ctx, scheduledTestPerPlanTimeout)
+		defer cancel()
+	}
+
 	runFinishedAt := time.Now()
-	result, err := s.accountTestSvc.RunTestBackground(ctx, plan.AccountID, plan.ModelID)
+	result, err := s.accountTestSvc.RunTestBackground(planCtx, plan.AccountID, plan.ModelID)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d RunTestBackground error: %v", plan.ID, err)
 		result = &ScheduledTestResult{
@@ -152,6 +165,16 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 	if err := s.planRepo.UpdateAfterRun(ctx, update); err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
 	}
+}
+
+func shouldPauseScheduledTestImmediately(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	return strings.Contains(reason, "account not found") ||
+		strings.Contains(reason, "token_invalidated") ||
+		strings.Contains(reason, "authentication token has been invalidated")
 }
 
 func buildScheduledTestRunUpdate(plan *ScheduledTestPlan, result *ScheduledTestResult, finishedAt time.Time) (ScheduledTestRunUpdate, error) {
@@ -190,6 +213,15 @@ func buildScheduledTestRunUpdate(plan *ScheduledTestPlan, result *ScheduledTestR
 	}
 	update.PausedAt = nil
 	update.PauseReason = ""
+
+	if shouldPauseScheduledTestImmediately(update.LastFailureReason) {
+		update.Enabled = false
+		pausedAt := finishedAt
+		update.PausedAt = &pausedAt
+		update.PauseReason = "paused after unrecoverable scheduled test failure"
+		update.NextRunAt = nil
+		return update, nil
+	}
 
 	if plan.MaxFailuresBeforePause > 0 && update.ConsecutiveFailures >= plan.MaxFailuresBeforePause {
 		update.Enabled = false

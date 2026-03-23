@@ -2073,9 +2073,22 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 
 // sendErrorAndEnd sends an error event and ends the stream
 func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
-	log.Printf("Account test error: %s", errorMsg)
+	if !shouldSuppressAccountTestErrorLog(errorMsg) {
+		log.Printf("Account test error: %s", errorMsg)
+	}
 	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)
+}
+
+func shouldSuppressAccountTestErrorLog(errorMsg string) bool {
+	msg := strings.ToLower(strings.TrimSpace(errorMsg))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "account not found") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "token_invalidated") ||
+		strings.Contains(msg, "authentication token has been invalidated")
 }
 
 // RunTestBackground executes an account test in-memory (no real HTTP client),
