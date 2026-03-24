@@ -474,7 +474,14 @@ export interface OpenAIWSRuntimeResponse {
     proxies?: Array<Record<string, any>>
     accounts?: Array<Record<string, any>>
   }
-  transport?: Record<string, any>
+  transport?: {
+    proxy_client_cache_hits?: number
+    proxy_client_cache_misses?: number
+    transport_reuse_ratio?: number
+    http1_dial_total?: number
+    http2_dial_total?: number
+    fallback_to_http1_total?: number
+  }
   timestamp: string
 }
 

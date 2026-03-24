@@ -353,6 +353,11 @@ type OpenAIGatewayService struct {
 	runtimeSyncStopOnce    sync.Once
 	runtimeSyncMu          sync.Mutex
 	runtimeSyncPending     map[int64]struct{}
+	healthPrefetchCh       chan openAIHealthPrefetchJob
+	healthPrefetchStop     chan struct{}
+	healthPrefetchStopOnce sync.Once
+	healthPrefetchWG       sync.WaitGroup
+	healthPrefetchState    sync.Map
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -408,8 +413,10 @@ func NewOpenAIGatewayService(
 		runtimeSyncWake:        make(chan struct{}, 1),
 		runtimeSyncStop:        make(chan struct{}),
 		runtimeSyncPending:     make(map[int64]struct{}),
+		healthPrefetchStop:     make(chan struct{}),
 	}
 	svc.startOpenAIRuntimeSyncWorker()
+	svc.startOpenAIHealthPrefetchWorker()
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }
@@ -440,6 +447,12 @@ func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 				close(s.runtimeSyncStop)
 			}
 		})
+		s.healthPrefetchStopOnce.Do(func() {
+			if s.healthPrefetchStop != nil {
+				close(s.healthPrefetchStop)
+			}
+		})
+		s.healthPrefetchWG.Wait()
 	}
 	if s != nil && s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
@@ -452,11 +465,12 @@ func (s *OpenAIGatewayService) logOpenAIWSModeBootstrap() {
 	}
 	wsCfg := s.cfg.Gateway.OpenAIWS
 	logOpenAIWSModeInfo(
-		"bootstrap enabled=%v oauth_enabled=%v apikey_enabled=%v force_http=%v responses_websockets_v2=%v responses_websockets=%v payload_log_sample_rate=%.3f event_flush_batch_size=%d event_flush_interval_ms=%d prewarm_cooldown_ms=%d retry_backoff_initial_ms=%d retry_backoff_max_ms=%d retry_jitter_ratio=%.3f retry_total_budget_ms=%d ws_read_limit_bytes=%d",
+		"bootstrap enabled=%v oauth_enabled=%v apikey_enabled=%v force_http=%v dial_http_version=%s responses_websockets_v2=%v responses_websockets=%v payload_log_sample_rate=%.3f event_flush_batch_size=%d event_flush_interval_ms=%d prewarm_cooldown_ms=%d retry_backoff_initial_ms=%d retry_backoff_max_ms=%d retry_jitter_ratio=%.3f retry_total_budget_ms=%d ws_read_limit_bytes=%d",
 		wsCfg.Enabled,
 		wsCfg.OAuthEnabled,
 		wsCfg.APIKeyEnabled,
 		wsCfg.ForceHTTP,
+		strings.TrimSpace(wsCfg.DialHTTPVersion),
 		wsCfg.ResponsesWebsocketsV2,
 		wsCfg.ResponsesWebsockets,
 		wsCfg.PayloadLogSampleRate,

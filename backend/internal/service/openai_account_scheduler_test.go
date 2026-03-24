@@ -531,6 +531,90 @@ func TestOpenAIGatewayService_OpenAIAccountSchedulerMetrics(t *testing.T) {
 	require.GreaterOrEqual(t, snapshot.RuntimeStatsAccountCount, 1)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_EnqueuesHealthPrefetchForTopCandidates(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(13)
+	accounts := []Account{
+		{ID: 4101, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{ID: 4102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{ID: 4103, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 3
+	cfg.Gateway.OpenAI.HealthPrefetch.Enabled = true
+	cfg.Gateway.OpenAI.HealthPrefetch.TopN = 3
+	cfg.Gateway.OpenAI.HealthPrefetch.WorkerCount = 1
+	cfg.Gateway.OpenAI.HealthPrefetch.QueueSize = 8
+	cfg.Gateway.OpenAI.HealthPrefetch.CooldownSeconds = 60
+
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			4101: {AccountID: 4101, LoadRate: 10, WaitingCount: 0},
+			4102: {AccountID: 4102, LoadRate: 20, WaitingCount: 0},
+			4103: {AccountID: 4103, LoadRate: 30, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			4101: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+		healthPrefetchCh:   make(chan openAIHealthPrefetchJob, 8),
+		healthPrefetchStop: make(chan struct{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+
+	require.GreaterOrEqual(t, len(svc.healthPrefetchCh), 3)
+	seen := make(map[int64]struct{})
+	for i := 0; i < 3; i++ {
+		job := <-svc.healthPrefetchCh
+		seen[job.AccountID] = struct{}{}
+		require.Equal(t, "gpt-5.1", job.RequestedModel)
+	}
+	require.Contains(t, seen, int64(4101))
+	require.Contains(t, seen, int64(4102))
+	require.Contains(t, seen, int64(4103))
+}
+
+func TestOpenAIGatewayService_HealthPrefetchCooldownSuppressesDuplicateEnqueue(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAI.HealthPrefetch.Enabled = true
+	cfg.Gateway.OpenAI.HealthPrefetch.TopN = 3
+	cfg.Gateway.OpenAI.HealthPrefetch.WorkerCount = 1
+	cfg.Gateway.OpenAI.HealthPrefetch.QueueSize = 4
+	cfg.Gateway.OpenAI.HealthPrefetch.CooldownSeconds = 60
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		healthPrefetchCh: make(chan openAIHealthPrefetchJob, 4),
+		healthPrefetchStop: make(chan struct{}),
+	}
+
+	svc.enqueueOpenAIHealthPrefetch(5101, "gpt-5.1")
+	svc.enqueueOpenAIHealthPrefetch(5101, "gpt-5.1")
+
+	require.Equal(t, 1, len(svc.healthPrefetchCh))
+	job := <-svc.healthPrefetchCh
+	require.Equal(t, int64(5101), job.AccountID)
+	require.Equal(t, "gpt-5.1", job.RequestedModel)
+}
+
 func intPtrForTest(v int) *int {
 	return &v
 }

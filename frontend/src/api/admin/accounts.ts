@@ -493,24 +493,38 @@ export async function syncFromCrs(params: {
 
 export async function exportData(options?: {
   ids?: number[]
-  filters?: Pick<AccountListFilters, 'platform' | 'type' | 'status' | 'search'>
+  filters?: Pick<AccountListFilters, 'platform' | 'type' | 'status' | 'search' | 'group' | 'plan' | 'oauth_type' | 'tier_id'>
   includeProxies?: boolean
-}): Promise<AdminDataPayload> {
+}): Promise<{ blob: Blob; filename: string }> {
   const params: Record<string, string> = {}
   if (options?.ids && options.ids.length > 0) {
     params.ids = options.ids.join(',')
   } else if (options?.filters) {
-    const { platform, type, status, search } = options.filters
+    const { platform, type, status, search, group, plan, oauth_type, tier_id } = options.filters
     if (platform) params.platform = platform
     if (type) params.type = type
     if (status) params.status = status
     if (search) params.search = search
+    if (group) params.group = group
+    if (plan) params.plan = plan
+    if (oauth_type) params.oauth_type = oauth_type
+    if (tier_id) params.tier_id = tier_id
   }
   if (options?.includeProxies === false) {
     params.include_proxies = 'false'
   }
-  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', { params })
-  return data
+  params.download = '1'
+
+  const response = await apiClient.get<Blob>('/admin/accounts/data', {
+    params,
+    responseType: 'blob',
+    timeout: 0
+  })
+
+  const disposition = String(response.headers['content-disposition'] || '')
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match?.[1] || 'sub2api-account-export.json'
+  return { blob: response.data, filename }
 }
 
 export async function importData(payload: {

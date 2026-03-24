@@ -800,6 +800,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	topK := s.service.openAIWSLBTopK()
 	topK = adaptiveOpenAISelectionTopK(topK, len(candidates), loadSkew)
 	selectionOrder := buildOpenAITieredSelectionOrder(candidates, topK, req)
+	s.service.prefetchOpenAIAccountHealthCandidates(selectionOrder, req.RequestedModel)
 
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]

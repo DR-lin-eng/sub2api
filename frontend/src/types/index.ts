@@ -324,6 +324,8 @@ export interface Toast {
   type: ToastType
   message: string
   title?: string
+  subtitle?: string
+  progress?: number
   duration?: number // in milliseconds, undefined means no auto-dismiss
   startTime?: number // timestamp when toast was created, for progress bar
 }

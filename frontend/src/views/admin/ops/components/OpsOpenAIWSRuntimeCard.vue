@@ -130,6 +130,16 @@ onMounted(() => {
         <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.retry?.retry_attempts_total) }}</div>
       </div>
       <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">HTTP Version</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+          H1 {{ formatInt(runtime?.transport?.http1_dial_total) }} / H2 {{ formatInt(runtime?.transport?.http2_dial_total) }}
+        </div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+        <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">H2→H1 Fallback</div>
+        <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.transport?.fallback_to_http1_total) }}</div>
+      </div>
+      <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
         <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Incomplete</div>
         <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(runtime?.relay?.incomplete_close_total) }}</div>
       </div>

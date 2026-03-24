@@ -1226,7 +1226,7 @@ const handleExportData = async () => {
   if (exportingData.value) return
   exportingData.value = true
   try {
-    const dataPayload = await adminAPI.accounts.exportData(
+    const exportFile = await adminAPI.accounts.exportData(
       selIds.value.length > 0
         ? { ids: selIds.value, includeProxies: includeProxyOnExport.value }
         : {
@@ -1235,17 +1235,18 @@ const handleExportData = async () => {
               platform: params.platform,
               type: params.type,
               status: params.status,
-              search: params.search
+              search: params.search,
+              group: params.group,
+              plan: params.plan,
+              oauth_type: params.oauth_type,
+              tier_id: params.tier_id
             }
           }
     )
-    const timestamp = formatExportTimestamp()
-    const filename = `sub2api-account-${timestamp}.json`
-    const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
+    const url = URL.createObjectURL(exportFile.blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = filename
+    link.download = exportFile.filename || `sub2api-account-${formatExportTimestamp()}.json`
     link.click()
     URL.revokeObjectURL(url)
     appStore.showSuccess(t('admin.accounts.dataExported'))

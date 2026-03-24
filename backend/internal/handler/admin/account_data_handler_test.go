@@ -172,6 +172,36 @@ func TestExportDataWithoutProxies(t *testing.T) {
 	require.Nil(t, resp.Data.Accounts[0].ProxyKey)
 }
 
+func TestExportDataDownloadReturnsAttachment(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	adminSvc.accounts = []service.Account{
+		{
+			ID:          21,
+			Name:        "account",
+			Platform:    service.PlatformOpenAI,
+			Type:        service.AccountTypeOAuth,
+			Credentials: map[string]any{"token": "secret"},
+			Concurrency: 3,
+			Priority:    50,
+			Status:      service.StatusDisabled,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?download=1", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Content-Disposition"), "attachment;")
+	require.Contains(t, rec.Header().Get("Content-Disposition"), "sub2api-account-")
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var payload dataPayload
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Len(t, payload.Accounts, 1)
+	require.Equal(t, "account", payload.Accounts[0].Name)
+}
+
 func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 

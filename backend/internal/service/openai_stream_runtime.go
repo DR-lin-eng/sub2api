@@ -1,14 +1,19 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const (
@@ -25,6 +30,16 @@ const (
 	defaultOpenAIRuntimeSyncBatch            = time.Second
 	defaultOpenAITempUnscheduleWriteGap      = 5 * time.Second
 )
+
+type openAIHealthPrefetchJob struct {
+	AccountID      int64
+	RequestedModel string
+}
+
+type openAIHealthPrefetchState struct {
+	inFlight atomic.Bool
+	lastAt   atomic.Int64
+}
 
 type OpenAIStreamingPhaseBudget struct {
 	ConnectBudget    time.Duration `json:"connect_budget"`
@@ -426,6 +441,255 @@ func (s *OpenAIGatewayService) openAIAccountBreakerCooldown() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAI.AccountCircuitBreaker.CooldownMS) * time.Millisecond
 	}
 	return defaultOpenAIAccountBreakerCooldown
+}
+
+func (s *OpenAIGatewayService) openAIHealthPrefetchConfig() config.GatewayOpenAIHealthPrefetchConfig {
+	if s != nil && s.cfg != nil {
+		return s.cfg.Gateway.OpenAI.HealthPrefetch
+	}
+	return config.GatewayOpenAIHealthPrefetchConfig{}
+}
+
+func (s *OpenAIGatewayService) openAIHealthPrefetchEnabled() bool {
+	cfg := s.openAIHealthPrefetchConfig()
+	return cfg.Enabled && cfg.TopN > 0 && cfg.WorkerCount > 0 && cfg.QueueSize > 0
+}
+
+func (s *OpenAIGatewayService) openAIHealthPrefetchTopN() int {
+	cfg := s.openAIHealthPrefetchConfig()
+	if cfg.TopN <= 0 {
+		return 0
+	}
+	if cfg.TopN < 3 {
+		return 3
+	}
+	if cfg.TopN > 10 {
+		return 10
+	}
+	return cfg.TopN
+}
+
+func (s *OpenAIGatewayService) openAIHealthPrefetchCooldown() time.Duration {
+	cfg := s.openAIHealthPrefetchConfig()
+	if cfg.CooldownSeconds > 0 {
+		return time.Duration(cfg.CooldownSeconds) * time.Second
+	}
+	return time.Minute
+}
+
+func (s *OpenAIGatewayService) openAIHealthPrefetchTimeout() time.Duration {
+	cfg := s.openAIHealthPrefetchConfig()
+	if cfg.TimeoutMS > 0 {
+		return time.Duration(cfg.TimeoutMS) * time.Millisecond
+	}
+	return 3500 * time.Millisecond
+}
+
+func (s *OpenAIGatewayService) startOpenAIHealthPrefetchWorker() {
+	if s == nil || !s.openAIHealthPrefetchEnabled() {
+		return
+	}
+	cfg := s.openAIHealthPrefetchConfig()
+	s.healthPrefetchCh = make(chan openAIHealthPrefetchJob, cfg.QueueSize)
+	workerCount := cfg.WorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	for i := 0; i < workerCount; i++ {
+		s.healthPrefetchWG.Add(1)
+		go func() {
+			defer s.healthPrefetchWG.Done()
+			for {
+				select {
+				case <-s.healthPrefetchStop:
+					return
+				case job, ok := <-s.healthPrefetchCh:
+					if !ok {
+						return
+					}
+					s.runOpenAIHealthPrefetchJob(job)
+				}
+			}
+		}()
+	}
+}
+
+func (s *OpenAIGatewayService) enqueueOpenAIHealthPrefetch(accountID int64, requestedModel string) {
+	if s == nil || !s.openAIHealthPrefetchEnabled() || accountID <= 0 || s.healthPrefetchCh == nil {
+		return
+	}
+	key := openAIHealthPrefetchKey(accountID, requestedModel)
+	state := s.loadOrCreateOpenAIHealthPrefetchState(key)
+	now := time.Now()
+	last := time.Unix(0, state.lastAt.Load())
+	if !last.IsZero() && now.Sub(last) < s.openAIHealthPrefetchCooldown() {
+		return
+	}
+	if !state.inFlight.CompareAndSwap(false, true) {
+		return
+	}
+	state.lastAt.Store(now.UnixNano())
+	job := openAIHealthPrefetchJob{AccountID: accountID, RequestedModel: requestedModel}
+	select {
+	case s.healthPrefetchCh <- job:
+	default:
+		state.inFlight.Store(false)
+	}
+}
+
+func openAIHealthPrefetchKey(accountID int64, requestedModel string) string {
+	return strings.TrimSpace(requestedModel) + ":" + strconv.FormatInt(accountID, 10)
+}
+
+func (s *OpenAIGatewayService) loadOrCreateOpenAIHealthPrefetchState(key string) *openAIHealthPrefetchState {
+	if value, ok := s.healthPrefetchState.Load(key); ok {
+		if state, ok := value.(*openAIHealthPrefetchState); ok && state != nil {
+			return state
+		}
+	}
+	state := &openAIHealthPrefetchState{}
+	actual, _ := s.healthPrefetchState.LoadOrStore(key, state)
+	existing, _ := actual.(*openAIHealthPrefetchState)
+	if existing != nil {
+		return existing
+	}
+	return state
+}
+
+func (s *OpenAIGatewayService) runOpenAIHealthPrefetchJob(job openAIHealthPrefetchJob) {
+	key := openAIHealthPrefetchKey(job.AccountID, job.RequestedModel)
+	defer func() {
+		if value, ok := s.healthPrefetchState.Load(key); ok {
+			if state, ok := value.(*openAIHealthPrefetchState); ok && state != nil {
+				state.inFlight.Store(false)
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), s.openAIHealthPrefetchTimeout())
+	defer cancel()
+	s.probeOpenAIAccountHealth(ctx, job.AccountID, job.RequestedModel)
+}
+
+func (s *OpenAIGatewayService) prefetchOpenAIAccountHealthCandidates(candidates []openAIAccountCandidateScore, requestedModel string) {
+	if s == nil || !s.openAIHealthPrefetchEnabled() || len(candidates) == 0 {
+		return
+	}
+	limit := s.openAIHealthPrefetchTopN()
+	if limit <= 0 {
+		return
+	}
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+	for i := 0; i < limit; i++ {
+		account := candidates[i].account
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		s.enqueueOpenAIHealthPrefetch(account.ID, requestedModel)
+	}
+}
+
+func createOpenAIHealthPrefetchPayload(modelID string, isOAuth bool) []byte {
+	payload := map[string]any{
+		"model": modelID,
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "input_text",
+						"text": "hi",
+					},
+				},
+			},
+		},
+		"stream":            false,
+		"max_output_tokens": 1,
+		"instructions":      openai.DefaultInstructions,
+	}
+	if isOAuth {
+		payload["store"] = false
+	}
+	raw, _ := json.Marshal(payload)
+	return raw
+}
+
+func (s *OpenAIGatewayService) probeOpenAIAccountHealth(ctx context.Context, accountID int64, requestedModel string) {
+	if s == nil || s.accountRepo == nil || s.httpUpstream == nil || accountID <= 0 {
+		return
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil || !account.IsOpenAI() || !account.IsSchedulable() {
+		return
+	}
+	modelID := strings.TrimSpace(requestedModel)
+	if modelID == "" {
+		modelID = openai.DefaultTestModel
+	}
+	if account.Type == AccountTypeAPIKey {
+		if mapping := account.GetModelMapping(); len(mapping) > 0 {
+			if mappedModel, exists := mapping[modelID]; exists {
+				modelID = mappedModel
+			}
+		}
+	}
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return
+	}
+
+	apiURL := chatgptCodexURL
+	isOAuth := account.IsOAuth()
+	if !isOAuth {
+		baseURL := account.GetOpenAIBaseURL()
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = "https://api.openai.com"
+		}
+		apiURL = strings.TrimSuffix(strings.TrimSpace(baseURL), "/") + "/v1/responses"
+	}
+	payload := createOpenAIHealthPrefetchPayload(modelID, isOAuth)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if isOAuth {
+		req.Host = "chatgpt.com"
+		req.Header.Set("accept", "application/json")
+		if chatgptAccountID := account.GetChatGPTAccountID(); strings.TrimSpace(chatgptAccountID) != "" {
+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+		}
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
+	if err != nil {
+		failoverErr := newProxyRequestFailoverError(account, proxyURL, err)
+		s.RegisterOpenAIRuntimeFailure(account, failoverErr)
+		s.TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusBadRequest {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		failoverErr := buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
+		if s.rateLimitService != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		}
+		s.RegisterOpenAIRuntimeFailure(account, failoverErr)
+		s.TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
+		s.queueOpenAIRuntimeStateSync(account.ID)
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
+	s.MarkOpenAIAccountHealthy(account)
 }
 
 func (s *OpenAIGatewayService) snapshotOpenAICircuitRuntime(limit int) OpenAICircuitRuntimeSnapshot {

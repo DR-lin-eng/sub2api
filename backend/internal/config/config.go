@@ -536,6 +536,8 @@ type GatewayOpenAIWSConfig struct {
 	ModeRouterV2Enabled bool `mapstructure:"mode_router_v2_enabled"`
 	// IngressModeDefault: ingress 默认模式（off/ctx_pool/passthrough）
 	IngressModeDefault string `mapstructure:"ingress_mode_default"`
+	// DialHTTPVersion: upstream WS 握手使用的 HTTP 版本（auto/1.1/2）
+	DialHTTPVersion string `mapstructure:"dial_http_version"`
 	// Enabled: 全局总开关（默认 true）
 	Enabled bool `mapstructure:"enabled"`
 	// OAuthEnabled: 是否允许 OpenAI OAuth 账号使用 WS
@@ -620,6 +622,7 @@ type GatewayOpenAIConfig struct {
 	Streaming             GatewayOpenAIStreamingConfig             `mapstructure:"streaming"`
 	ProxyCircuitBreaker   GatewayOpenAIProxyCircuitBreakerConfig   `mapstructure:"proxy_circuit_breaker"`
 	AccountCircuitBreaker GatewayOpenAIAccountCircuitBreakerConfig `mapstructure:"account_circuit_breaker"`
+	HealthPrefetch        GatewayOpenAIHealthPrefetchConfig        `mapstructure:"health_prefetch"`
 }
 
 // GatewayOpenAIStreamingConfig controls request-phase budgets and HTTP relay flushing.
@@ -641,6 +644,15 @@ type GatewayOpenAIProxyCircuitBreakerConfig struct {
 
 type GatewayOpenAIAccountCircuitBreakerConfig struct {
 	CooldownMS int `mapstructure:"cooldown_ms"`
+}
+
+type GatewayOpenAIHealthPrefetchConfig struct {
+	Enabled         bool `mapstructure:"enabled"`
+	TopN            int  `mapstructure:"top_n"`
+	WorkerCount     int  `mapstructure:"worker_count"`
+	QueueSize       int  `mapstructure:"queue_size"`
+	CooldownSeconds int  `mapstructure:"cooldown_seconds"`
+	TimeoutMS       int  `mapstructure:"timeout_ms"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1407,6 +1419,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
 	viper.SetDefault("gateway.openai_ws.ingress_mode_default", "ctx_pool")
+	viper.SetDefault("gateway.openai_ws.dial_http_version", "auto")
 	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
@@ -1460,6 +1473,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai.proxy_circuit_breaker.failure_threshold", 2)
 	viper.SetDefault("gateway.openai.proxy_circuit_breaker.cooldown_ms", 300000)
 	viper.SetDefault("gateway.openai.account_circuit_breaker.cooldown_ms", 120000)
+	viper.SetDefault("gateway.openai.health_prefetch.enabled", true)
+	viper.SetDefault("gateway.openai.health_prefetch.top_n", 5)
+	viper.SetDefault("gateway.openai.health_prefetch.worker_count", 1)
+	viper.SetDefault("gateway.openai.health_prefetch.queue_size", 32)
+	viper.SetDefault("gateway.openai.health_prefetch.cooldown_seconds", 60)
+	viper.SetDefault("gateway.openai.health_prefetch.timeout_ms", 3500)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -2191,6 +2210,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("gateway.openai_ws.ingress_mode_default must be one of off|ctx_pool|passthrough")
 		}
 	}
+	if version := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.DialHTTPVersion)); version != "" {
+		switch version {
+		case "auto", "1.1", "2":
+		default:
+			return fmt.Errorf("gateway.openai_ws.dial_http_version must be one of auto|1.1|2")
+		}
+	}
 	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.StoreDisabledConnMode)); mode != "" {
 		switch mode {
 		case "strict", "adaptive", "off":
@@ -2270,6 +2296,24 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAI.AccountCircuitBreaker.CooldownMS < 0 {
 		return fmt.Errorf("gateway.openai.account_circuit_breaker.cooldown_ms must be non-negative")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.TopN < 0 {
+		return fmt.Errorf("gateway.openai.health_prefetch.top_n must be non-negative")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.TopN > 10 {
+		return fmt.Errorf("gateway.openai.health_prefetch.top_n must be <= 10")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.WorkerCount < 0 {
+		return fmt.Errorf("gateway.openai.health_prefetch.worker_count must be non-negative")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.QueueSize < 0 {
+		return fmt.Errorf("gateway.openai.health_prefetch.queue_size must be non-negative")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.CooldownSeconds < 0 {
+		return fmt.Errorf("gateway.openai.health_prefetch.cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAI.HealthPrefetch.TimeoutMS < 0 {
+		return fmt.Errorf("gateway.openai.health_prefetch.timeout_ms must be non-negative")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

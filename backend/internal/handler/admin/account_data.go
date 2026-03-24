@@ -172,7 +172,45 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 		Accounts:   dataAccounts,
 	}
 
+	if shouldDownloadExportData(c) {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			response.InternalError(c, "Failed to serialize export data")
+			return
+		}
+		c.Header("Content-Type", "application/json")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", buildAccountExportFilename()))
+		c.Data(http.StatusOK, "application/json", raw)
+		return
+	}
+
 	response.Success(c, payload)
+}
+
+func shouldDownloadExportData(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	raw := strings.TrimSpace(strings.ToLower(c.Query("download")))
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildAccountExportFilename() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf(
+		"sub2api-account-%04d%02d%02d%02d%02d%02d.json",
+		now.Year(),
+		now.Month(),
+		now.Day(),
+		now.Hour(),
+		now.Minute(),
+		now.Second(),
+	)
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {

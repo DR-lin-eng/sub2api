@@ -259,6 +259,13 @@ func openAIWSHeaderValueForLog(headers http.Header, key string) string {
 	return truncateOpenAIWSLogValue(headers.Get(key), openAIWSHeaderValueMaxLen)
 }
 
+func openAIWSHandshakeHTTPVersion(headers http.Header) string {
+	if headers == nil {
+		return "-"
+	}
+	return truncateOpenAIWSLogValue(headers.Get(openAIWSHTTPVersionHeader), 16)
+}
+
 func hasOpenAIWSHeader(headers http.Header, key string) bool {
 	if headers == nil {
 		return false
@@ -922,7 +929,7 @@ func (s *OpenAIGatewayService) getOpenAIWSPassthroughDialer() openAIWSClientDial
 	}
 	s.openaiWSPassthroughDialerOnce.Do(func() {
 		if s.openaiWSPassthroughDialer == nil {
-			s.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer()
+			s.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer(s.cfg)
 		}
 	})
 	return s.openaiWSPassthroughDialer
@@ -1942,11 +1949,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	})
 	if err != nil {
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
+		dialHTTPVersion := openAIWSHandshakeHTTPVersion(func() http.Header {
+			var dialErr *openAIWSDialError
+			if errors.As(err, &dialErr) && dialErr != nil {
+				return dialErr.ResponseHeaders
+			}
+			return nil
+		}())
 		logOpenAIWSModeInfo(
-			"acquire_fail account_id=%d account_type=%s transport=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_new_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
+			"acquire_fail account_id=%d account_type=%s transport=%s http_version=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_new_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
 			account.ID,
 			account.Type,
 			normalizeOpenAIWSLogValue(string(decision.Transport)),
+			dialHTTPVersion,
 			normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(err)),
 			dialStatus,
 			dialClass,
@@ -1980,11 +1995,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		lease.Release()
 	}()
 	connID := strings.TrimSpace(lease.ConnID())
+	handshakeHTTPVersion := openAIWSHandshakeHTTPVersion(lease.HandshakeHeaders())
 	logOpenAIWSModeDebug(
-		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
+		"connected account_id=%d account_type=%s transport=%s http_version=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
 		account.ID,
 		account.Type,
 		normalizeOpenAIWSLogValue(string(decision.Transport)),
+		handshakeHTTPVersion,
 		connID,
 		lease.Reused(),
 		lease.ConnPickDuration().Milliseconds(),
@@ -2746,10 +2763,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		acquireCancel()
 		if acquireErr != nil {
 			dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(acquireErr)
+			dialHTTPVersion := openAIWSHandshakeHTTPVersion(func() http.Header {
+				var dialErr *openAIWSDialError
+				if errors.As(acquireErr, &dialErr) && dialErr != nil {
+					return dialErr.ResponseHeaders
+				}
+				return nil
+			}())
 			logOpenAIWSModeInfo(
-				"ingress_ws_upstream_acquire_fail account_id=%d turn=%d reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_preferred_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
+				"ingress_ws_upstream_acquire_fail account_id=%d turn=%d http_version=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_preferred_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
 				account.ID,
 				turn,
+				dialHTTPVersion,
 				normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(acquireErr)),
 				dialStatus,
 				dialClass,
@@ -2787,6 +2812,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, acquireErr
 		}
 		connID := strings.TrimSpace(lease.ConnID())
+		handshakeHTTPVersion := openAIWSHandshakeHTTPVersion(lease.HandshakeHeaders())
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			turnState = handshakeTurnState
 			if stateStore != nil && sessionHash != "" {
@@ -2800,9 +2826,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			baseAcquireReq.Headers = updatedHeaders
 		}
 		logOpenAIWSModeInfo(
-			"ingress_ws_upstream_connected account_id=%d turn=%d conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d preferred_conn_id=%s",
+			"ingress_ws_upstream_connected account_id=%d turn=%d http_version=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d preferred_conn_id=%s",
 			account.ID,
 			turn,
+			handshakeHTTPVersion,
 			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 			lease.Reused(),
 			lease.ConnPickDuration().Milliseconds(),

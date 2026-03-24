@@ -13,6 +13,14 @@ import {
 } from '@/api/admin/system'
 import { getPublicSettings as fetchPublicSettingsAPI } from '@/api/auth'
 
+type ToastOptions = {
+  title?: string
+  subtitle?: string
+  progress?: number
+}
+
+type ToastPatch = Partial<Omit<Toast, 'id'>>
+
 export const useAppStore = defineStore('app', () => {
   // ==================== State ====================
 
@@ -101,14 +109,21 @@ export const useAppStore = defineStore('app', () => {
    * @param type - Type of toast (success, error, info, warning)
    * @param message - Toast message content
    * @param duration - Auto-dismiss duration in ms (undefined = no auto-dismiss)
+   * @param options - Optional title/subtitle/progress metadata
    * @returns Toast ID for manual dismissal
    */
-  function showToast(type: ToastType, message: string, duration?: number): string {
+  function showToast(type: ToastType, message: string, duration?: number, options?: ToastOptions): string {
     const id = `toast-${++toastIdCounter}`
+    const normalizedProgress = typeof options?.progress === 'number'
+      ? Math.min(100, Math.max(0, Math.round(options.progress)))
+      : undefined
     const toast: Toast = {
       id,
       type,
       message,
+      title: options?.title,
+      subtitle: options?.subtitle,
+      progress: normalizedProgress,
       duration,
       startTime: duration !== undefined ? Date.now() : undefined
     }
@@ -117,12 +132,48 @@ export const useAppStore = defineStore('app', () => {
 
     // Auto-dismiss if duration is specified
     if (duration !== undefined) {
-      setTimeout(() => {
-        hideToast(id)
-      }, duration)
+      scheduleToastAutoDismiss(id, duration)
     }
 
     return id
+  }
+
+  function scheduleToastAutoDismiss(id: string, duration: number): void {
+    if (duration <= 0) return
+    setTimeout(() => {
+      hideToast(id)
+    }, duration)
+  }
+
+  /**
+   * Update an existing toast in place.
+   * Useful for long-running tasks that need progress/status updates.
+   */
+  function updateToast(id: string, patch: ToastPatch): boolean {
+    const index = toasts.value.findIndex((t) => t.id === id)
+    if (index === -1) return false
+
+    const current = toasts.value[index]
+    const next: Toast = {
+      ...current,
+      ...patch
+    }
+
+    if (typeof patch.progress === 'number') {
+      next.progress = Math.min(100, Math.max(0, Math.round(patch.progress)))
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'duration')) {
+      if (typeof patch.duration === 'number') {
+        next.startTime = Date.now()
+        scheduleToastAutoDismiss(id, patch.duration)
+      } else {
+        next.startTime = undefined
+      }
+    }
+
+    toasts.value[index] = next
+    return true
   }
 
   /**
@@ -415,6 +466,7 @@ export const useAppStore = defineStore('app', () => {
     setMobileOpen,
     setLoading,
     showToast,
+    updateToast,
     showSuccess,
     showError,
     showInfo,
