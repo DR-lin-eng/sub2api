@@ -143,24 +143,6 @@ const handleClose = () => {
   emit('close')
 }
 
-const readFileAsText = async (sourceFile: File): Promise<string> => {
-  if (typeof sourceFile.text === 'function') {
-    return sourceFile.text()
-  }
-
-  if (typeof sourceFile.arrayBuffer === 'function') {
-    const buffer = await sourceFile.arrayBuffer()
-    return new TextDecoder().decode(buffer)
-  }
-
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
-    reader.readAsText(sourceFile)
-  })
-}
-
 const handleImport = async () => {
   if (!file.value) {
     appStore.showError(t('admin.proxies.dataImportSelectFile'))
@@ -169,10 +151,7 @@ const handleImport = async () => {
 
   importing.value = true
   try {
-    const text = await readFileAsText(file.value)
-    const dataPayload = JSON.parse(text)
-
-    const res = await adminAPI.proxies.importData({ data: dataPayload })
+    const res = await adminAPI.proxies.importData({ file: file.value })
 
     result.value = res
 
@@ -189,10 +168,11 @@ const handleImport = async () => {
       emit('imported')
     }
   } catch (error: any) {
-    if (error instanceof SyntaxError) {
+    const message = String(error?.response?.data?.message || error?.message || '')
+    if (message.toLowerCase().includes('invalid import file') || message.toLowerCase().includes('unexpected token')) {
       appStore.showError(t('admin.proxies.dataImportParseFailed'))
     } else {
-      appStore.showError(error?.message || t('admin.proxies.dataImportFailed'))
+      appStore.showError(message || t('admin.proxies.dataImportFailed'))
     }
   } finally {
     importing.value = false

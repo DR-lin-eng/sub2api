@@ -243,9 +243,28 @@ export async function exportData(options?: {
 }
 
 export async function importData(payload: {
-  data: AdminDataPayload
+  file?: File
+  data?: AdminDataPayload
 }): Promise<AdminDataImportResult> {
-  const { data } = await apiClient.post<AdminDataImportResult>('/admin/proxies/data', payload)
+  if (payload.file) {
+    const formData = new FormData()
+    formData.append('file', payload.file)
+    const { data } = await apiClient.post<AdminDataImportResult>('/admin/proxies/data', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      timeout: 0,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
+    })
+    return data
+  }
+
+  const { data } = await apiClient.post<AdminDataImportResult>('/admin/proxies/data', payload, {
+    timeout: 0,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity
+  })
   return data
 }
 

@@ -629,7 +629,7 @@ urlFallbackLoop:
 
 			// Capture upstream request body for ops retry of this attempt.
 			if p.c != nil && len(p.body) > 0 {
-				p.c.Set(OpsUpstreamRequestBodyKey, string(p.body))
+				setOpsUpstreamRequestBody(p.c, p.body)
 			}
 
 			resp, err = p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)

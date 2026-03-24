@@ -158,24 +158,6 @@ const handleClose = () => {
   emit('close')
 }
 
-const readFileAsText = async (sourceFile: File): Promise<string> => {
-  if (typeof sourceFile.text === 'function') {
-    return sourceFile.text()
-  }
-
-  if (typeof sourceFile.arrayBuffer === 'function') {
-    const buffer = await sourceFile.arrayBuffer()
-    return new TextDecoder().decode(buffer)
-  }
-
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result ?? ''))
-    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
-    reader.readAsText(sourceFile)
-  })
-}
-
 const handleImport = async () => {
   if (!file.value) {
     appStore.showError(t('admin.accounts.dataImportSelectFile'))
@@ -184,11 +166,8 @@ const handleImport = async () => {
 
   importing.value = true
   try {
-    const text = await readFileAsText(file.value)
-    const dataPayload = JSON.parse(text)
-
     const res = await adminAPI.accounts.importData({
-      data: dataPayload,
+      file: file.value,
       group_ids: selectedGroupIDs.value,
       skip_default_group_bind: true
     })
@@ -209,10 +188,11 @@ const handleImport = async () => {
       emit('imported')
     }
   } catch (error: any) {
-    if (error instanceof SyntaxError) {
+    const message = String(error?.response?.data?.message || error?.message || '')
+    if (message.toLowerCase().includes('invalid import file') || message.toLowerCase().includes('unexpected token')) {
       appStore.showError(t('admin.accounts.dataImportParseFailed'))
     } else {
-      appStore.showError(error?.message || t('admin.accounts.dataImportFailed'))
+      appStore.showError(message || t('admin.accounts.dataImportFailed'))
     }
   } finally {
     importing.value = false

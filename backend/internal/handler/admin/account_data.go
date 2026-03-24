@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -174,9 +176,9 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {
-	var req DataImportRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	req, err := parseAccountDataImportRequest(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
 		return
 	}
 
@@ -188,6 +190,35 @@ func (h *AccountHandler) ImportData(c *gin.Context) {
 	executeAdminIdempotentJSON(c, "admin.accounts.import_data", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		return h.importData(ctx, req)
 	})
+}
+
+func parseAccountDataImportRequest(c *gin.Context) (DataImportRequest, error) {
+	var req DataImportRequest
+	if c == nil || c.Request == nil {
+		return req, errors.New("invalid request")
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
+		payload, err := parseImportPayloadFromMultipart(c)
+		if err != nil {
+			return req, err
+		}
+		req.Data = payload
+		groupIDs, err := parseImportGroupIDs(c)
+		if err != nil {
+			return req, err
+		}
+		req.GroupIDs = groupIDs
+		if skip, ok, err := parseOptionalBoolFormValue(c, "skip_default_group_bind"); err != nil {
+			return req, err
+		} else if ok {
+			req.SkipDefaultGroupBind = &skip
+		}
+		return req, nil
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return req, errors.New("Invalid request: " + err.Error())
+	}
+	return req, nil
 }
 
 func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) (DataImportResult, error) {
@@ -610,4 +641,68 @@ func normalizeProxyStatus(status string) string {
 	default:
 		return normalized
 	}
+}
+
+func parseImportPayloadFromMultipart(c *gin.Context) (DataPayload, error) {
+	var payload DataPayload
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		return payload, errors.New("import file is required")
+	}
+	defer func() { _ = file.Close() }()
+
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) {
+			return payload, errors.New("import file is empty")
+		}
+		return payload, fmt.Errorf("invalid import file: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return payload, errors.New("invalid import file: multiple JSON values are not allowed")
+	} else if !errors.Is(err, io.EOF) {
+		return payload, fmt.Errorf("invalid import file: %w", err)
+	}
+	return payload, nil
+}
+
+func parseImportGroupIDs(c *gin.Context) ([]int64, error) {
+	values := c.PostFormArray("group_ids")
+	if len(values) == 0 {
+		if raw := strings.TrimSpace(c.PostForm("group_ids")); raw != "" {
+			values = []string{raw}
+		}
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+	ids := make([]int64, 0, len(values))
+	for _, item := range values {
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("invalid group_ids value: %s", part)
+			}
+			ids = append(ids, id)
+		}
+	}
+	return normalizeInt64IDList(ids), nil
+}
+
+func parseOptionalBoolFormValue(c *gin.Context, key string) (bool, bool, error) {
+	raw := strings.TrimSpace(c.PostForm(key))
+	if raw == "" {
+		return false, false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false, fmt.Errorf("invalid %s value: %s", key, raw)
+	}
+	return value, true, nil
 }

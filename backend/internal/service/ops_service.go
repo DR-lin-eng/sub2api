@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/cespare/xxhash/v2"
 )
 
 var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is disabled")
@@ -20,20 +21,48 @@ const (
 	opsMaxStoredErrorBodyBytes   = 20 * 1024
 )
 
+// OpsPreparedRequestBody is a compact, reusable representation of a request body
+// prepared for ops logging. It avoids keeping large raw payloads on hot request paths.
+type OpsPreparedRequestBody struct {
+	JSON      string
+	Truncated bool
+	Bytes     int
+	Hash      uint64
+}
+
+func prepareOpsRequestBodyCapture(raw []byte, maxBytes int) *OpsPreparedRequestBody {
+	if len(raw) == 0 {
+		return nil
+	}
+	sanitized, truncated, bytesLen := sanitizeAndTrimRequestBody(raw, maxBytes)
+	return &OpsPreparedRequestBody{
+		JSON:      sanitized,
+		Truncated: truncated,
+		Bytes:     bytesLen,
+		Hash:      xxhash.Sum64String(sanitized),
+	}
+}
+
+// PrepareOpsRequestBodyCapture compacts a request body once so callers can reuse
+// the result across retries/failover without repeatedly copying the original payload.
+func PrepareOpsRequestBodyCapture(raw []byte) *OpsPreparedRequestBody {
+	return prepareOpsRequestBodyCapture(raw, opsMaxStoredRequestBodyBytes)
+}
+
 // PrepareOpsRequestBodyForQueue 在入队前对请求体执行脱敏与裁剪，返回可直接写入 OpsInsertErrorLogInput 的字段。
 // 该方法用于避免异步队列持有大块原始请求体，减少错误风暴下的内存放大风险。
 func PrepareOpsRequestBodyForQueue(raw []byte) (requestBodyJSON *string, truncated bool, requestBodyBytes *int) {
-	if len(raw) == 0 {
+	capture := prepareOpsRequestBodyCapture(raw, opsMaxStoredRequestBodyBytes)
+	if capture == nil {
 		return nil, false, nil
 	}
-	sanitized, truncated, bytesLen := sanitizeAndTrimRequestBody(raw, opsMaxStoredRequestBodyBytes)
-	if sanitized != "" {
-		out := sanitized
+	if capture.JSON != "" {
+		out := capture.JSON
 		requestBodyJSON = &out
 	}
-	n := bytesLen
+	n := capture.Bytes
 	requestBodyBytes = &n
-	return requestBodyJSON, truncated, requestBodyBytes
+	return requestBodyJSON, capture.Truncated, requestBodyBytes
 }
 
 // OpsService provides ingestion and query APIs for the Ops monitoring module.

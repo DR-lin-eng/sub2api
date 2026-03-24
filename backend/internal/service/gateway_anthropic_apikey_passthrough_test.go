@@ -189,9 +189,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
 	rawBody, ok := c.Get(OpsUpstreamRequestBodyKey)
 	require.True(t, ok)
-	bodyBytes, ok := rawBody.([]byte)
-	require.True(t, ok, "应以 []byte 形式缓存上游请求体，避免重复 string 拷贝")
-	require.Equal(t, "claude-3-haiku-20240307", gjson.GetBytes(bodyBytes, "model").String(), "缓存的上游请求体应包含映射后的模型")
+	bodyCapture, ok := rawBody.(*OpsPreparedRequestBody)
+	require.True(t, ok, "应缓存紧凑的请求体表示，避免 failover 时重复复制大 body")
+	require.Equal(t, "claude-3-haiku-20240307", gjson.Get(bodyCapture.JSON, "model").String(), "缓存的上游请求体应包含映射后的模型")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
@@ -924,7 +924,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequest
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	rawBody, ok := c.Get(OpsUpstreamRequestBodyKey)
 	require.True(t, ok)
-	_, ok = rawBody.([]byte)
+	_, ok = rawBody.(*OpsPreparedRequestBody)
 	require.True(t, ok)
 }
 

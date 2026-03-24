@@ -514,14 +514,39 @@ export async function exportData(options?: {
 }
 
 export async function importData(payload: {
-  data: AdminDataPayload
+  file?: File
+  data?: AdminDataPayload
   group_ids?: number[]
   skip_default_group_bind?: boolean
 }): Promise<AdminDataImportResult> {
+  if (payload.file) {
+    const formData = new FormData()
+    formData.append('file', payload.file)
+    for (const id of payload.group_ids || []) {
+      formData.append('group_ids', String(id))
+    }
+    if (typeof payload.skip_default_group_bind === 'boolean') {
+      formData.append('skip_default_group_bind', String(payload.skip_default_group_bind))
+    }
+    const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      timeout: 0,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
+    })
+    return data
+  }
+
   const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', {
     data: payload.data,
     group_ids: payload.group_ids,
     skip_default_group_bind: payload.skip_default_group_bind
+  }, {
+    timeout: 0,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity
   })
   return data
 }

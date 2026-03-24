@@ -20,6 +20,7 @@ const (
 	// retry the specific upstream attempt (not just the client request).
 	// This value is sanitized+trimmed before being persisted.
 	OpsUpstreamRequestBodyKey = "ops_upstream_request_body"
+	OpsUpstreamRequestBodyHashKey = "ops_upstream_request_body_hash"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
 	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
@@ -42,8 +43,11 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	if c == nil || len(body) == 0 {
 		return
 	}
-	// 热路径避免 string(body) 额外分配，按需在落库前再转换。
-	c.Set(OpsUpstreamRequestBodyKey, body)
+	capture := PrepareOpsRequestBodyCapture(body)
+	if capture == nil {
+		return
+	}
+	c.Set(OpsUpstreamRequestBodyKey, capture)
 }
 
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
@@ -130,6 +134,30 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if ev.UpstreamRequestBody == "" {
 		if v, ok := c.Get(OpsUpstreamRequestBodyKey); ok {
 			switch raw := v.(type) {
+			case *OpsPreparedRequestBody:
+				if raw != nil {
+					shouldAttach := true
+					if raw.Hash != 0 {
+						if v, ok := c.Get(OpsUpstreamRequestBodyHashKey); ok {
+							if lastHash, ok := v.(uint64); ok && lastHash == raw.Hash {
+								shouldAttach = false
+							}
+						}
+					}
+					if shouldAttach {
+						ev.UpstreamRequestBody = strings.TrimSpace(raw.JSON)
+						c.Set(OpsUpstreamRequestBodyHashKey, raw.Hash)
+						if raw.Truncated {
+							ev.Kind = strings.TrimSpace(ev.Kind)
+							if ev.Kind == "" {
+								ev.Kind = "upstream"
+							}
+							if !strings.Contains(ev.Kind, ":request_body_truncated") {
+								ev.Kind = ev.Kind + ":request_body_truncated"
+							}
+						}
+					}
+				}
 			case string:
 				ev.UpstreamRequestBody = strings.TrimSpace(raw)
 			case []byte:

@@ -191,6 +191,28 @@ func (s *OpsService) RetryUpstreamEvent(ctx context.Context, requestedByUserID i
 
 	upstreamBody := strings.TrimSpace(ev.UpstreamRequestBody)
 	if upstreamBody == "" {
+		for i := idx - 1; i >= 0; i-- {
+			if i >= len(events) || events[i] == nil {
+				continue
+			}
+			upstreamBody = strings.TrimSpace(events[i].UpstreamRequestBody)
+			if upstreamBody != "" {
+				break
+			}
+		}
+	}
+	if upstreamBody == "" {
+		for i := range events {
+			if events[i] == nil {
+				continue
+			}
+			upstreamBody = strings.TrimSpace(events[i].UpstreamRequestBody)
+			if upstreamBody != "" {
+				break
+			}
+		}
+	}
+	if upstreamBody == "" {
 		return nil, infraerrors.BadRequest("OPS_RETRY_UPSTREAM_NO_REQUEST_BODY", "No upstream request body found to retry")
 	}
 

@@ -76,9 +76,18 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 	}
 
 	var req ProxyImportRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
-		return
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
+		payload, err := parseImportPayloadFromMultipart(c)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		req.Data = payload
+	} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "Invalid request: "+err.Error())
+			return
+		}
 	}
 
 	if err := validateDataHeader(req.Data); err != nil {

@@ -353,11 +353,31 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 	if !ok {
 		return
 	}
-	raw, ok := v.([]byte)
-	if !ok || len(raw) == 0 {
+	switch raw := v.(type) {
+	case *service.OpsPreparedRequestBody:
+		if raw == nil {
+			return
+		}
+		if raw.JSON != "" {
+			out := raw.JSON
+			entry.RequestBodyJSON = &out
+		}
+		entry.RequestBodyTruncated = raw.Truncated
+		n := raw.Bytes
+		entry.RequestBodyBytes = &n
+	case []byte:
+		if len(raw) == 0 {
+			return
+		}
+		entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = service.PrepareOpsRequestBodyForQueue(raw)
+	case string:
+		if strings.TrimSpace(raw) == "" {
+			return
+		}
+		entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = service.PrepareOpsRequestBodyForQueue([]byte(raw))
+	default:
 		return
 	}
-	entry.RequestBodyJSON, entry.RequestBodyTruncated, entry.RequestBodyBytes = service.PrepareOpsRequestBodyForQueue(raw)
 	opsErrorLogSanitized.Add(1)
 }
 

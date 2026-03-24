@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
+import { adminAPI } from '@/api/admin'
 
 const showError = vi.fn()
 const showSuccess = vi.fn()
@@ -47,6 +48,14 @@ describe('Proxy ImportDataModal', () => {
   })
 
   it('无效 JSON 时提示解析失败', async () => {
+    vi.mocked(adminAPI.proxies.importData).mockRejectedValueOnce({
+      response: {
+        data: {
+          message: 'invalid import file: invalid character'
+        }
+      }
+    })
+
     const wrapper = mount(ImportDataModal, {
       props: { show: true },
       global: {
@@ -58,9 +67,6 @@ describe('Proxy ImportDataModal', () => {
 
     const input = wrapper.find('input[type="file"]')
     const file = new File(['invalid json'], 'data.json', { type: 'application/json' })
-    Object.defineProperty(file, 'text', {
-      value: () => Promise.resolve('invalid json')
-    })
     Object.defineProperty(input.element, 'files', {
       value: [file]
     })
