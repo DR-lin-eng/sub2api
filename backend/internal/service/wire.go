@@ -449,6 +449,25 @@ func ProvideScheduledTestRunnerService(
 	return svc
 }
 
+func ProvideProxyMaintenanceService(
+	planRepo ProxyMaintenancePlanRepository,
+	resultRepo ProxyMaintenanceResultRepository,
+	adminSvc AdminService,
+) *ProxyMaintenanceService {
+	return NewProxyMaintenanceService(planRepo, resultRepo, adminSvc)
+}
+
+func ProvideProxyMaintenanceRunnerService(
+	svc *ProxyMaintenanceService,
+	cfg *config.Config,
+) *ProxyMaintenanceRunnerService {
+	runner := NewProxyMaintenanceRunnerService(svc, cfg)
+	if singletonBackgroundServicesEnabled() {
+		runner.Start()
+	}
+	return runner
+}
+
 // ProvideAccountModelsRefreshService creates and starts AccountModelsRefreshService.
 func ProvideAccountModelsRefreshService(
 	accountRepo AccountRepository,
@@ -605,6 +624,7 @@ var ProviderSet = wire.NewSet(
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
 	NewAccountUsageService,
+	NewAccountExportService,
 	NewAccountTestService,
 	ProvideAccountModelsRefreshService,
 	ProvideSettingService,
@@ -647,5 +667,7 @@ var ProviderSet = wire.NewSet(
 	ProvideIdempotencyCleanupService,
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
+	ProvideProxyMaintenanceService,
+	ProvideProxyMaintenanceRunnerService,
 	NewGroupCapacityService,
 )

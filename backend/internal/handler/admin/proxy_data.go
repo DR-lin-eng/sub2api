@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -231,7 +232,7 @@ func parseProxyIDs(c *gin.Context) ([]int64, error) {
 
 func (h *ProxyHandler) listProxiesFiltered(ctx context.Context, protocol, status, search string) ([]service.Proxy, error) {
 	page := 1
-	pageSize := dataPageCap
+	pageSize := pagination.PaginationParams{Page: 1, PageSize: dataPageCap}.Limit()
 	var out []service.Proxy
 	for {
 		items, total, err := h.adminService.ListProxies(ctx, page, pageSize, protocol, status, search)

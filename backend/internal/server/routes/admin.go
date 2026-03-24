@@ -84,6 +84,9 @@ func RegisterAdminRoutes(
 
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
+
+		// 代理自动维护计划
+		registerProxyMaintenanceRoutes(admin, h)
 	}
 }
 
@@ -548,6 +551,18 @@ func registerScheduledTestRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 	// Nested under accounts
 	admin.GET("/accounts/:id/scheduled-test-plans", h.Admin.ScheduledTest.ListByAccount)
+}
+
+func registerProxyMaintenanceRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	plans := admin.Group("/proxy-maintenance-plans")
+	{
+		plans.GET("", h.Admin.ProxyMaintenance.List)
+		plans.POST("", h.Admin.ProxyMaintenance.Create)
+		plans.PUT("/:id", h.Admin.ProxyMaintenance.Update)
+		plans.DELETE("/:id", h.Admin.ProxyMaintenance.Delete)
+		plans.GET("/:id/results", h.Admin.ProxyMaintenance.ListResults)
+	}
+	admin.POST("/proxy-maintenance/run-now", h.Admin.ProxyMaintenance.RunNow)
 }
 
 func registerErrorPassthroughRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

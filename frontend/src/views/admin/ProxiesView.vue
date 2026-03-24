@@ -65,6 +65,23 @@
               {{ t('admin.proxies.batchQualityCheck') }}
             </button>
             <button
+              @click="handleAutoMaintenanceRun"
+              :disabled="maintenanceRunning || loading"
+              class="btn btn-secondary"
+              :title="t('admin.proxies.autoMaintenance.runNow')"
+            >
+              <Icon name="play" size="md" class="mr-2" />
+              {{ maintenanceRunning ? t('common.loading') : t('admin.proxies.autoMaintenance.runNow') }}
+            </button>
+            <button
+              @click="openMaintenanceDialog"
+              class="btn btn-secondary"
+              :title="t('admin.proxies.autoMaintenance.managePlans')"
+            >
+              <Icon name="clock" size="md" class="mr-2" />
+              {{ t('admin.proxies.autoMaintenance.managePlans') }}
+            </button>
+            <button
               @click="openBatchDelete"
               :disabled="selectedCount === 0"
               class="btn btn-danger"
@@ -741,6 +758,117 @@
     />
 
     <BaseDialog
+      :show="showMaintenanceDialog"
+      :title="t('admin.proxies.autoMaintenance.title')"
+      width="wide"
+      @close="closeMaintenanceDialog"
+    >
+      <div class="space-y-5">
+        <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-700">
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.proxies.autoMaintenance.runScopeTitle') }}</div>
+              <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.proxies.autoMaintenance.runScopeHint', { count: selectedCount }) }}</div>
+            </div>
+            <button class="btn btn-primary btn-sm" :disabled="maintenanceRunning" @click="handleAutoMaintenanceRun">
+              {{ maintenanceRunning ? t('common.loading') : t('admin.proxies.autoMaintenance.runNow') }}
+            </button>
+          </div>
+          <div v-if="lastMaintenanceResult" class="text-xs text-gray-600 dark:text-gray-300">
+            {{ lastMaintenanceResult.summary }}
+          </div>
+        </div>
+
+        <div class="grid gap-5 lg:grid-cols-[1.2fr,1fr]">
+          <div class="space-y-4">
+            <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+              <div class="mb-3 text-sm font-medium text-gray-900 dark:text-white">{{ editingMaintenanceId ? t('admin.proxies.autoMaintenance.editPlan') : t('admin.proxies.autoMaintenance.createPlan') }}</div>
+              <div class="grid gap-3">
+                <input v-model.trim="maintenanceForm.name" class="input w-full" :placeholder="t('admin.proxies.autoMaintenance.planName')" />
+                <input v-model.trim="maintenanceForm.cron_expression" class="input w-full" :placeholder="t('admin.proxies.autoMaintenance.cronPlaceholder')" />
+                <textarea v-model="maintenanceForm.source_proxy_ids" class="input min-h-[88px] w-full" :placeholder="t('admin.proxies.autoMaintenance.sourceProxyIdsPlaceholder')"></textarea>
+                <div class="grid grid-cols-2 gap-3">
+                  <input v-model.number="maintenanceForm.max_results" type="number" min="1" class="input w-full" :placeholder="t('admin.proxies.autoMaintenance.maxResults')" />
+                  <input v-model.number="maintenanceForm.max_failures_before_pause" type="number" min="1" class="input w-full" :placeholder="t('admin.proxies.autoMaintenance.maxFailures')" />
+                </div>
+                <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                  <input v-model="maintenanceForm.enabled" type="checkbox" />
+                  <span>{{ t('admin.proxies.autoMaintenance.enabled') }}</span>
+                </label>
+              </div>
+              <div class="mt-4 flex flex-wrap gap-2">
+                <button class="btn btn-primary btn-sm" :disabled="maintenanceSaving" @click="saveMaintenancePlan">
+                  {{ maintenanceSaving ? t('common.loading') : (editingMaintenanceId ? t('common.save') : t('common.create')) }}
+                </button>
+                <button v-if="editingMaintenanceId" class="btn btn-secondary btn-sm" @click="resetMaintenanceForm">
+                  {{ t('common.cancel') }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.proxies.autoMaintenance.plans') }}</div>
+              <button class="btn btn-secondary btn-sm" :disabled="maintenanceLoadingPlans" @click="loadMaintenancePlans">
+                {{ maintenanceLoadingPlans ? t('common.loading') : t('common.refresh') }}
+              </button>
+            </div>
+            <div v-if="maintenancePlans.length === 0" class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.proxies.autoMaintenance.noPlans') }}
+            </div>
+            <div v-else class="space-y-3">
+              <div v-for="plan in maintenancePlans" :key="plan.id" class="rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="font-medium text-gray-900 dark:text-white">{{ plan.name || t('admin.proxies.autoMaintenance.defaultPlanName') }}</div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ plan.cron_expression }}</div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.proxies.autoMaintenance.nextRun') }}: {{ plan.next_run_at || '-' }}
+                    </div>
+                  </div>
+                  <span class="badge" :class="plan.enabled ? 'badge-success' : 'badge-gray'">
+                    {{ plan.enabled ? t('common.enabled') : t('common.disabled') }}
+                  </span>
+                </div>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <button class="btn btn-secondary btn-xs" @click="editMaintenancePlan(plan)">{{ t('common.edit') }}</button>
+                  <button class="btn btn-secondary btn-xs" @click="toggleMaintenancePlan(plan, !plan.enabled)">
+                    {{ plan.enabled ? t('common.disable') : t('common.enable') }}
+                  </button>
+                  <button class="btn btn-danger btn-xs" @click="deleteMaintenancePlan(plan.id)">{{ t('common.delete') }}</button>
+                  <button class="btn btn-secondary btn-xs" @click="loadMaintenanceResults(plan.id)">{{ t('admin.proxies.autoMaintenance.results') }}</button>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="maintenanceResults.length > 0" class="mt-5 border-t border-gray-200 pt-4 dark:border-dark-700">
+              <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.proxies.autoMaintenance.results') }}</div>
+              <div class="space-y-2">
+                <div v-for="result in maintenanceResults" :key="result.id" class="rounded-lg border border-gray-200 p-3 text-xs dark:border-dark-600">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-medium text-gray-900 dark:text-white">{{ result.summary }}</span>
+                    <span class="badge" :class="result.status === 'success' ? 'badge-success' : result.status === 'partial' ? 'badge-warning' : 'badge-danger'">
+                      {{ result.status }}
+                    </span>
+                  </div>
+                  <div class="mt-1 text-gray-500 dark:text-gray-400">
+                    {{ t('admin.proxies.autoMaintenance.resultStats', { checked: result.checked_proxies, healthy: result.healthy_proxies, failed: result.failed_proxies, moved: result.moved_accounts }) }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="flex justify-end">
+          <button class="btn btn-secondary" @click="closeMaintenanceDialog">{{ t('common.close') }}</button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
       :show="showQualityReportDialog"
       :title="t('admin.proxies.qualityReportTitle')"
       width="normal"
@@ -878,6 +1006,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
+import type { ProxyMaintenancePlan, ProxyMaintenanceResult } from '@/types'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
@@ -955,6 +1084,7 @@ const showEditModal = ref(false)
 const editPasswordVisible = ref(false)
 const editPasswordDirty = ref(false)
 const showImportData = ref(false)
+const showMaintenanceDialog = ref(false)
 const showDeleteDialog = ref(false)
 const showBatchDeleteDialog = ref(false)
 const showExportDataDialog = ref(false)
@@ -965,6 +1095,9 @@ const testingProxyIds = ref<Set<number>>(new Set())
 const qualityCheckingProxyIds = ref<Set<number>>(new Set())
 const batchTesting = ref(false)
 const batchQualityChecking = ref(false)
+const maintenanceRunning = ref(false)
+const maintenanceLoadingPlans = ref(false)
+const maintenanceSaving = ref(false)
 const proxyTableRef = ref<HTMLElement | null>(null)
 const {
   selectedSet: selectedProxyIds,
@@ -993,6 +1126,18 @@ const deletingProxy = ref<Proxy | null>(null)
 const showQualityReportDialog = ref(false)
 const qualityReportProxy = ref<Proxy | null>(null)
 const qualityReport = ref<ProxyQualityCheckResult | null>(null)
+const maintenancePlans = ref<ProxyMaintenancePlan[]>([])
+const maintenanceResults = ref<ProxyMaintenanceResult[]>([])
+const editingMaintenanceId = ref<number | null>(null)
+const lastMaintenanceResult = ref<ProxyMaintenanceResult | null>(null)
+const maintenanceForm = reactive({
+  name: '',
+  cron_expression: '*/30 * * * *',
+  enabled: true,
+  source_proxy_ids: '',
+  max_results: 50,
+  max_failures_before_pause: 3
+})
 
 // Batch import state
 const createMode = ref<'standard' | 'batch'>('standard')
@@ -1676,6 +1821,139 @@ const handleBatchQualityCheck = async () => {
     console.error('Error batch checking quality:', error)
   } finally {
     batchQualityChecking.value = false
+  }
+}
+
+const parseMaintenanceProxyIds = () => {
+  return maintenanceForm.source_proxy_ids
+    .split(/[\s,]+/)
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item) && item > 0)
+}
+
+const resetMaintenanceForm = () => {
+  editingMaintenanceId.value = null
+  maintenanceForm.name = ''
+  maintenanceForm.cron_expression = '*/30 * * * *'
+  maintenanceForm.enabled = true
+  maintenanceForm.source_proxy_ids = ''
+  maintenanceForm.max_results = 50
+  maintenanceForm.max_failures_before_pause = 3
+}
+
+const loadMaintenancePlans = async () => {
+  maintenanceLoadingPlans.value = true
+  try {
+    maintenancePlans.value = await adminAPI.proxyMaintenance.listPlans()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('errors.networkError'))
+  } finally {
+    maintenanceLoadingPlans.value = false
+  }
+}
+
+const loadMaintenanceResults = async (planId: number) => {
+  try {
+    maintenanceResults.value = await adminAPI.proxyMaintenance.listResults(planId, 10)
+  } catch (error: any) {
+    appStore.showError(error?.message || t('errors.networkError'))
+  }
+}
+
+const openMaintenanceDialog = async () => {
+  showMaintenanceDialog.value = true
+  maintenanceResults.value = []
+  await loadMaintenancePlans()
+}
+
+const closeMaintenanceDialog = () => {
+  showMaintenanceDialog.value = false
+  maintenanceResults.value = []
+  resetMaintenanceForm()
+}
+
+const editMaintenancePlan = (plan: ProxyMaintenancePlan) => {
+  editingMaintenanceId.value = plan.id
+  maintenanceForm.name = plan.name || ''
+  maintenanceForm.cron_expression = plan.cron_expression
+  maintenanceForm.enabled = plan.enabled
+  maintenanceForm.source_proxy_ids = (plan.source_proxy_ids || []).join(',')
+  maintenanceForm.max_results = plan.max_results || 50
+  maintenanceForm.max_failures_before_pause = plan.max_failures_before_pause || 3
+}
+
+const saveMaintenancePlan = async () => {
+  maintenanceSaving.value = true
+  try {
+    const payload = {
+      name: maintenanceForm.name.trim() || undefined,
+      cron_expression: maintenanceForm.cron_expression.trim(),
+      enabled: maintenanceForm.enabled,
+      source_proxy_ids: parseMaintenanceProxyIds(),
+      max_results: maintenanceForm.max_results,
+      max_failures_before_pause: maintenanceForm.max_failures_before_pause
+    }
+    if (editingMaintenanceId.value) {
+      await adminAPI.proxyMaintenance.updatePlan(editingMaintenanceId.value, payload)
+      appStore.showSuccess(t('admin.proxies.autoMaintenance.updateSuccess'))
+    } else {
+      await adminAPI.proxyMaintenance.createPlan(payload)
+      appStore.showSuccess(t('admin.proxies.autoMaintenance.createSuccess'))
+    }
+    resetMaintenanceForm()
+    await loadMaintenancePlans()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('errors.networkError'))
+  } finally {
+    maintenanceSaving.value = false
+  }
+}
+
+const toggleMaintenancePlan = async (plan: ProxyMaintenancePlan, enabled: boolean) => {
+  try {
+    await adminAPI.proxyMaintenance.updatePlan(plan.id, { enabled })
+    await loadMaintenancePlans()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('errors.networkError'))
+  }
+}
+
+const deleteMaintenancePlan = async (planId: number) => {
+  if (!window.confirm(t('admin.proxies.autoMaintenance.deleteConfirm'))) return
+  try {
+    await adminAPI.proxyMaintenance.delete(planId)
+    appStore.showSuccess(t('admin.proxies.autoMaintenance.deleteSuccess'))
+    if (editingMaintenanceId.value === planId) {
+      resetMaintenanceForm()
+    }
+    maintenanceResults.value = []
+    await loadMaintenancePlans()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('errors.networkError'))
+  }
+}
+
+const handleAutoMaintenanceRun = async () => {
+  if (maintenanceRunning.value) return
+  maintenanceRunning.value = true
+  try {
+    const sourceProxyIds = selectedCount.value > 0 ? Array.from(selectedProxyIds.value) : []
+    const result = await adminAPI.proxyMaintenance.runNow(sourceProxyIds)
+    lastMaintenanceResult.value = result
+    const statusKey = result.status === 'success'
+      ? 'showSuccess'
+      : result.status === 'partial'
+        ? 'showWarning'
+        : 'showError'
+    appStore[statusKey as 'showSuccess' | 'showWarning' | 'showError'](result.summary)
+    await loadProxies()
+    if (showMaintenanceDialog.value) {
+      maintenanceResults.value = [result, ...maintenanceResults.value].slice(0, 10)
+    }
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.proxies.autoMaintenance.runFailed'))
+  } finally {
+    maintenanceRunning.value = false
   }
 }
 

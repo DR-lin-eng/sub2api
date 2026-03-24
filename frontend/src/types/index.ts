@@ -1713,3 +1713,73 @@ export interface UpdateScheduledTestPlanRequest {
   auto_recover?: boolean
   max_failures_before_pause?: number
 }
+
+export interface ProxyMaintenancePlan {
+  id: number
+  name: string
+  cron_expression: string
+  enabled: boolean
+  source_proxy_ids: number[]
+  max_results: number
+  consecutive_failures: number
+  last_failure_reason: string
+  paused_at: string | null
+  pause_reason: string
+  max_failures_before_pause: number
+  last_run_at: string | null
+  next_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ProxyMaintenanceAssignment {
+  source_proxy_id: number
+  target_proxy_id: number
+  account_ids: number[]
+  account_count: number
+  source_proxy?: string
+  target_proxy?: string
+}
+
+export interface ProxyMaintenanceFailure {
+  proxy_id: number
+  proxy_name?: string
+  message?: string
+  affected_count: number
+}
+
+export interface ProxyMaintenanceResult {
+  id: number
+  plan_id?: number | null
+  status: string
+  summary: string
+  moved_accounts: number
+  checked_proxies: number
+  healthy_proxies: number
+  failed_proxies: number
+  details?: Record<string, unknown>
+  assignments?: ProxyMaintenanceAssignment[]
+  failures?: ProxyMaintenanceFailure[]
+  error_message?: string
+  started_at: string
+  finished_at: string
+  created_at: string
+}
+
+export interface CreateProxyMaintenancePlanRequest {
+  name?: string
+  cron_expression: string
+  enabled?: boolean
+  source_proxy_ids?: number[]
+  max_results?: number
+  max_failures_before_pause?: number
+}
+
+export interface UpdateProxyMaintenancePlanRequest {
+  name?: string
+  cron_expression?: string
+  enabled?: boolean
+  source_proxy_ids?: number[]
+  max_results?: number
+  max_failures_before_pause?: number
+}

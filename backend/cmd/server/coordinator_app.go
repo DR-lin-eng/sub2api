@@ -51,6 +51,8 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	usageCleanupRepository := repository.NewUsageCleanupRepository(client, db)
 	scheduledTestPlanRepository := repository.NewScheduledTestPlanRepository(db)
 	scheduledTestResultRepository := repository.NewScheduledTestResultRepository(db)
+	proxyMaintenancePlanRepository := repository.NewProxyMaintenancePlanRepository(db)
+	proxyMaintenanceResultRepository := repository.NewProxyMaintenanceResultRepository(db)
 	idempotencyRepository := repository.NewIdempotencyRepository(client, db)
 
 	settingService := service.ProvideSettingService(settingRepository, groupRepository, cfg)
@@ -129,6 +131,25 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	rpmCache := repository.NewRPMCache(redisClient)
 	proxyLatencyCache := repository.NewProxyLatencyCache(redisClient)
 	digestStore := service.NewDigestSessionStore()
+	adminService := service.NewAdminService(
+		userRepository,
+		groupRepository,
+		accountRepository,
+		soraAccountRepository,
+		proxyRepository,
+		apiKeyRepository,
+		repository.NewRedeemCodeRepository(client),
+		userGroupRateRepository,
+		billingCacheService,
+		repository.NewProxyExitInfoProber(cfg),
+		proxyLatencyCache,
+		nil,
+		client,
+		settingService,
+		subscriptionService,
+		userSubscriptionRepository,
+		providePrivacyClientFactory(),
+	)
 
 	gatewayService := service.ProvideGatewayService(
 		accountRepository,
@@ -232,6 +253,8 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	subscriptionExpiryService := service.ProvideSubscriptionExpiryService(userSubscriptionRepository)
 	scheduledTestService := service.ProvideScheduledTestService(scheduledTestPlanRepository, scheduledTestResultRepository)
 	scheduledTestRunnerService := service.ProvideScheduledTestRunnerService(scheduledTestPlanRepository, scheduledTestService, accountTestService, rateLimitService, cfg)
+	proxyMaintenanceService := service.ProvideProxyMaintenanceService(proxyMaintenancePlanRepository, proxyMaintenanceResultRepository, adminService)
+	proxyMaintenanceRunnerService := service.ProvideProxyMaintenanceRunnerService(proxyMaintenanceService, cfg)
 	soraMediaStorage := service.ProvideSoraMediaStorage(cfg)
 	soraMediaCleanupService := service.ProvideSoraMediaCleanupService(soraMediaStorage, cfg)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, cfg)
@@ -276,6 +299,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		antigravityOAuthService,
 		openAIGatewayService,
 		scheduledTestRunnerService,
+		proxyMaintenanceRunnerService,
 		backupService,
 	)
 

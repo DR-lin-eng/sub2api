@@ -57,6 +57,7 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	accountExportService    *service.AccountExportService
 	importTaskManager       *accountImportTaskManager
 	exportTaskManager       *accountExportTaskManager
 }
@@ -76,6 +77,7 @@ func NewAccountHandler(
 	sessionLimitCache service.SessionLimitCache,
 	rpmCache service.RPMCache,
 	tokenCacheInvalidator service.TokenCacheInvalidator,
+	accountExportService *service.AccountExportService,
 ) *AccountHandler {
 	return &AccountHandler{
 		adminService:            adminService,
@@ -91,6 +93,7 @@ func NewAccountHandler(
 		sessionLimitCache:       sessionLimitCache,
 		rpmCache:                rpmCache,
 		tokenCacheInvalidator:   tokenCacheInvalidator,
+		accountExportService:    accountExportService,
 		importTaskManager:       defaultAccountImportTaskManager(),
 		exportTaskManager:       defaultAccountExportTaskManager(),
 	}
