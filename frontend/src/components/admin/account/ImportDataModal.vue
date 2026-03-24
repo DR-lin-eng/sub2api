@@ -252,15 +252,30 @@ const handleImport = async () => {
   }
 
   importing.value = true
+  const toastID = appStore.showToast('info', t('admin.accounts.dataImportUploading'), undefined, {
+    title: t('admin.accounts.dataImportTitle'),
+    subtitle: '0%',
+    progress: 0
+  })
   try {
     const task = await adminAPI.accounts.createImportTask({
       file: file.value,
       group_ids: selectedGroupIDs.value,
-      skip_default_group_bind: true
+      skip_default_group_bind: true,
+      onUploadProgress: (progress) => {
+        appStore.updateToast(toastID, {
+          title: t('admin.accounts.dataImportTitle'),
+          subtitle: `${progress}%`,
+          message: t('admin.accounts.dataImportUploading'),
+          progress
+        })
+      }
     })
-    const toastID = appStore.showToast('info', buildTaskMessage(task), undefined, {
+    appStore.updateToast(toastID, {
+      type: 'info',
       title: t('admin.accounts.dataImportTitle'),
       subtitle: buildTaskSubtitle(task),
+      message: buildTaskMessage(task),
       progress: task.progress
     })
     emit('close')
@@ -272,6 +287,7 @@ const handleImport = async () => {
     } else {
       appStore.showError(message || t('admin.accounts.dataImportFailed'))
     }
+    appStore.hideToast(toastID)
   } finally {
     importing.value = false
   }

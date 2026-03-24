@@ -1,8 +1,10 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -10,11 +12,12 @@ import (
 )
 
 type ProxyMaintenanceHandler struct {
-	svc *service.ProxyMaintenanceService
+	svc         *service.ProxyMaintenanceService
+	taskManager *proxyMaintenanceTaskManager
 }
 
 func NewProxyMaintenanceHandler(svc *service.ProxyMaintenanceService) *ProxyMaintenanceHandler {
-	return &ProxyMaintenanceHandler{svc: svc}
+	return &ProxyMaintenanceHandler{svc: svc, taskManager: defaultProxyMaintenanceTaskManager()}
 }
 
 type createProxyMaintenancePlanRequest struct {
@@ -148,14 +151,37 @@ func (h *ProxyMaintenanceHandler) ListResults(c *gin.Context) {
 
 func (h *ProxyMaintenanceHandler) RunNow(c *gin.Context) {
 	var req runProxyMaintenanceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if c.Request != nil && c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	}
+	task := h.taskManager.createTask()
+	if task == nil {
+		response.Error(c, http.StatusServiceUnavailable, "proxy maintenance task manager not available")
 		return
 	}
-	result, err := h.svc.RunNow(c.Request.Context(), req.SourceProxyIDs)
-	if err != nil {
-		response.InternalError(c, err.Error())
+	task.execute = func(ctx context.Context, task *proxyMaintenanceTask) (*service.ProxyMaintenanceResult, error) {
+		return h.svc.RunNow(ctx, req.SourceProxyIDs)
+	}
+	if err := h.taskManager.submitTask(task); err != nil {
+		response.Error(c, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	response.Accepted(c, task.state)
+}
+
+func (h *ProxyMaintenanceHandler) GetTask(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		response.BadRequest(c, "task_id is required")
+		return
+	}
+	task, ok := h.taskManager.getTask(taskID)
+	if !ok || task == nil {
+		response.NotFound(c, "task not found")
+		return
+	}
+	response.Success(c, task)
 }

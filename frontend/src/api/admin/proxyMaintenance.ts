@@ -3,6 +3,7 @@ import type {
   CreateProxyMaintenancePlanRequest,
   ProxyMaintenancePlan,
   ProxyMaintenanceResult,
+  ProxyMaintenanceTask,
   UpdateProxyMaintenancePlanRequest,
 } from '@/types'
 
@@ -32,10 +33,17 @@ export async function listResults(planId: number, limit?: number): Promise<Proxy
   return data ?? []
 }
 
-export async function runNow(sourceProxyIDs?: number[]): Promise<ProxyMaintenanceResult> {
-  const { data } = await apiClient.post<ProxyMaintenanceResult>('/admin/proxy-maintenance/run-now', {
+export async function runNow(sourceProxyIDs?: number[]): Promise<ProxyMaintenanceTask> {
+  const { data } = await apiClient.post<ProxyMaintenanceTask>('/admin/proxy-maintenance/run-now', {
     source_proxy_ids: sourceProxyIDs ?? []
   }, {
+    timeout: 0
+  })
+  return data
+}
+
+export async function getTask(taskID: string): Promise<ProxyMaintenanceTask> {
+  const { data } = await apiClient.get<ProxyMaintenanceTask>(`/admin/proxy-maintenance/tasks/${taskID}`, {
     timeout: 0
   })
   return data
@@ -47,7 +55,8 @@ export const proxyMaintenanceAPI = {
   updatePlan,
   delete: deletePlan,
   listResults,
-  runNow
+  runNow,
+  getTask
 }
 
 export default proxyMaintenanceAPI

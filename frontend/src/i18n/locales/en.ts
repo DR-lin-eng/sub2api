@@ -1858,6 +1858,7 @@ export default {
       dataImportFile: 'Data file',
       dataImportButton: 'Start Import',
       dataImporting: 'Importing...',
+      dataImportUploading: 'Uploading file...',
       dataImportSelectFile: 'Please select a data file',
       dataImportParseFailed: 'Failed to parse data file',
       dataImportFailed: 'Data import failed',

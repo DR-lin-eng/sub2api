@@ -1766,6 +1766,20 @@ export interface ProxyMaintenanceResult {
   created_at: string
 }
 
+export type ProxyMaintenanceTaskStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export interface ProxyMaintenanceTask {
+  task_id: string
+  status: ProxyMaintenanceTaskStatus
+  stage?: string
+  message?: string
+  progress: number
+  result?: ProxyMaintenanceResult
+  created_at: string
+  started_at?: string
+  finished_at?: string
+}
+
 export interface CreateProxyMaintenancePlanRequest {
   name?: string
   cron_expression: string

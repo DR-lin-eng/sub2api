@@ -563,6 +563,7 @@ func registerProxyMaintenanceRoutes(admin *gin.RouterGroup, h *handler.Handlers)
 		plans.GET("/:id/results", h.Admin.ProxyMaintenance.ListResults)
 	}
 	admin.POST("/proxy-maintenance/run-now", h.Admin.ProxyMaintenance.RunNow)
+	admin.GET("/proxy-maintenance/tasks/:task_id", h.Admin.ProxyMaintenance.GetTask)
 }
 
 func registerErrorPassthroughRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

@@ -1130,6 +1130,7 @@ const maintenancePlans = ref<ProxyMaintenancePlan[]>([])
 const maintenanceResults = ref<ProxyMaintenanceResult[]>([])
 const editingMaintenanceId = ref<number | null>(null)
 const lastMaintenanceResult = ref<ProxyMaintenanceResult | null>(null)
+let maintenanceTaskPollTimer: ReturnType<typeof setTimeout> | null = null
 const maintenanceForm = reactive({
   name: '',
   cron_expression: '*/30 * * * *',
@@ -1831,6 +1832,72 @@ const parseMaintenanceProxyIds = () => {
     .filter((item) => Number.isFinite(item) && item > 0)
 }
 
+const clearMaintenanceTaskPollTimer = () => {
+  if (maintenanceTaskPollTimer) {
+    clearTimeout(maintenanceTaskPollTimer)
+    maintenanceTaskPollTimer = null
+  }
+}
+
+const scheduleMaintenanceTaskPoll = (taskID: string, toastID: string) => {
+  clearMaintenanceTaskPollTimer()
+  maintenanceTaskPollTimer = setTimeout(async () => {
+    try {
+      const task = await adminAPI.proxyMaintenance.getTask(taskID)
+      appStore.updateToast(toastID, {
+        title: t('admin.proxies.autoMaintenance.runNow'),
+        subtitle: task.stage || task.status,
+        message: task.message || task.status,
+        progress: task.progress
+      })
+
+      if (task.status === 'completed') {
+        lastMaintenanceResult.value = task.result || null
+        if (task.result) {
+          maintenanceResults.value = [task.result, ...maintenanceResults.value].slice(0, 10)
+        }
+        appStore.updateToast(toastID, {
+          type: task.result?.status === 'success' ? 'success' : task.result?.status === 'partial' ? 'warning' : 'error',
+          title: t('admin.proxies.autoMaintenance.runNow'),
+          subtitle: task.stage || task.status,
+          message: task.message || task.result?.summary || task.status,
+          progress: 100,
+          duration: 5000
+        })
+        await loadProxies()
+        clearMaintenanceTaskPollTimer()
+        maintenanceRunning.value = false
+        return
+      }
+
+      if (task.status === 'failed') {
+        appStore.updateToast(toastID, {
+          type: 'error',
+          title: t('admin.proxies.autoMaintenance.runNow'),
+          subtitle: task.stage || task.status,
+          message: task.message || t('admin.proxies.autoMaintenance.runFailed'),
+          progress: 100,
+          duration: 6000
+        })
+        clearMaintenanceTaskPollTimer()
+        maintenanceRunning.value = false
+        return
+      }
+
+      scheduleMaintenanceTaskPoll(taskID, toastID)
+    } catch (error: any) {
+      appStore.updateToast(toastID, {
+        type: 'error',
+        title: t('admin.proxies.autoMaintenance.runNow'),
+        message: error?.message || t('admin.proxies.autoMaintenance.runFailed'),
+        duration: 6000
+      })
+      clearMaintenanceTaskPollTimer()
+      maintenanceRunning.value = false
+    }
+  }, 1200)
+}
+
 const resetMaintenanceForm = () => {
   editingMaintenanceId.value = null
   maintenanceForm.name = ''
@@ -1938,21 +2005,15 @@ const handleAutoMaintenanceRun = async () => {
   maintenanceRunning.value = true
   try {
     const sourceProxyIds = selectedCount.value > 0 ? Array.from(selectedProxyIds.value) : []
-    const result = await adminAPI.proxyMaintenance.runNow(sourceProxyIds)
-    lastMaintenanceResult.value = result
-    const statusKey = result.status === 'success'
-      ? 'showSuccess'
-      : result.status === 'partial'
-        ? 'showWarning'
-        : 'showError'
-    appStore[statusKey as 'showSuccess' | 'showWarning' | 'showError'](result.summary)
-    await loadProxies()
-    if (showMaintenanceDialog.value) {
-      maintenanceResults.value = [result, ...maintenanceResults.value].slice(0, 10)
-    }
+    const task = await adminAPI.proxyMaintenance.runNow(sourceProxyIds)
+    const toastID = appStore.showToast('info', task.message || task.status, undefined, {
+      title: t('admin.proxies.autoMaintenance.runNow'),
+      subtitle: task.stage || task.status,
+      progress: task.progress
+    })
+    scheduleMaintenanceTaskPoll(task.task_id, toastID)
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.proxies.autoMaintenance.runFailed'))
-  } finally {
     maintenanceRunning.value = false
   }
 }
@@ -2132,5 +2193,6 @@ onUnmounted(() => {
   clearTimeout(searchTimeout)
   abortController?.abort()
   document.removeEventListener('click', closeCopyMenu)
+  clearMaintenanceTaskPollTimer()
 })
 </script>

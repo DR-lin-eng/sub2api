@@ -1937,6 +1937,7 @@ export default {
       dataImportFile: '数据文件',
       dataImportButton: '开始导入',
       dataImporting: '导入中...',
+      dataImportUploading: '正在上传文件...',
       dataImportSelectFile: '请选择数据文件',
       dataImportParseFailed: '数据解析失败',
       dataImportFailed: '数据导入失败',

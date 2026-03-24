@@ -439,23 +439,10 @@ func (h *AccountHandler) CreateImportTask(c *gin.Context) {
 		err         error
 	)
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
-		payloadPath, filename, err = persistImportTaskPayload(c)
+		payloadPath, filename, groupIDs, skipPtr, err = persistImportTaskPayloadStreaming(c)
 		if err != nil {
 			response.BadRequest(c, err.Error())
 			return
-		}
-		groupIDs, err = parseImportGroupIDs(c)
-		if err != nil {
-			_ = os.Remove(payloadPath)
-			response.BadRequest(c, err.Error())
-			return
-		}
-		if skip, ok, parseErr := parseOptionalBoolFormValue(c, "skip_default_group_bind"); parseErr != nil {
-			_ = os.Remove(payloadPath)
-			response.BadRequest(c, parseErr.Error())
-			return
-		} else if ok {
-			skipPtr = &skip
 		}
 	} else {
 		req, parseErr := parseAccountDataImportRequest(c)
@@ -557,6 +544,104 @@ func parseAccountDataImportRequest(c *gin.Context) (DataImportRequest, error) {
 		return req, errors.New("Invalid request: " + err.Error())
 	}
 	return req, nil
+}
+
+func persistImportTaskPayloadStreaming(c *gin.Context) (path string, filename string, groupIDs []int64, skipPtr *bool, err error) {
+	if c == nil || c.Request == nil {
+		return "", "", nil, nil, errors.New("invalid request")
+	}
+	reader, err := c.Request.MultipartReader()
+	if err != nil {
+		return "", "", nil, nil, errors.New("failed to read multipart body")
+	}
+
+	var (
+		tmpFile   *os.File
+		fileFound bool
+	)
+	defer func() {
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+			if err != nil {
+				_ = os.Remove(tmpFile.Name())
+			}
+		}
+	}()
+
+	for {
+		part, partErr := reader.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			break
+		}
+		if partErr != nil {
+			return "", "", nil, nil, fmt.Errorf("failed to read multipart part: %w", partErr)
+		}
+
+		formName := strings.TrimSpace(part.FormName())
+		switch formName {
+		case "file":
+			if fileFound {
+				_ = part.Close()
+				return "", "", nil, nil, errors.New("multiple import files are not allowed")
+			}
+			tmpFile, err = os.CreateTemp("", "sub2api-account-import-*.json")
+			if err != nil {
+				_ = part.Close()
+				return "", "", nil, nil, err
+			}
+			filename = part.FileName()
+			if filename == "" {
+				filename = "import.json"
+			}
+			if _, err = io.Copy(tmpFile, part); err != nil {
+				_ = part.Close()
+				return "", "", nil, nil, err
+			}
+			fileFound = true
+		case "group_ids":
+			var raw []byte
+			raw, err = io.ReadAll(io.LimitReader(part, 32*1024))
+			if err != nil {
+				_ = part.Close()
+				return "", "", nil, nil, err
+			}
+			groupIDs, err = appendImportGroupIDs(groupIDs, string(raw))
+			if err != nil {
+				_ = part.Close()
+				return "", "", nil, nil, err
+			}
+		case "skip_default_group_bind":
+			var raw []byte
+			raw, err = io.ReadAll(io.LimitReader(part, 1024))
+			if err != nil {
+				_ = part.Close()
+				return "", "", nil, nil, err
+			}
+			value := strings.TrimSpace(string(raw))
+			if value != "" {
+				parsed, parseErr := strconv.ParseBool(value)
+				if parseErr != nil {
+					_ = part.Close()
+					return "", "", nil, nil, fmt.Errorf("invalid skip_default_group_bind value: %s", value)
+				}
+				skipPtr = &parsed
+			}
+		default:
+			_, _ = io.Copy(io.Discard, part)
+		}
+		_ = part.Close()
+	}
+
+	if !fileFound || tmpFile == nil {
+		return "", "", nil, nil, errors.New("import file is required")
+	}
+	if stat, statErr := tmpFile.Stat(); statErr != nil {
+		return "", "", nil, nil, statErr
+	} else if stat.Size() <= 0 {
+		return "", "", nil, nil, errors.New("import file is empty")
+	}
+
+	return tmpFile.Name(), filename, normalizeInt64IDList(groupIDs), skipPtr, nil
 }
 
 func persistImportTaskPayload(c *gin.Context) (path string, filename string, err error) {
@@ -1231,6 +1316,25 @@ func parseImportGroupIDs(c *gin.Context) ([]int64, error) {
 		}
 	}
 	return normalizeInt64IDList(ids), nil
+}
+
+func appendImportGroupIDs(ids []int64, raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ids, nil
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid group_ids value: %s", part)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func parseOptionalBoolFormValue(c *gin.Context, key string) (bool, bool, error) {

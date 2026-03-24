@@ -571,6 +571,7 @@ export async function createImportTask(payload: {
   file: File
   group_ids?: number[]
   skip_default_group_bind?: boolean
+  onUploadProgress?: (progress: number) => void
 }): Promise<AdminDataImportTask> {
   const formData = new FormData()
   formData.append('file', payload.file)
@@ -581,12 +582,18 @@ export async function createImportTask(payload: {
     formData.append('skip_default_group_bind', String(payload.skip_default_group_bind))
   }
   const { data } = await apiClient.post<AdminDataImportTask>('/admin/accounts/data/tasks', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    },
     timeout: 0,
     maxBodyLength: Infinity,
-    maxContentLength: Infinity
+    maxContentLength: Infinity,
+    onUploadProgress: payload.onUploadProgress
+      ? (event) => {
+          const total = Number(event.total || 0)
+          const loaded = Number(event.loaded || 0)
+          if (total > 0) {
+            payload.onUploadProgress!(Math.min(100, Math.max(0, Math.round((loaded / total) * 100))))
+          }
+        }
+      : undefined
   })
   return data
 }
