@@ -2857,9 +2857,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	// SSE headers
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 	if v := resp.Header.Get("x-request-id"); v != "" {
 		c.Header("x-request-id", v)
 	}
@@ -3494,9 +3497,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	// Set SSE response headers
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 
 	// Pass through other headers
 	if v := resp.Header.Get("x-request-id"); v != "" {

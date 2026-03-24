@@ -14,7 +14,6 @@ import (
 //   - connection: 由 HTTP 库管理连接复用
 var defaultAllowed = map[string]struct{}{
 	"content-type":                   {},
-	"content-encoding":               {},
 	"content-language":               {},
 	"cache-control":                  {},
 	"etag":                           {},

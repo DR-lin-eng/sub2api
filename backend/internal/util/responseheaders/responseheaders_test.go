@@ -14,6 +14,7 @@ func TestFilterHeadersDisabledUsesDefaultAllowlist(t *testing.T) {
 	src.Add("X-Test", "ok")
 	src.Add("Connection", "keep-alive")
 	src.Add("Content-Length", "123")
+	src.Add("Content-Encoding", "gzip")
 
 	cfg := config.ResponseHeaderConfig{
 		Enabled:     false,
@@ -35,6 +36,9 @@ func TestFilterHeadersDisabledUsesDefaultAllowlist(t *testing.T) {
 	}
 	if filtered.Get("Content-Length") != "" {
 		t.Fatalf("expected Content-Length to be removed, got %q", filtered.Get("Content-Length"))
+	}
+	if filtered.Get("Content-Encoding") != "" {
+		t.Fatalf("expected Content-Encoding to be removed, got %q", filtered.Get("Content-Encoding"))
 	}
 }
 

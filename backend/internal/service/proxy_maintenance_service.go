@@ -186,7 +186,7 @@ func (s *ProxyMaintenanceService) run(ctx context.Context, sourceProxyIDs []int6
 		}
 		input := &BulkUpdateAccountsInput{
 			AccountIDs: assignment.AccountIDs,
-			ProxyID:    int64Ptr(assignment.TargetProxyID),
+			ProxyID:    int64Pointer(assignment.TargetProxyID),
 		}
 		if _, err := s.adminSvc.BulkUpdateAccounts(ctx, input); err != nil {
 			return nil, err
@@ -375,7 +375,7 @@ func pickProxyMaintenanceTarget(healthy []ProxyWithAccountCount, projectedUsage 
 	return &candidates[0]
 }
 
-func int64Ptr(value int64) *int64 {
+func int64Pointer(value int64) *int64 {
 	return &value
 }
 

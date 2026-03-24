@@ -5215,12 +5215,15 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 	c.Header("Content-Type", contentType)
 	if c.Writer.Header().Get("Cache-Control") == "" {
-		c.Header("Cache-Control", "no-cache")
+		c.Header("Cache-Control", "no-cache, no-transform")
 	}
 	if c.Writer.Header().Get("Connection") == "" {
 		c.Header("Connection", "keep-alive")
 	}
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 	if v := resp.Header.Get("x-request-id"); v != "" {
 		c.Header("x-request-id", v)
 	}
@@ -6855,9 +6858,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 	// 设置SSE响应头
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 
 	// 透传其他响应头
 	if v := resp.Header.Get("x-request-id"); v != "" {

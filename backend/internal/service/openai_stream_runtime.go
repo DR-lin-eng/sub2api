@@ -14,12 +14,15 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
 
 const (
 	defaultOpenAIStreamingConnectQuickFail   = 5 * time.Second
 	defaultOpenAIStreamingHeaderQuickFail    = 12 * time.Second
 	defaultOpenAIStreamingIdleTimeout        = 120 * time.Second
+	openAIStreamingHighReasoningHeaderExtra  = 30 * time.Second
+	openAIStreamingXHighReasoningHeaderExtra = 90 * time.Second
 	defaultOpenAIStreamingLargeBodyThreshold = 64 * 1024
 	defaultOpenAIStreamingXLargeThreshold    = 256 * 1024
 	defaultOpenAIStreamingHugeThreshold      = 1024 * 1024
@@ -337,6 +340,19 @@ func (s *OpenAIGatewayService) applyOpenAITransportOverride(req *http.Request, b
 		override.ResponseHeaderTimeout = budget.HeaderBudget + 5*time.Second
 	default:
 		override.ResponseHeaderTimeout = budget.HeaderBudget
+	}
+	requestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if effort := extractOpenAIReasoningEffortFromBody(body, requestedModel); effort != nil {
+		switch *effort {
+		case "xhigh":
+			if override.ResponseHeaderTimeout > 0 {
+				override.ResponseHeaderTimeout += openAIStreamingXHighReasoningHeaderExtra
+			}
+		case "high":
+			if override.ResponseHeaderTimeout > 0 {
+				override.ResponseHeaderTimeout += openAIStreamingHighReasoningHeaderExtra
+			}
+		}
 	}
 	ctx := WithUpstreamTransportOverride(req.Context(), override)
 	return req.WithContext(ctx)

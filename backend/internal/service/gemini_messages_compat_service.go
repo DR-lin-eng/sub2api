@@ -1891,9 +1891,12 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 
 func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*geminiStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 	c.Status(http.StatusOK)
 
 	flusher, ok := c.Writer.(http.Flusher)
@@ -2469,9 +2472,12 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	}
 
 	c.Status(resp.StatusCode)
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {

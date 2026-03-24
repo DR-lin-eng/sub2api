@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -116,6 +117,18 @@ func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
 	got, err := getOpenAIRequestBodyMap(c, []byte(`{invalid-json`))
 	require.NoError(t, err)
 	require.Equal(t, cached, got)
+}
+
+func TestApplyOpenAITransportOverride_ExtendsHeaderTimeoutForXHighReasoning(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := []byte(`{"model":"gpt-5.4","stream":true,"reasoning_effort":"xhigh"}`)
+
+	req = svc.applyOpenAITransportOverride(req, body, true)
+	override, ok := GetUpstreamTransportOverride(req.Context())
+	require.True(t, ok)
+	require.Equal(t, defaultOpenAIStreamingConnectQuickFail, override.DialTimeout)
+	require.Equal(t, defaultOpenAIStreamingHeaderQuickFail+openAIStreamingXHighReasoningHeaderExtra, override.ResponseHeaderTimeout)
 }
 
 func TestGetOpenAIRequestBodyMap_ParseErrorWithoutCache(t *testing.T) {

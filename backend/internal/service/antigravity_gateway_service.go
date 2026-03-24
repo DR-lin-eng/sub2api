@@ -3012,9 +3012,12 @@ func handleStreamReadError(err error, clientDisconnected bool, prefix string) (d
 
 func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
 	c.Status(resp.StatusCode)
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -3852,9 +3855,12 @@ returnResponse:
 // handleClaudeStreamingResponse 处理 Claude 流式响应（Gemini SSE → Claude SSE 转换）
 func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, originalModel string) (*antigravityStreamResult, error) {
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Header().Del("Content-Encoding")
+	c.Writer.Header().Del("Content-Length")
+	c.Writer.Header().Del("Transfer-Encoding")
 	c.Status(http.StatusOK)
 
 	flusher, ok := c.Writer.(http.Flusher)
@@ -4269,9 +4275,12 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	if claudeReq.Stream {
 		// 流式响应：透传
 		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
+		c.Header("Cache-Control", "no-cache, no-transform")
 		c.Header("Connection", "keep-alive")
 		c.Header("X-Accel-Buffering", "no")
+		c.Writer.Header().Del("Content-Encoding")
+		c.Writer.Header().Del("Content-Length")
+		c.Writer.Header().Del("Transfer-Encoding")
 		c.Status(http.StatusOK)
 
 		streamRes := s.streamUpstreamResponse(c, resp, startTime)

@@ -1240,7 +1240,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 		t.Fatalf("handleStreamingResponse error: %v", err)
 	}
 
-	if rec.Header().Get("Cache-Control") != "no-cache" {
+	if rec.Header().Get("Cache-Control") != "no-cache, no-transform" {
 		t.Fatalf("expected Cache-Control override, got %q", rec.Header().Get("Cache-Control"))
 	}
 	if rec.Header().Get("Content-Type") != "text/event-stream" {
