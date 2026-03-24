@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,7 @@ type DataImportResult struct {
 	ProxyReused    int               `json:"proxy_reused"`
 	ProxyFailed    int               `json:"proxy_failed"`
 	AccountCreated int               `json:"account_created"`
+	AccountSkipped int               `json:"account_skipped"`
 	AccountFailed  int               `json:"account_failed"`
 	Errors         []DataImportError `json:"errors,omitempty"`
 }
@@ -230,6 +232,110 @@ func (h *AccountHandler) ImportData(c *gin.Context) {
 	})
 }
 
+func (h *AccountHandler) CreateImportTask(c *gin.Context) {
+	if h == nil || h.importTaskManager == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Import task manager not available")
+		return
+	}
+	var (
+		payloadPath string
+		filename    string
+		groupIDs    []int64
+		skipPtr     *bool
+		err         error
+	)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
+		payloadPath, filename, err = persistImportTaskPayload(c)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		groupIDs, err = parseImportGroupIDs(c)
+		if err != nil {
+			_ = os.Remove(payloadPath)
+			response.BadRequest(c, err.Error())
+			return
+		}
+		if skip, ok, parseErr := parseOptionalBoolFormValue(c, "skip_default_group_bind"); parseErr != nil {
+			_ = os.Remove(payloadPath)
+			response.BadRequest(c, parseErr.Error())
+			return
+		} else if ok {
+			skipPtr = &skip
+		}
+	} else {
+		req, parseErr := parseAccountDataImportRequest(c)
+		if parseErr != nil {
+			response.BadRequest(c, parseErr.Error())
+			return
+		}
+		raw, marshalErr := json.Marshal(req.Data)
+		if marshalErr != nil {
+			response.BadRequest(c, "Failed to serialize import request")
+			return
+		}
+		payloadPath, err = saveImportPayloadToTempFile(raw)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		filename = "import.json"
+		groupIDs = req.GroupIDs
+		skipPtr = req.SkipDefaultGroupBind
+	}
+
+	task := h.importTaskManager.createTask(filename, accountImportTaskPayload{
+		Filepath:             payloadPath,
+		Filename:             filename,
+		GroupIDs:             groupIDs,
+		SkipDefaultGroupBind: skipPtr,
+	})
+	if task == nil {
+		_ = os.Remove(payloadPath)
+		response.Error(c, http.StatusServiceUnavailable, "Failed to create import task")
+		return
+	}
+	task.execute = func(ctx context.Context, task *accountImportTask, progress func(stage string, current, total int, message string)) (DataImportResult, error) {
+		payload, err := loadImportPayloadFromFile(task.payload.Filepath)
+		if err != nil {
+			return DataImportResult{}, err
+		}
+		req := DataImportRequest{
+			Data:                 payload,
+			GroupIDs:             task.payload.GroupIDs,
+			SkipDefaultGroupBind: task.payload.SkipDefaultGroupBind,
+		}
+		if err := validateDataHeader(req.Data); err != nil {
+			return DataImportResult{}, err
+		}
+		return h.importDataWithProgress(ctx, req, progress)
+	}
+	if err := h.importTaskManager.submitTask(task); err != nil {
+		_ = os.Remove(payloadPath)
+		response.Error(c, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	response.Accepted(c, task.state)
+}
+
+func (h *AccountHandler) GetImportTask(c *gin.Context) {
+	if h == nil || h.importTaskManager == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Import task manager not available")
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		response.BadRequest(c, "task_id is required")
+		return
+	}
+	task, ok := h.importTaskManager.getTask(taskID)
+	if !ok || task == nil {
+		response.NotFound(c, "Import task not found")
+		return
+	}
+	response.Success(c, task)
+}
+
 func parseAccountDataImportRequest(c *gin.Context) (DataImportRequest, error) {
 	var req DataImportRequest
 	if c == nil || c.Request == nil {
@@ -259,7 +365,54 @@ func parseAccountDataImportRequest(c *gin.Context) (DataImportRequest, error) {
 	return req, nil
 }
 
+func persistImportTaskPayload(c *gin.Context) (path string, filename string, err error) {
+	if c == nil || c.Request == nil {
+		return "", "", errors.New("invalid request")
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
+		file, header, formErr := c.Request.FormFile("file")
+		if formErr != nil {
+			return "", "", errors.New("import file is required")
+		}
+		defer func() { _ = file.Close() }()
+		tmp, createErr := os.CreateTemp("", "sub2api-account-import-*.json")
+		if createErr != nil {
+			return "", "", createErr
+		}
+		defer func() {
+			_ = tmp.Close()
+			if err != nil {
+				_ = os.Remove(tmp.Name())
+			}
+		}()
+		if _, err = io.Copy(tmp, file); err != nil {
+			return "", "", err
+		}
+		return tmp.Name(), header.Filename, nil
+	}
+	raw, readErr := io.ReadAll(c.Request.Body)
+	if readErr != nil {
+		return "", "", errors.New("failed to read request body")
+	}
+	if len(raw) == 0 {
+		return "", "", errors.New("request body is empty")
+	}
+	path, err = saveImportPayloadToTempFile(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return path, "import.json", nil
+}
+
 func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) (DataImportResult, error) {
+	return h.importDataWithProgress(ctx, req, nil)
+}
+
+func (h *AccountHandler) importDataWithProgress(
+	ctx context.Context,
+	req DataImportRequest,
+	progress func(stage string, current, total int, message string),
+) (DataImportResult, error) {
 	skipDefaultGroupBind := true
 	if req.SkipDefaultGroupBind != nil {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
@@ -268,8 +421,20 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	dataPayload := req.Data
 	result := DataImportResult{}
+	total := len(dataPayload.Proxies) + len(dataPayload.Accounts)
+	current := 0
+	reportProgress := func(stage, message string) {
+		if progress != nil {
+			progress(stage, current, total, message)
+		}
+	}
+	reportProgress("preparing", "Preparing import task")
 
 	existingProxies, err := h.listAllProxies(ctx)
+	if err != nil {
+		return result, err
+	}
+	existingAccounts, err := h.listAllAccounts(ctx)
 	if err != nil {
 		return result, err
 	}
@@ -280,8 +445,15 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		key := buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)
 		proxyKeyToID[key] = p.ID
 	}
+	accountDedupKeys := make(map[string]int64, len(existingAccounts))
+	for i := range existingAccounts {
+		if dedupKey := buildExistingAccountDedupKey(&existingAccounts[i]); dedupKey != "" {
+			accountDedupKeys[dedupKey] = existingAccounts[i].ID
+		}
+	}
 
 	for i := range dataPayload.Proxies {
+		reportProgress("importing_proxies", "Importing proxies")
 		item := dataPayload.Proxies[i]
 		key := item.ProxyKey
 		if key == "" {
@@ -295,6 +467,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				ProxyKey: key,
 				Message:  err.Error(),
 			})
+			current++
 			continue
 		}
 		normalizedStatus := normalizeProxyStatus(item.Status)
@@ -308,6 +481,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 					})
 				}
 			}
+			current++
 			continue
 		}
 
@@ -327,6 +501,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				ProxyKey: key,
 				Message:  createErr.Error(),
 			})
+			current++
 			continue
 		}
 		proxyKeyToID[key] = created.ID
@@ -337,9 +512,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				Status: normalizedStatus,
 			})
 		}
+		current++
 	}
 
 	for i := range dataPayload.Accounts {
+		reportProgress("importing_accounts", "Importing accounts")
 		item := dataPayload.Accounts[i]
 		if err := validateDataAccount(item); err != nil {
 			result.AccountFailed++
@@ -348,6 +525,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				Name:    item.Name,
 				Message: err.Error(),
 			})
+			current++
 			continue
 		}
 
@@ -363,11 +541,20 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 					ProxyKey: *item.ProxyKey,
 					Message:  "proxy_key not found",
 				})
+				current++
 				continue
 			}
 		}
 
 		enrichCredentialsFromIDToken(&item)
+		dedupKey := buildImportedAccountDedupKey(&item)
+		if dedupKey != "" {
+			if existingID, ok := accountDedupKeys[dedupKey]; ok && existingID > 0 {
+				result.AccountSkipped++
+				current++
+				continue
+			}
+		}
 		groupIDs := normalizeInt64IDList(item.GroupIDs)
 		if len(groupIDs) == 0 {
 			groupIDs = importGroupIDs
@@ -397,11 +584,17 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				Name:    item.Name,
 				Message: err.Error(),
 			})
+			current++
 			continue
 		}
+		if dedupKey != "" {
+			accountDedupKeys[dedupKey] = int64(result.AccountCreated + result.AccountSkipped + result.AccountFailed + 1)
+		}
 		result.AccountCreated++
+		current++
 	}
 
+	reportProgress("completed", "Import completed")
 	return result, nil
 }
 
@@ -421,6 +614,99 @@ func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, e
 		page++
 	}
 	return out, nil
+}
+
+func (h *AccountHandler) listAllAccounts(ctx context.Context) ([]service.Account, error) {
+	page := 1
+	pageSize := dataPageCap
+	var out []service.Account
+	for {
+		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, "", "", "", "", "", "", "", 0)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(out) >= int(total) || len(items) == 0 {
+			break
+		}
+		page++
+	}
+	return out, nil
+}
+
+func buildExistingAccountDedupKey(account *service.Account) string {
+	if account == nil {
+		return ""
+	}
+	return buildAccountDedupKey(
+		account.Platform,
+		account.Type,
+		account.Name,
+		account.GetCredential("api_key"),
+		account.GetCredential("access_token"),
+		account.GetCredential("refresh_token"),
+		account.GetCredential("chatgpt_account_id"),
+		account.GetCredential("chatgpt_user_id"),
+		account.GetCredential("project_id"),
+		account.GetCredential("email"),
+		account.GetCredential("base_url"),
+	)
+}
+
+func buildImportedAccountDedupKey(item *DataAccount) string {
+	if item == nil {
+		return ""
+	}
+	get := func(key string) string {
+		if item.Credentials == nil {
+			return ""
+		}
+		if raw, ok := item.Credentials[key]; ok && raw != nil {
+			return strings.TrimSpace(fmt.Sprintf("%v", raw))
+		}
+		return ""
+	}
+	return buildAccountDedupKey(
+		item.Platform,
+		item.Type,
+		item.Name,
+		get("api_key"),
+		get("access_token"),
+		get("refresh_token"),
+		get("chatgpt_account_id"),
+		get("chatgpt_user_id"),
+		get("project_id"),
+		get("email"),
+		get("base_url"),
+	)
+}
+
+func buildAccountDedupKey(platform, accountType, name, apiKey, accessToken, refreshToken, chatgptAccountID, chatgptUserID, projectID, email, baseURL string) string {
+	normalizedPlatform := strings.ToLower(strings.TrimSpace(platform))
+	normalizedType := strings.ToLower(strings.TrimSpace(accountType))
+	normalizedBaseURL := strings.ToLower(strings.TrimSpace(baseURL))
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+
+	switch {
+	case strings.TrimSpace(apiKey) != "":
+		return fmt.Sprintf("%s|%s|api_key|%s|%s", normalizedPlatform, normalizedType, strings.TrimSpace(apiKey), normalizedBaseURL)
+	case strings.TrimSpace(chatgptAccountID) != "":
+		return fmt.Sprintf("%s|%s|chatgpt_account_id|%s", normalizedPlatform, normalizedType, strings.TrimSpace(chatgptAccountID))
+	case strings.TrimSpace(chatgptUserID) != "":
+		return fmt.Sprintf("%s|%s|chatgpt_user_id|%s", normalizedPlatform, normalizedType, strings.TrimSpace(chatgptUserID))
+	case strings.TrimSpace(projectID) != "":
+		return fmt.Sprintf("%s|%s|project_id|%s", normalizedPlatform, normalizedType, strings.TrimSpace(projectID))
+	case strings.TrimSpace(refreshToken) != "":
+		return fmt.Sprintf("%s|%s|refresh_token|%s", normalizedPlatform, normalizedType, strings.TrimSpace(refreshToken))
+	case strings.TrimSpace(accessToken) != "":
+		return fmt.Sprintf("%s|%s|access_token|%s", normalizedPlatform, normalizedType, strings.TrimSpace(accessToken))
+	case strings.TrimSpace(email) != "":
+		return fmt.Sprintf("%s|%s|email|%s", normalizedPlatform, normalizedType, strings.ToLower(strings.TrimSpace(email)))
+	case normalizedName != "":
+		return fmt.Sprintf("%s|%s|name|%s", normalizedPlatform, normalizedType, normalizedName)
+	default:
+		return ""
+	}
 }
 
 func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, accountType, status, search string) ([]service.Account, error) {

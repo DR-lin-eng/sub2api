@@ -5,18 +5,23 @@ import { adminAPI } from '@/api/admin'
 
 const showError = vi.fn()
 const showSuccess = vi.fn()
+const showToast = vi.fn(() => 'toast-1')
+const updateToast = vi.fn()
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
-    showSuccess
+    showSuccess,
+    showToast,
+    updateToast
   })
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      importData: vi.fn()
+      createImportTask: vi.fn(),
+      getImportTask: vi.fn()
     }
   }
 }))
@@ -31,6 +36,8 @@ describe('ImportDataModal', () => {
   beforeEach(() => {
     showError.mockReset()
     showSuccess.mockReset()
+    showToast.mockClear()
+    updateToast.mockClear()
   })
 
   it('未选择文件时提示错误', async () => {
@@ -48,7 +55,7 @@ describe('ImportDataModal', () => {
   })
 
   it('无效 JSON 时提示解析失败', async () => {
-    vi.mocked(adminAPI.accounts.importData).mockRejectedValueOnce({
+    vi.mocked(adminAPI.accounts.createImportTask).mockRejectedValueOnce({
       response: {
         data: {
           message: 'invalid import file: invalid character'

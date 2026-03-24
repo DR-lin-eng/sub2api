@@ -40,10 +40,13 @@
                 <p v-if="toast.title" class="text-sm font-semibold text-gray-900 dark:text-white">
                   {{ toast.title }}
                 </p>
+                <p v-if="toast.subtitle" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ toast.subtitle }}
+                </p>
                 <p
                   :class="[
                     'text-sm leading-relaxed',
-                    toast.title
+                    toast.title || toast.subtitle
                       ? 'mt-1 text-gray-600 dark:text-gray-300'
                       : 'text-gray-900 dark:text-white'
                   ]"
@@ -64,7 +67,13 @@
           </div>
 
           <!-- Progress bar -->
-          <div v-if="toast.duration" class="h-1 bg-gray-100 dark:bg-dark-700">
+          <div v-if="typeof toast.progress === 'number'" class="h-1 bg-gray-100 dark:bg-dark-700">
+            <div
+              :class="['h-full transition-all duration-300', getProgressBarColor(toast.type)]"
+              :style="{ width: `${Math.min(100, Math.max(0, toast.progress))}%` }"
+            ></div>
+          </div>
+          <div v-else-if="toast.duration" class="h-1 bg-gray-100 dark:bg-dark-700">
             <div
               :class="['h-full toast-progress', getProgressBarColor(toast.type)]"
               :style="{ animationDuration: `${toast.duration}ms` }"

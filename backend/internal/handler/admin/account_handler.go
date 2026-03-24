@@ -57,6 +57,7 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	importTaskManager       *accountImportTaskManager
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -89,6 +90,7 @@ func NewAccountHandler(
 		sessionLimitCache:       sessionLimitCache,
 		rpmCache:                rpmCache,
 		tokenCacheInvalidator:   tokenCacheInvalidator,
+		importTaskManager:       defaultAccountImportTaskManager(),
 	}
 }
 

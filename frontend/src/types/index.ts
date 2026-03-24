@@ -1010,8 +1010,26 @@ export interface AdminDataImportResult {
   proxy_reused: number
   proxy_failed: number
   account_created: number
+  account_skipped: number
   account_failed: number
   errors?: AdminDataImportError[]
+}
+
+export type AdminDataImportTaskStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export interface AdminDataImportTask {
+  task_id: string
+  status: AdminDataImportTaskStatus
+  stage?: string
+  filename?: string
+  current: number
+  total: number
+  progress: number
+  message?: string
+  result?: AdminDataImportResult
+  created_at: string
+  started_at?: string
+  finished_at?: string
 }
 
 // ==================== Usage & Redeem Types ====================

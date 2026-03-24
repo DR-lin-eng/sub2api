@@ -19,6 +19,7 @@ import type {
   BatchTestAccountsResponse,
   AdminDataPayload,
   AdminDataImportResult,
+  AdminDataImportTask,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse
 } from '@/types'
@@ -565,6 +566,35 @@ export async function importData(payload: {
   return data
 }
 
+export async function createImportTask(payload: {
+  file: File
+  group_ids?: number[]
+  skip_default_group_bind?: boolean
+}): Promise<AdminDataImportTask> {
+  const formData = new FormData()
+  formData.append('file', payload.file)
+  for (const id of payload.group_ids || []) {
+    formData.append('group_ids', String(id))
+  }
+  if (typeof payload.skip_default_group_bind === 'boolean') {
+    formData.append('skip_default_group_bind', String(payload.skip_default_group_bind))
+  }
+  const { data } = await apiClient.post<AdminDataImportTask>('/admin/accounts/data/tasks', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    timeout: 0,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity
+  })
+  return data
+}
+
+export async function getImportTask(taskID: string): Promise<AdminDataImportTask> {
+  const { data } = await apiClient.get<AdminDataImportTask>(`/admin/accounts/data/tasks/${taskID}`)
+  return data
+}
+
 /**
  * Get Antigravity default model mapping from backend
  * @returns Default model mapping (from -> to)
@@ -710,6 +740,8 @@ export const accountsAPI = {
   syncFromCrs,
   exportData,
   importData,
+  createImportTask,
+  getImportTask,
   getAntigravityDefaultModelMapping,
   batchClearError,
   batchRefresh,

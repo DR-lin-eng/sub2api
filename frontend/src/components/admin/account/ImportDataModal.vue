@@ -95,13 +95,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminDataImportResult, AdminGroup } from '@/types'
+import type { AdminDataImportResult, AdminDataImportTask, AdminGroup } from '@/types'
 
 interface Props {
   show: boolean
@@ -127,6 +127,7 @@ const selectedGroupIDs = ref<number[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const fileName = computed(() => file.value?.name || '')
 const groups = computed(() => props.groups || [])
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 const errorItems = computed(() => result.value?.errors || [])
 
@@ -158,6 +159,92 @@ const handleClose = () => {
   emit('close')
 }
 
+const clearPollTimer = () => {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
+
+const buildTaskSubtitle = (task: AdminDataImportTask) => {
+  if (task.total > 0) {
+    return `${task.current}/${task.total}`
+  }
+  return task.stage || task.status
+}
+
+const buildTaskMessage = (task: AdminDataImportTask) => {
+  return task.message || task.stage || task.status
+}
+
+const scheduleTaskPoll = (taskID: string, toastID: string) => {
+  clearPollTimer()
+  pollTimer = setTimeout(async () => {
+    try {
+      const task = await adminAPI.accounts.getImportTask(taskID)
+      appStore.updateToast(toastID, {
+        title: t('admin.accounts.dataImportTitle'),
+        subtitle: buildTaskSubtitle(task),
+        message: buildTaskMessage(task),
+        progress: task.progress
+      })
+
+      if (task.status === 'completed') {
+        result.value = task.result || null
+        const summary = task.result || {
+          proxy_created: 0,
+          proxy_reused: 0,
+          proxy_failed: 0,
+          account_created: 0,
+          account_skipped: 0,
+          account_failed: 0
+        }
+        const msgParams: Record<string, unknown> = {
+          account_created: summary.account_created,
+          account_skipped: summary.account_skipped,
+          account_failed: summary.account_failed,
+          proxy_created: summary.proxy_created,
+          proxy_reused: summary.proxy_reused,
+          proxy_failed: summary.proxy_failed,
+        }
+        appStore.updateToast(toastID, {
+          type: summary.account_failed > 0 || summary.proxy_failed > 0 ? 'warning' : 'success',
+          subtitle: buildTaskSubtitle(task),
+          message: summary.account_failed > 0 || summary.proxy_failed > 0
+            ? t('admin.accounts.dataImportCompletedWithErrors', msgParams)
+            : t('admin.accounts.dataImportSuccess', msgParams),
+          progress: 100,
+          duration: 5000
+        })
+        emit('imported')
+        clearPollTimer()
+        return
+      }
+
+      if (task.status === 'failed') {
+        appStore.updateToast(toastID, {
+          type: 'error',
+          subtitle: buildTaskSubtitle(task),
+          message: task.message || t('admin.accounts.dataImportFailed'),
+          progress: task.progress,
+          duration: 6000
+        })
+        clearPollTimer()
+        return
+      }
+
+      scheduleTaskPoll(taskID, toastID)
+    } catch (error: any) {
+      appStore.updateToast(toastID, {
+        type: 'error',
+        message: error?.message || t('admin.accounts.dataImportFailed'),
+        duration: 6000
+      })
+      clearPollTimer()
+    }
+  }, 1200)
+}
+
 const handleImport = async () => {
   if (!file.value) {
     appStore.showError(t('admin.accounts.dataImportSelectFile'))
@@ -166,27 +253,18 @@ const handleImport = async () => {
 
   importing.value = true
   try {
-    const res = await adminAPI.accounts.importData({
+    const task = await adminAPI.accounts.createImportTask({
       file: file.value,
       group_ids: selectedGroupIDs.value,
       skip_default_group_bind: true
     })
-
-    result.value = res
-
-    const msgParams: Record<string, unknown> = {
-      account_created: res.account_created,
-      account_failed: res.account_failed,
-      proxy_created: res.proxy_created,
-      proxy_reused: res.proxy_reused,
-      proxy_failed: res.proxy_failed,
-    }
-    if (res.account_failed > 0 || res.proxy_failed > 0) {
-      appStore.showError(t('admin.accounts.dataImportCompletedWithErrors', msgParams))
-    } else {
-      appStore.showSuccess(t('admin.accounts.dataImportSuccess', msgParams))
-      emit('imported')
-    }
+    const toastID = appStore.showToast('info', buildTaskMessage(task), undefined, {
+      title: t('admin.accounts.dataImportTitle'),
+      subtitle: buildTaskSubtitle(task),
+      progress: task.progress
+    })
+    emit('close')
+    scheduleTaskPoll(task.task_id, toastID)
   } catch (error: any) {
     const message = String(error?.response?.data?.message || error?.message || '')
     if (message.toLowerCase().includes('invalid import file') || message.toLowerCase().includes('unexpected token')) {
@@ -198,4 +276,8 @@ const handleImport = async () => {
     importing.value = false
   }
 }
+
+onUnmounted(() => {
+  clearPollTimer()
+})
 </script>
