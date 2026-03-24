@@ -1,0 +1,99 @@
+'use client';
+
+import Center_default from "../Flex/Center.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import Img_default from "../Img/index.mjs";
+import FluentEmoji_default from "../FluentEmoji/FluentEmoji.mjs";
+import { styles, variants } from "./style.mjs";
+import { isValidElement, memo, useMemo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { Avatar } from "antd";
+import { cssVar, cx, useTheme } from "antd-style";
+import { readableColor } from "polished";
+import { Loader2 } from "lucide-react";
+import { getEmoji } from "@lobehub/fluent-emoji";
+
+//#region src/Avatar/Avatar.tsx
+const Avatar$1 = memo(({ bordered, className, avatar, title, animation, borderedColor, size = 48, shape = "square", background, style, unoptimized, alt, variant = "borderless", shadow, loading, sliceText = true, emojiScaleWithBackground = true, ref, ...rest }) => {
+	const theme = useTheme();
+	const isStringAvatar = typeof avatar === "string";
+	const isDefaultAntAvatar = useMemo(() => Boolean(avatar && ([
+		"/",
+		"http",
+		"data:"
+	].some((index) => isStringAvatar && avatar.startsWith(index)) || isValidElement(avatar))), [avatar, isStringAvatar]);
+	const emoji = useMemo(() => avatar && !isDefaultAntAvatar && isStringAvatar && getEmoji(avatar), [
+		avatar,
+		isStringAvatar,
+		isDefaultAntAvatar
+	]);
+	const text = String(isDefaultAntAvatar ? title : avatar);
+	const imgAlt = alt || title || "avatar";
+	const defualtAvatar = typeof avatar === "string" ? /* @__PURE__ */ jsx(Img_default, {
+		alt: imgAlt,
+		height: size,
+		loading: "lazy",
+		src: avatar,
+		unoptimized,
+		width: size
+	}) : avatar;
+	const hasBackground = background && background !== "transparent" && background !== "rgba(0,0,0,0)" && background !== null;
+	const customAvatar = useMemo(() => emoji ? /* @__PURE__ */ jsx(FluentEmoji_default, {
+		emoji,
+		size: emojiScaleWithBackground ? hasBackground ? size * .85 : size : size * .85,
+		type: animation ? "anim" : "3d",
+		unoptimized
+	}) : sliceText ? (text || title)?.toUpperCase().slice(0, 2) : (text || title)?.toUpperCase(), [
+		animation,
+		emoji,
+		hasBackground,
+		size,
+		sliceText,
+		text,
+		title,
+		unoptimized,
+		emojiScaleWithBackground
+	]);
+	const actualColorForReadable = useMemo(() => {
+		const bgColor = background || theme.colorBorder;
+		if (typeof bgColor === "string" && bgColor.startsWith("var(")) return theme.colorBorder;
+		return bgColor;
+	}, [background, theme.colorBorder]);
+	return /* @__PURE__ */ jsxs(Avatar, {
+		alt: imgAlt,
+		className: cx(variants({
+			shadow,
+			variant
+		}), className),
+		draggable: false,
+		ref,
+		shape,
+		size,
+		src: isDefaultAntAvatar ? defualtAvatar : void 0,
+		style: {
+			background: isDefaultAntAvatar || !!emoji ? background : background || cssVar.colorBorder,
+			borderRadius: shape === "square" && size && size < 24 ? "33%" : void 0,
+			boxShadow: bordered ? `${cssVar.colorBgLayout} 0 0 0 2px, ${borderedColor || cssVar.colorTextTertiary} 0 0 0 4px` : void 0,
+			color: readableColor(actualColorForReadable),
+			cursor: rest?.onClick ? "pointer" : void 0,
+			fontSize: size * (emoji ? .7 : .5),
+			...style
+		},
+		...rest,
+		children: [loading && /* @__PURE__ */ jsx(Center_default, {
+			className: styles.loading,
+			height: "100%",
+			width: "100%",
+			children: /* @__PURE__ */ jsx(Icon_default, {
+				icon: Loader2,
+				spin: true
+			})
+		}), !isDefaultAntAvatar && customAvatar]
+	});
+});
+Avatar$1.displayName = "Avatar";
+var Avatar_default = Avatar$1;
+
+//#endregion
+export { Avatar_default as default };
+//# sourceMappingURL=Avatar.mjs.map

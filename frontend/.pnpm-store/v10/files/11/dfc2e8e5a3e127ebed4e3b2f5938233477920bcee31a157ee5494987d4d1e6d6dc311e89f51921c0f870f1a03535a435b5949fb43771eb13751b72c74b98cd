@@ -1,0 +1,8 @@
+import * as react108 from "react";
+import * as react_jsx_runtime0 from "react/jsx-runtime";
+
+//#region src/ContextMenu/ContextMenuHost.d.ts
+declare const ContextMenuHost: react108.MemoExoticComponent<() => react_jsx_runtime0.JSX.Element | null>;
+//#endregion
+export { ContextMenuHost };
+//# sourceMappingURL=ContextMenuHost.d.mts.map

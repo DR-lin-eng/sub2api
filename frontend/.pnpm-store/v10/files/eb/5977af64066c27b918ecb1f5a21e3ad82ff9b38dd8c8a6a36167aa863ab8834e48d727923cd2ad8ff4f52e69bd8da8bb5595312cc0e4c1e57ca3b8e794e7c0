@@ -1,0 +1,8 @@
+import { InputNumberProps } from "./type.mjs";
+import * as react134 from "react";
+
+//#region src/Input/InputNumber.d.ts
+declare const InputNumber: react134.NamedExoticComponent<InputNumberProps>;
+//#endregion
+export { InputNumber };
+//# sourceMappingURL=InputNumber.d.mts.map

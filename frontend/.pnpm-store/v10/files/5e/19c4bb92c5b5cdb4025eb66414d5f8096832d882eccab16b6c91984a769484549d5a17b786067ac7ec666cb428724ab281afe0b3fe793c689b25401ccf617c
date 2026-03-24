@@ -1,0 +1,8 @@
+import { EditableMessageProps } from "./type.mjs";
+import * as react112 from "react";
+
+//#region src/chat/EditableMessage/EditableMessage.d.ts
+declare const EditableMessage: react112.NamedExoticComponent<EditableMessageProps>;
+//#endregion
+export { EditableMessage };
+//# sourceMappingURL=EditableMessage.d.mts.map

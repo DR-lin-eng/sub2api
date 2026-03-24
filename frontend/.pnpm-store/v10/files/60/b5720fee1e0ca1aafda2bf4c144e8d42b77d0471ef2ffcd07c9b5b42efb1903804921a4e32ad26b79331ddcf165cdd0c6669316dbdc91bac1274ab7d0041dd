@@ -1,0 +1,23 @@
+import { MenuCheckboxItemType } from "../Menu/checkboxItem.mjs";
+import { BaseMenuItemType } from "../Menu/baseItem.mjs";
+import "../Menu/index.mjs";
+import { ReactNode } from "react";
+import { MenuPopupProps, MenuPortalProps, MenuPositionerProps, MenuRootProps, MenuTriggerProps } from "@base-ui/react/menu";
+
+//#region src/DropdownMenu/type.d.ts
+type DropdownMenuPlacement = 'bottomLeft' | 'bottomCenter' | 'bottomRight' | 'topLeft' | 'topCenter' | 'topRight' | 'top' | 'bottom';
+type DropdownMenuCheckboxItem = MenuCheckboxItemType;
+type DropdownItem = BaseMenuItemType;
+interface DropdownMenuProps<Payload = unknown> extends Omit<MenuRootProps<Payload>, 'children'> {
+  children: ReactNode;
+  items: DropdownItem[] | (() => DropdownItem[]);
+  nativeButton?: boolean;
+  placement?: DropdownMenuPlacement;
+  popupProps?: MenuPopupProps;
+  portalProps?: MenuPortalProps;
+  positionerProps?: MenuPositionerProps;
+  triggerProps?: Omit<MenuTriggerProps<Payload>, 'children'>;
+}
+//#endregion
+export { DropdownItem, DropdownMenuCheckboxItem, DropdownMenuPlacement, DropdownMenuProps };
+//# sourceMappingURL=type.d.mts.map

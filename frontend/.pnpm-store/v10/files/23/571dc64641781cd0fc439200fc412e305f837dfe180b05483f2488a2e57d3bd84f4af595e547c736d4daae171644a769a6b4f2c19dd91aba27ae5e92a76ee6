@@ -1,0 +1,9 @@
+import { DivProps } from "../../types/index.mjs";
+import * as react59 from "react";
+
+//#region src/DraggablePanel/components/DraggablePanelBody.d.ts
+type DraggablePanelBodyProps = DivProps;
+declare const DraggablePanelBody: react59.NamedExoticComponent<DivProps>;
+//#endregion
+export { DraggablePanelBody, DraggablePanelBodyProps };
+//# sourceMappingURL=DraggablePanelBody.d.mts.map

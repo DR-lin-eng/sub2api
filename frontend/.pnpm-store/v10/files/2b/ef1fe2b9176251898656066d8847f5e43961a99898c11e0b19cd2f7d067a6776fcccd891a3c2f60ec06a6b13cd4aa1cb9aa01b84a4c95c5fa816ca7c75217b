@@ -1,0 +1,15 @@
+import { BotPromptIcon } from "./BotPromptIcon.mjs";
+import { CreateBotIcon } from "./CreateBotIcon.mjs";
+import { DiscordIcon } from "./DiscordIcon.mjs";
+import { GlobeOffIcon } from "./GlobeOffIcon.mjs";
+import { GroupBotIcon } from "./GroupBotIcon.mjs";
+import { GroupBotSquareIcon } from "./GroupBotSquareIcon.mjs";
+import { LeftClickIcon } from "./LeftClickIcon.mjs";
+import { LeftDoubleClickIcon } from "./LeftDoubleClickIcon.mjs";
+import { McpIcon } from "./McpIcon.mjs";
+import { ProviderIcon } from "./ProviderIcon.mjs";
+import { RightClickIcon } from "./RightClickIcon.mjs";
+import { RightDoubleClickIcon } from "./RightDoubleClickIcon.mjs";
+import { ShapesUploadIcon } from "./ShapesUploadIcon.mjs";
+import { TreeDownRightIcon } from "./TreeDownRightIcon.mjs";
+import { TreeUpDownRightIcon } from "./TreeUpDownRightIcon.mjs";

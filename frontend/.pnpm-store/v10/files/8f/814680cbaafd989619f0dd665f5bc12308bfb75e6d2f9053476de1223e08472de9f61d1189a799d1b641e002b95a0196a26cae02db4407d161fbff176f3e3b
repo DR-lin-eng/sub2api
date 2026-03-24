@@ -1,0 +1,8 @@
+import { HighlighterProps } from "./type.mjs";
+import * as react46 from "react";
+
+//#region src/Highlighter/Highlighter.d.ts
+declare const Highlighter: react46.NamedExoticComponent<HighlighterProps>;
+//#endregion
+export { Highlighter };
+//# sourceMappingURL=Highlighter.d.mts.map

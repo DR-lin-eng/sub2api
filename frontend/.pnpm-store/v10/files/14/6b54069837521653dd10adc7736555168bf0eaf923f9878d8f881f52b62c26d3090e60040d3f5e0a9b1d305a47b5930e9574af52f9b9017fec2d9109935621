@@ -1,0 +1,8 @@
+import { InputPasswordProps } from "./type.mjs";
+import * as react137 from "react";
+
+//#region src/Input/InputPassword.d.ts
+declare const InputPassword: react137.NamedExoticComponent<InputPasswordProps>;
+//#endregion
+export { InputPassword };
+//# sourceMappingURL=InputPassword.d.mts.map

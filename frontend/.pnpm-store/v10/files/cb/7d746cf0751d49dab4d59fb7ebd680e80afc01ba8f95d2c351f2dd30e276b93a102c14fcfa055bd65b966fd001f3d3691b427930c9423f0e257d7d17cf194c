@@ -1,0 +1,8 @@
+import * as react90 from "react";
+import * as lucide_react7 from "lucide-react";
+
+//#region src/icons/lucideExtra/RightClickIcon.d.ts
+declare const RightClickIcon: react90.ForwardRefExoticComponent<Omit<lucide_react7.LucideProps, "ref"> & react90.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { RightClickIcon };
+//# sourceMappingURL=RightClickIcon.d.mts.map

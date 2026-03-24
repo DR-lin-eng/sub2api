@@ -1,0 +1,8 @@
+import { DropdownMenuProps } from "./type.mjs";
+import * as react56 from "react";
+
+//#region src/DropdownMenu/DropdownMenu.d.ts
+declare const DropdownMenu: react56.NamedExoticComponent<DropdownMenuProps<unknown>>;
+//#endregion
+export { DropdownMenu };
+//# sourceMappingURL=DropdownMenu.d.mts.map

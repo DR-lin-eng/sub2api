@@ -1,0 +1,43 @@
+import { createStaticStyles } from "antd-style";
+
+//#region src/chat/BackBottom/style.ts
+const styles = createStaticStyles(({ css: css$1, responsive: responsive$1 }) => ({
+	hidden: css$1`
+    pointer-events: none;
+
+    position: absolute;
+    inset-block-end: 16px;
+    inset-inline-end: 16px;
+    transform: translateY(16px);
+
+    opacity: 0;
+
+    ${responsive$1.sm} {
+      inset-inline-end: 0;
+      border-inline-end: none;
+      border-start-end-radius: 0 !important;
+      border-end-end-radius: 0 !important;
+    }
+  `,
+	visible: css$1`
+    pointer-events: all;
+
+    position: absolute;
+    inset-block-end: 16px;
+    inset-inline-end: 16px;
+    transform: translateY(0);
+
+    opacity: 1;
+
+    ${responsive$1.sm} {
+      inset-inline-end: 0;
+      border-inline-end: none;
+      border-start-end-radius: 0 !important;
+      border-end-end-radius: 0 !important;
+    }
+  `
+}));
+
+//#endregion
+export { styles };
+//# sourceMappingURL=style.mjs.map

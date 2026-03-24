@@ -1,0 +1,50 @@
+import FlexBasic_default from "../../Flex/FlexBasic.mjs";
+import ActionIcon_default from "../../ActionIcon/ActionIcon.mjs";
+import { styles } from "../style.mjs";
+import { memo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { FlipHorizontal, FlipVertical, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
+
+//#region src/Image/components/Toolbar.tsx
+const Toolbar = memo(({ children, info, minScale, maxScale }) => {
+	const { transform: { scale }, actions: { onFlipY, onFlipX, onRotateLeft, onRotateRight, onZoomOut, onZoomIn } } = info;
+	return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		className: styles.toolbar,
+		gap: 4,
+		horizontal: true,
+		children: [
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				icon: FlipHorizontal,
+				onClick: onFlipX
+			}),
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				icon: FlipVertical,
+				onClick: onFlipY
+			}),
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				icon: RotateCcw,
+				onClick: onRotateLeft
+			}),
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				icon: RotateCw,
+				onClick: onRotateRight
+			}),
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				disabled: scale === minScale,
+				icon: ZoomOut,
+				onClick: onZoomOut
+			}),
+			/* @__PURE__ */ jsx(ActionIcon_default, {
+				disabled: scale === maxScale,
+				icon: ZoomIn,
+				onClick: onZoomIn
+			}),
+			children
+		]
+	});
+});
+var Toolbar_default = Toolbar;
+
+//#endregion
+export { Toolbar_default as default };
+//# sourceMappingURL=Toolbar.mjs.map

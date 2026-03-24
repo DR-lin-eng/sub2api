@@ -1,0 +1,105 @@
+{
+  "name": "vue-draggable-plus",
+  "version": "0.6.1",
+  "author": {
+    "name": "yangpanteng",
+    "email": "yangpanteng@gmail.com"
+  },
+  "description": "Universal Drag-and-Drop Component Supporting both Vue 3 and Vue 2",
+  "homepage": "https://vue-draggable-plus.pages.dev/en/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alfred-Skyblue/vue-draggable-plus"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/vue-draggable-plus.umd.cjs",
+  "module": "./dist/vue-draggable-plus.js",
+  "unpkg": "./dist/vue-draggable-plus.iife.js",
+  "jsdelivr": "./dist/vue-draggable-plus.iife.js",
+  "sideEffects": false,
+  "license": "MIT",
+  "keywords": [
+    "vue",
+    "vue2.x",
+    "vue3.x",
+    "Sortable",
+    "sortablejs",
+    "drag",
+    "dragging",
+    "vue-draggable",
+    "vue-draggable-plus"
+  ],
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/vue-draggable-plus.js"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/vue-draggable-plus.cjs"
+      },
+      "default": "./dist/vue-draggable-plus.umd.cjs"
+    }
+  },
+  "scripts": {
+    "dev": "initial-scan docs && vitepress dev .docs --host",
+    "build": "vite build",
+    "build:lib": "npm-run-all lint build",
+    "copy:docs": "node scripts/copy-docs.cjs",
+    "docs:build": "initial-scan docs && cross-env NODE_ENV=production && npm run copy:docs && vitepress build .docs",
+    "serve": "cross-env NODE_ENV=production vitepress serve .docs --host",
+    "lint": "eslint src/**/*.ts",
+    "lint-fix": "pnpm lint --fix",
+    "release": "np"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@algolia/client-search": "^4.23.3",
+    "@ruabick/md-demo-plugins": "latest",
+    "@ruabick/vite-plugin-gen-temp": "latest",
+    "@ruabick/vitepress-demo-block": "latest",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "cross-env": "^7.0.3",
+    "eslint": "^8.57.0",
+    "eslint-define-config": "^1.24.1",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-vue": "^9.26.0",
+    "fs-extra": "^11.2.0",
+    "np": "^7.7.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^2.8.8",
+    "sortablejs": "^1.15.2",
+    "typescript": "^5.4.5",
+    "unocss": "^0.60.3",
+    "vite": "^5.2.12",
+    "vite-plugin-dts": "^1.7.3",
+    "vitepress": "1.0.0-rc.44",
+    "vue": "^3.4.27",
+    "vue-demi": "^0.13.11",
+    "vue-eslint-parser": "^9.4.2"
+  },
+  "dependencies": {
+    "@types/sortablejs": "^1.15.8"
+  },
+  "peerDependencies": {
+    "@types/sortablejs": "^1.15.0"
+  },
+  "peerDependenciesMeta": {
+    "@vue/composition-api": {
+      "optional": true
+    }
+  }
+}

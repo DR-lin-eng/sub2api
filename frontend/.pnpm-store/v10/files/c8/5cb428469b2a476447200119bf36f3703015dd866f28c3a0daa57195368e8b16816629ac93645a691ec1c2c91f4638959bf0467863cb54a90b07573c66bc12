@@ -1,0 +1,8 @@
+import { InputOPTProps } from "./type.mjs";
+import * as react138 from "react";
+
+//#region src/Input/InputOPT.d.ts
+declare const InputOPT: react138.NamedExoticComponent<InputOPTProps>;
+//#endregion
+export { InputOPT };
+//# sourceMappingURL=InputOPT.d.mts.map

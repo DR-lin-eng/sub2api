@@ -1,0 +1,31 @@
+'use client';
+
+import SkeletonBlock_default from "./SkeletonBlock.mjs";
+import { jsx } from "react/jsx-runtime";
+import { useTheme } from "antd-style";
+
+//#region src/Skeleton/SkeletonTitle.tsx
+const DEFAULT_FONT_SIZE = 18;
+const SkeletonTitle = ({ active, fontSize, lineHeight, height, width = "60%", style, className, ...rest }) => {
+	const theme = useTheme();
+	const baseFontSize = fontSize ?? theme.fontSize ?? DEFAULT_FONT_SIZE;
+	const resolvedLineHeight = lineHeight ?? 1.6;
+	const marginBlock = (height ? height : Math.round(baseFontSize * resolvedLineHeight)) - baseFontSize;
+	return /* @__PURE__ */ jsx(SkeletonBlock_default, {
+		active,
+		className,
+		height: Math.round(baseFontSize + marginBlock * .5),
+		style: {
+			marginBlock: Math.round(marginBlock * .5 / 2),
+			...style
+		},
+		width,
+		...rest
+	});
+};
+SkeletonTitle.displayName = "SkeletonTitle";
+var SkeletonTitle_default = SkeletonTitle;
+
+//#endregion
+export { SkeletonTitle_default as default };
+//# sourceMappingURL=SkeletonTitle.mjs.map

@@ -1,0 +1,8 @@
+import { AutoCompleteProps } from "./type.mjs";
+import * as react9 from "react";
+
+//#region src/AutoComplete/Select.d.ts
+declare const AutoComplete: react9.NamedExoticComponent<AutoCompleteProps>;
+//#endregion
+export { AutoComplete };
+//# sourceMappingURL=Select.d.mts.map

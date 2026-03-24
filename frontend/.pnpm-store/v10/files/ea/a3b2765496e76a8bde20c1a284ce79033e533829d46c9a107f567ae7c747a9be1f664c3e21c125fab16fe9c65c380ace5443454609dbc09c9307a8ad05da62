@@ -1,0 +1,63 @@
+'use client';
+
+import FlexBasic_default from "../../Flex/FlexBasic.mjs";
+import Icon_default from "../../Icon/Icon.mjs";
+import Collapse_default from "../../Collapse/Collapse.mjs";
+import { groupStyles, titleVariants } from "../style.mjs";
+import { memo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cx, useResponsive } from "antd-style";
+import { isUndefined } from "es-toolkit/compat";
+
+//#region src/Form/components/FormGroup.tsx
+const FormGroup = memo(({ className, icon, title, children, extra, variant = "borderless", defaultActive = true, collapsible, active, keyValue = "group", onCollapse, desc, ...rest }) => {
+	const { mobile } = useResponsive();
+	const styles = groupStyles;
+	const isBorderless = variant === "borderless";
+	const defaultCollapsible = isUndefined(collapsible) ? !isBorderless : collapsible;
+	const titleContent = /* @__PURE__ */ jsxs(FlexBasic_default, {
+		className: cx(titleVariants({ variant }), styles.titleMobile),
+		gap: 8,
+		horizontal: true,
+		children: [icon && /* @__PURE__ */ jsx(Icon_default, { icon }), title]
+	});
+	if (mobile) return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		className,
+		children: [/* @__PURE__ */ jsxs(FlexBasic_default, {
+			className: styles.mobileGroupHeader,
+			horizontal: true,
+			justify: "space-between",
+			children: [titleContent, extra]
+		}), /* @__PURE__ */ jsx("div", {
+			className: styles.mobileGroupBody,
+			children
+		})]
+	});
+	return /* @__PURE__ */ jsx(Collapse_default, {
+		activeKey: isUndefined(active) ? void 0 : active ? [keyValue] : [],
+		className,
+		classNames: {
+			header: isBorderless ? styles.titleBorderless : void 0,
+			title: isBorderless ? styles.titleBorderless : void 0
+		},
+		collapsible: defaultCollapsible,
+		defaultActiveKey: defaultActive ? [keyValue] : void 0,
+		items: [{
+			children,
+			desc,
+			extra,
+			icon,
+			key: keyValue,
+			label: title
+		}],
+		onChange: (v) => onCollapse?.(v.length > 0),
+		variant,
+		...rest
+	});
+});
+FormGroup.displayName = "FormGroup";
+var FormGroup_default = FormGroup;
+
+//#endregion
+export { FormGroup_default as default };
+//# sourceMappingURL=FormGroup.mjs.map

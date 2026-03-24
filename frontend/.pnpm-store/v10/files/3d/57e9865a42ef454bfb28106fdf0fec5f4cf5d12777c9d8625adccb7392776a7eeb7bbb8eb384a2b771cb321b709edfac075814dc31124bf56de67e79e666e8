@@ -1,0 +1,8 @@
+import * as react76 from "react";
+import * as lucide_react0 from "lucide-react";
+
+//#region src/icons/lucideExtra/BotPromptIcon.d.ts
+declare const BotPromptIcon: react76.ForwardRefExoticComponent<Omit<lucide_react0.LucideProps, "ref"> & react76.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { BotPromptIcon };
+//# sourceMappingURL=BotPromptIcon.d.mts.map

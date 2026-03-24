@@ -1,0 +1,8 @@
+import { CopyButtonProps } from "./type.mjs";
+import * as react64 from "react";
+
+//#region src/CopyButton/CopyButton.d.ts
+declare const CopyButton: react64.NamedExoticComponent<CopyButtonProps>;
+//#endregion
+export { CopyButton };
+//# sourceMappingURL=CopyButton.d.mts.map

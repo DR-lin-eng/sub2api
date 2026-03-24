@@ -1,0 +1,117 @@
+'use client';
+
+import Icon_default from "../Icon/Icon.mjs";
+import ActionIcon_default from "../ActionIcon/ActionIcon.mjs";
+import { styles } from "./style.mjs";
+import { memo, useState } from "react";
+import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+import { Button, ConfigProvider, Drawer, Modal } from "antd";
+import { cssVar, cx, useResponsive } from "antd-style";
+import { Maximize2, Minimize2, X } from "lucide-react";
+
+//#region src/Modal/Modal.tsx
+const Modal$1 = memo(({ panelRef, allowFullscreen, children, title = " ", className, classNames, width = 700, onCancel, open, destroyOnHidden, paddings, height = "75dvh", enableResponsive = true, footer, styles: customStyles, okText, onOk, cancelText, okButtonProps, cancelButtonProps, confirmLoading, ...rest }) => {
+	const [fullscreen, setFullscreen] = useState(false);
+	const { mobile } = useResponsive();
+	const hideFooter = footer === false || footer === null;
+	if (enableResponsive && mobile) return /* @__PURE__ */ jsx(ConfigProvider, {
+		theme: { token: { colorBgElevated: cssVar.colorBgContainer } },
+		children: /* @__PURE__ */ jsx(Drawer, {
+			className: cx(styles.drawerContent, className),
+			classNames: typeof classNames === "function" ? classNames : {
+				...classNames,
+				wrapper: cx(styles.wrap, classNames?.wrapper)
+			},
+			closeIcon: /* @__PURE__ */ jsx(ActionIcon_default, { icon: X }),
+			destroyOnHidden,
+			extra: allowFullscreen && /* @__PURE__ */ jsx(ActionIcon_default, {
+				icon: fullscreen ? Minimize2 : Maximize2,
+				onClick: () => setFullscreen(!fullscreen)
+			}),
+			footer: hideFooter ? null : footer || /* @__PURE__ */ jsxs(Fragment$1, { children: [/* @__PURE__ */ jsx(Button, {
+				color: "default",
+				onClick: onCancel,
+				variant: "filled",
+				...cancelButtonProps,
+				children: cancelText || "Cancel"
+			}), /* @__PURE__ */ jsx(Button, {
+				loading: confirmLoading,
+				onClick: onOk,
+				type: "primary",
+				...okButtonProps,
+				style: {
+					marginInlineStart: 8,
+					...okButtonProps?.style
+				},
+				children: okText || "OK"
+			})] }),
+			height: fullscreen ? "calc(100% - env(safe-area-inset-top))" : height,
+			onClose: onCancel,
+			open,
+			panelRef,
+			placement: "bottom",
+			styles: typeof customStyles === "function" ? customStyles : {
+				...customStyles,
+				body: {
+					paddingBlock: `16px ${footer ? 0 : "16px"}`,
+					paddingInline: paddings?.desktop ?? 16,
+					...customStyles?.body
+				}
+			},
+			title,
+			...rest,
+			children
+		})
+	});
+	return /* @__PURE__ */ jsx(ConfigProvider, {
+		theme: { token: { colorBgElevated: cssVar.colorBgContainer } },
+		children: /* @__PURE__ */ jsx(Modal, {
+			cancelButtonProps: {
+				color: "default",
+				variant: "filled",
+				...cancelButtonProps
+			},
+			cancelText,
+			className: cx(styles.content, className),
+			classNames: typeof classNames === "function" ? classNames : {
+				...classNames,
+				wrapper: cx(styles.wrap, classNames?.wrapper)
+			},
+			closable: true,
+			closeIcon: /* @__PURE__ */ jsx(Icon_default, {
+				icon: X,
+				size: 20
+			}),
+			confirmLoading,
+			destroyOnHidden,
+			footer: hideFooter ? null : footer,
+			maskClosable: true,
+			okButtonProps,
+			okText,
+			onCancel,
+			onOk,
+			open,
+			panelRef,
+			styles: typeof customStyles === "function" ? customStyles : {
+				...customStyles,
+				body: {
+					maxHeight: height,
+					overflow: "hidden auto",
+					paddingBlock: `0 ${footer === null ? "16px" : 0}`,
+					paddingInline: paddings?.desktop ?? 16,
+					...customStyles?.body
+				}
+			},
+			title,
+			width,
+			...rest,
+			children
+		})
+	});
+});
+Modal$1.displayName = "Modal";
+var Modal_default = Modal$1;
+
+//#endregion
+export { Modal_default as default };
+//# sourceMappingURL=Modal.mjs.map

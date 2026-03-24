@@ -1,0 +1,8 @@
+import { GridBackgroundProps } from "./type.mjs";
+import * as react123 from "react";
+
+//#region src/awesome/GridBackground/GridBackground.d.ts
+declare const GridBackground: react123.NamedExoticComponent<GridBackgroundProps>;
+//#endregion
+export { GridBackground };
+//# sourceMappingURL=GridBackground.d.mts.map

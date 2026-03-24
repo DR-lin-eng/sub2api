@@ -1,0 +1,10 @@
+import * as react69 from "react";
+
+//#region src/FontLoader/index.d.ts
+interface FontLoaderProps {
+  url: string;
+}
+declare const FontLoader: react69.NamedExoticComponent<FontLoaderProps>;
+//#endregion
+export { FontLoader, FontLoaderProps };
+//# sourceMappingURL=index.d.mts.map

@@ -1,0 +1,14 @@
+import { DivProps } from "../../types/index.mjs";
+import * as react1 from "react";
+import { ReactNode } from "react";
+
+//#region src/brand/LobeHub/index.d.ts
+interface LobeHubProps extends DivProps {
+  extra?: ReactNode;
+  size?: number;
+  type?: '3d' | 'flat' | 'mono' | 'text' | 'combine';
+}
+declare const LobeHub: react1.NamedExoticComponent<LobeHubProps>;
+//#endregion
+export { LobeHub, LobeHubProps };
+//# sourceMappingURL=index.d.mts.map

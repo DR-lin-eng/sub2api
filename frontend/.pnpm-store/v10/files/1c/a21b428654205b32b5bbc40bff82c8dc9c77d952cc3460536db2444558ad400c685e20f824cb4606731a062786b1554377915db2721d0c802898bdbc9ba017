@@ -1,0 +1,67 @@
+import FlexBasic_default from "../../../Flex/FlexBasic.mjs";
+import Icon_default from "../../../Icon/Icon.mjs";
+import Button_default from "../../../Button/Button.mjs";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cssVar } from "antd-style";
+import { ArrowBigUp, CornerDownLeft, Loader2 } from "lucide-react";
+
+//#region src/chat/ChatInputArea/components/ChatSendButton.tsx
+const ChatSendButton = ({ ref, leftAddons, rightAddons, texts, onSend, loading, onStop, ...rest }) => {
+	return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		align: "end",
+		distribution: "space-between",
+		flex: "none",
+		gap: 8,
+		horizontal: true,
+		paddingInline: 16,
+		ref,
+		...rest,
+		children: [/* @__PURE__ */ jsx(FlexBasic_default, {
+			align: "center",
+			gap: 8,
+			horizontal: true,
+			children: leftAddons
+		}), /* @__PURE__ */ jsxs(FlexBasic_default, {
+			align: "center",
+			gap: 8,
+			horizontal: true,
+			children: [
+				/* @__PURE__ */ jsxs(FlexBasic_default, {
+					gap: 4,
+					horizontal: true,
+					style: {
+						color: cssVar.colorTextDescription,
+						fontSize: 12,
+						marginRight: 12
+					},
+					children: [
+						/* @__PURE__ */ jsx(Icon_default, { icon: CornerDownLeft }),
+						/* @__PURE__ */ jsx("span", { children: texts?.send || "Send" }),
+						/* @__PURE__ */ jsx("span", { children: "/" }),
+						/* @__PURE__ */ jsxs(FlexBasic_default, {
+							horizontal: true,
+							children: [/* @__PURE__ */ jsx(Icon_default, { icon: ArrowBigUp }), /* @__PURE__ */ jsx(Icon_default, { icon: CornerDownLeft })]
+						}),
+						/* @__PURE__ */ jsx("span", { children: texts?.warp || "Warp" })
+					]
+				}),
+				rightAddons,
+				loading ? /* @__PURE__ */ jsx(Button_default, {
+					icon: loading && Loader2,
+					onClick: onStop,
+					children: texts?.stop || "Stop"
+				}) : /* @__PURE__ */ jsx(Button_default, {
+					onClick: onSend,
+					type: "primary",
+					children: texts?.send || "Send"
+				})
+			]
+		})]
+	});
+};
+ChatSendButton.displayName = "ChatSendButton";
+var ChatSendButton_default = ChatSendButton;
+
+//#endregion
+export { ChatSendButton_default as default };
+//# sourceMappingURL=ChatSendButton.mjs.map

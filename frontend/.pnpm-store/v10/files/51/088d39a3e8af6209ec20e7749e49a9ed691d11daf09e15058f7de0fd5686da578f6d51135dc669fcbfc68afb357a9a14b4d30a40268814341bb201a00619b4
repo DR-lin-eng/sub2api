@@ -1,0 +1,8 @@
+import { MenuProps } from "./type.mjs";
+import * as react30 from "react";
+
+//#region src/Menu/Menu.d.ts
+declare const Menu: react30.NamedExoticComponent<MenuProps<unknown>>;
+//#endregion
+export { Menu };
+//# sourceMappingURL=Menu.d.mts.map

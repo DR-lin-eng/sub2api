@@ -1,0 +1,8 @@
+import { CodeEditorProps } from "./type.mjs";
+import * as react6 from "react";
+
+//#region src/CodeEditor/CodeEditor.d.ts
+declare const CodeEditor: react6.NamedExoticComponent<CodeEditorProps>;
+//#endregion
+export { CodeEditor };
+//# sourceMappingURL=CodeEditor.d.mts.map

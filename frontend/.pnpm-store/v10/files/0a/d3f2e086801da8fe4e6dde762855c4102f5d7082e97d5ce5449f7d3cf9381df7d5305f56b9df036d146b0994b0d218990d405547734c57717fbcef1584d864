@@ -1,0 +1,8 @@
+import { ChatHeaderTitleProps } from "./type.mjs";
+import * as react118 from "react";
+
+//#region src/mobile/ChatHeader/ChatHeaderTitle.d.ts
+declare const ChatHeaderTitle: react118.NamedExoticComponent<ChatHeaderTitleProps>;
+//#endregion
+export { ChatHeaderTitle };
+//# sourceMappingURL=ChatHeaderTitle.d.mts.map

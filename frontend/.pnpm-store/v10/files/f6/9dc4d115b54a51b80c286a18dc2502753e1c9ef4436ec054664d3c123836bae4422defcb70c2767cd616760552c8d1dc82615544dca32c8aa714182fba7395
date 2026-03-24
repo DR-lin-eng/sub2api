@@ -1,0 +1,8 @@
+import * as react92 from "react";
+import * as lucide_react8 from "lucide-react";
+
+//#region src/icons/lucideExtra/TreeUpDownRightIcon.d.ts
+declare const TreeUpDownRightIcon: react92.ForwardRefExoticComponent<Omit<lucide_react8.LucideProps, "ref"> & react92.RefAttributes<SVGSVGElement>>;
+//#endregion
+export { TreeUpDownRightIcon };
+//# sourceMappingURL=TreeUpDownRightIcon.d.mts.map

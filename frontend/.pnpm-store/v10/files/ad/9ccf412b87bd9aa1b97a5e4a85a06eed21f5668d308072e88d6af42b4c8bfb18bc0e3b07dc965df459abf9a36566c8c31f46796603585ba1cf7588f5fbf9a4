@@ -1,0 +1,8 @@
+import { HeaderProps } from "./type.mjs";
+import * as react51 from "react";
+
+//#region src/Header/Header.d.ts
+declare const Header: react51.NamedExoticComponent<HeaderProps>;
+//#endregion
+export { Header };
+//# sourceMappingURL=Header.d.mts.map

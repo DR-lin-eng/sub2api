@@ -1,0 +1,75 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import ActionIcon_default from "../ActionIcon/ActionIcon.mjs";
+import DropdownMenu_default from "../DropdownMenu/DropdownMenu.mjs";
+import { useMemo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { Select } from "antd";
+import { Monitor, Moon, Sun } from "lucide-react";
+
+//#region src/ThemeSwitch/ThemeSwitch.tsx
+const DEFAULT_ICON_SET = {
+	auto: Monitor,
+	dark: Moon,
+	light: Sun
+};
+const ThemeSwitch = ({ size = "middle", themeMode, onThemeSwitch, type = "icon", labels = {
+	auto: "System",
+	dark: "Dark",
+	light: "Light"
+}, className, variant, style }) => {
+	const items = useMemo(() => [
+		{
+			icon: DEFAULT_ICON_SET.auto,
+			key: "auto",
+			label: labels.auto,
+			onClick: () => onThemeSwitch("auto")
+		},
+		{
+			icon: DEFAULT_ICON_SET.light,
+			key: "light",
+			label: labels.light,
+			onClick: () => onThemeSwitch("light")
+		},
+		{
+			icon: DEFAULT_ICON_SET.dark,
+			key: "dark",
+			label: labels.dark,
+			onClick: () => onThemeSwitch("dark")
+		}
+	], [labels, onThemeSwitch]);
+	return type === "select" ? /* @__PURE__ */ jsx(Select, {
+		className,
+		defaultValue: themeMode,
+		onChange: onThemeSwitch,
+		options: items.map((item) => ({
+			label: /* @__PURE__ */ jsxs(FlexBasic_default, {
+				align: "center",
+				gap: 8,
+				horizontal: true,
+				children: [/* @__PURE__ */ jsx(Icon_default, { icon: item.icon }), item.label]
+			}),
+			value: item.key
+		})),
+		style,
+		variant
+	}) : /* @__PURE__ */ jsx(DropdownMenu_default, {
+		items,
+		nativeButton: false,
+		children: /* @__PURE__ */ jsx(ActionIcon_default, {
+			className,
+			icon: DEFAULT_ICON_SET[themeMode],
+			size,
+			style,
+			variant
+		})
+	});
+};
+ThemeSwitch.displayName = "ThemeSwitch";
+var ThemeSwitch_default = ThemeSwitch;
+
+//#endregion
+export { ThemeSwitch_default as default };
+//# sourceMappingURL=ThemeSwitch.mjs.map

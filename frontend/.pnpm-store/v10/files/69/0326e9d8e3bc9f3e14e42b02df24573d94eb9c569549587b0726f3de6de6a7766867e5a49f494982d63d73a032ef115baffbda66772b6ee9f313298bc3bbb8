@@ -1,0 +1,66 @@
+'use client';
+
+import { colorsPreset, colorsPresetSystem, presetColors, presetSystemColors } from "./utils.mjs";
+import { variants } from "./styles.mjs";
+import { useMemo } from "react";
+import { jsx } from "react/jsx-runtime";
+import { Tag } from "antd";
+import { cssVar, cx } from "antd-style";
+
+//#region src/Tag/Tag.tsx
+const Tag$1 = ({ className, ref, size = "middle", color, variant = "filled", children, onClick, style, ...rest }) => {
+	const colors = useMemo(() => {
+		let textColor = cssVar.colorTextSecondary;
+		let backgroundColor;
+		let borderColor;
+		const isBorderless = variant === "borderless";
+		const isFilled = variant === "filled";
+		const isPresetColor = color && presetColors.includes(color);
+		const isPresetSystemColors = color && presetSystemColors.has(color);
+		const isHexColor = color && color.startsWith("#");
+		if (isPresetColor) {
+			textColor = colorsPreset(color);
+			backgroundColor = isBorderless ? "transparent" : colorsPreset(color, "fillTertiary");
+			borderColor = colorsPreset(color, isFilled ? "fillQuaternary" : "fillTertiary");
+		}
+		if (isPresetSystemColors) {
+			textColor = colorsPresetSystem(color);
+			backgroundColor = isBorderless ? "transparent" : colorsPresetSystem(color, "fillTertiary");
+			borderColor = colorsPresetSystem(color, isFilled ? "fillQuaternary" : "fillTertiary");
+		}
+		if (isHexColor) {
+			textColor = cssVar.colorBgLayout;
+			backgroundColor = isBorderless ? "transparent" : color;
+		}
+		return {
+			backgroundColor,
+			borderColor,
+			textColor
+		};
+	}, [color, variant]);
+	return /* @__PURE__ */ jsx(Tag, {
+		className: cx(variants({
+			size,
+			variant
+		}), className),
+		color,
+		onClick,
+		ref,
+		style: {
+			background: colors?.backgroundColor,
+			borderColor: colors?.borderColor,
+			color: colors?.textColor,
+			cursor: onClick ? "pointer" : void 0,
+			...style
+		},
+		variant: variant === "borderless" ? "outlined" : variant,
+		...rest,
+		children
+	});
+};
+Tag$1.displayName = "Tag";
+var Tag_default = Tag$1;
+
+//#endregion
+export { Tag_default as default };
+//# sourceMappingURL=Tag.mjs.map

@@ -1,0 +1,8 @@
+import { TypewriterEffectProps } from "./type.mjs";
+import * as react119 from "react";
+
+//#region src/awesome/TypewriterEffect/TypewriterEffect.d.ts
+declare const TypewriterEffect: react119.NamedExoticComponent<TypewriterEffectProps>;
+//#endregion
+export { TypewriterEffect };
+//# sourceMappingURL=TypewriterEffect.d.mts.map

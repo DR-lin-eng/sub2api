@@ -1,0 +1,8 @@
+import { HotkeyProps } from "./type.mjs";
+import * as react45 from "react";
+
+//#region src/Hotkey/Hotkey.d.ts
+declare const Hotkey: react45.NamedExoticComponent<HotkeyProps>;
+//#endregion
+export { Hotkey };
+//# sourceMappingURL=Hotkey.d.mts.map

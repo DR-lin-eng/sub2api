@@ -1,0 +1,139 @@
+'use client';
+
+import FlexBasic_default from "../Flex/FlexBasic.mjs";
+import Center_default from "../Flex/Center.mjs";
+import { KeyMapEnum } from "./const.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import LeftClickIcon_default from "../icons/lucideExtra/LeftClickIcon.mjs";
+import LeftDoubleClickIcon_default from "../icons/lucideExtra/LeftDoubleClickIcon.mjs";
+import RightClickIcon_default from "../icons/lucideExtra/RightClickIcon.mjs";
+import RightDoubleClickIcon_default from "../icons/lucideExtra/RightDoubleClickIcon.mjs";
+import { variants } from "./style.mjs";
+import { checkIsAppleDevice, splitKeysByPlus, startCase } from "./utils.mjs";
+import { memo, useEffect, useMemo, useState } from "react";
+import { jsx } from "react/jsx-runtime";
+import { cx, useThemeMode } from "antd-style";
+import { ArrowBigUpIcon, ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowRightToLineIcon, ArrowUpIcon, ChevronUpIcon, Command, CornerDownLeftIcon, Delete, Grid2X2Icon, MouseIcon, Option, SpaceIcon } from "lucide-react";
+
+//#region src/Hotkey/Hotkey.tsx
+const mappingKey = (isAppleDevice) => ({
+	[KeyMapEnum.Alt]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, {
+		icon: Option,
+		size: { size: "0.95em" }
+	}) : "Alt",
+	[KeyMapEnum.Backspace]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, { icon: Delete }) : "Backspace",
+	[KeyMapEnum.Ctrl]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, { icon: ChevronUpIcon }) : "Ctrl",
+	[KeyMapEnum.Down]: /* @__PURE__ */ jsx(Icon_default, { icon: ArrowDownIcon }),
+	[KeyMapEnum.Enter]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, { icon: CornerDownLeftIcon }) : "Enter",
+	[KeyMapEnum.LeftClick]: /* @__PURE__ */ jsx(Icon_default, {
+		icon: LeftClickIcon_default,
+		size: {
+			size: "1.2em",
+			strokeWidth: 1.75
+		}
+	}),
+	[KeyMapEnum.Left]: /* @__PURE__ */ jsx(Icon_default, { icon: ArrowLeftIcon }),
+	[KeyMapEnum.Meta]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, {
+		icon: Command,
+		size: { size: "0.95em" }
+	}) : /* @__PURE__ */ jsx(Icon_default, { icon: Grid2X2Icon }),
+	[KeyMapEnum.MiddleClick]: /* @__PURE__ */ jsx(Icon_default, {
+		icon: MouseIcon,
+		size: {
+			size: "1.2em",
+			strokeWidth: 1.75
+		}
+	}),
+	[KeyMapEnum.Mod]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, {
+		icon: Command,
+		size: { size: "0.95em" }
+	}) : "Ctrl",
+	[KeyMapEnum.RightClick]: /* @__PURE__ */ jsx(Icon_default, {
+		icon: RightClickIcon_default,
+		size: {
+			size: "1.2em",
+			strokeWidth: 1.75
+		}
+	}),
+	[KeyMapEnum.RightDoubleClick]: /* @__PURE__ */ jsx(Icon_default, {
+		icon: RightDoubleClickIcon_default,
+		size: {
+			size: "1.2em",
+			strokeWidth: 1.75
+		}
+	}),
+	[KeyMapEnum.LeftDoubleClick]: /* @__PURE__ */ jsx(Icon_default, {
+		icon: LeftDoubleClickIcon_default,
+		size: {
+			size: "1.2em",
+			strokeWidth: 1.75
+		}
+	}),
+	[KeyMapEnum.Right]: /* @__PURE__ */ jsx(Icon_default, { icon: ArrowRightIcon }),
+	[KeyMapEnum.Shift]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, {
+		icon: ArrowBigUpIcon,
+		size: {
+			size: "1.15em",
+			strokeWidth: 1.75
+		}
+	}) : "Shift",
+	[KeyMapEnum.Space]: /* @__PURE__ */ jsx(Icon_default, { icon: SpaceIcon }),
+	[KeyMapEnum.Tab]: isAppleDevice ? /* @__PURE__ */ jsx(Icon_default, { icon: ArrowRightToLineIcon }) : "Tab",
+	[KeyMapEnum.Up]: /* @__PURE__ */ jsx(Icon_default, { icon: ArrowUpIcon }),
+	[KeyMapEnum.Comma]: ",",
+	[KeyMapEnum.Period]: ".",
+	[KeyMapEnum.Slash]: "?",
+	[KeyMapEnum.Semicolon]: ";",
+	[KeyMapEnum.Quote]: "'",
+	[KeyMapEnum.Backquote]: "`",
+	[KeyMapEnum.Backslash]: "\\",
+	[KeyMapEnum.BracketLeft]: "[",
+	[KeyMapEnum.BracketRight]: "]",
+	[KeyMapEnum.Minus]: "-",
+	[KeyMapEnum.Equal]: "+"
+});
+const Hotkey = memo(({ variant = "filled", classNames, styles: customStyles, keys, inverseTheme, isApple, compact, className, style, ...rest }) => {
+	const { isDarkMode } = useThemeMode();
+	const isBorderless = variant === "borderless";
+	const [keysGroup, setKeysGroup] = useState(splitKeysByPlus(keys));
+	const isAppleDevice = useMemo(() => checkIsAppleDevice(isApple), [isApple]);
+	useEffect(() => {
+		setKeysGroup(splitKeysByPlus(keys));
+	}, [keys]);
+	const mapping = useMemo(() => mappingKey(isAppleDevice), [isAppleDevice]);
+	return /* @__PURE__ */ jsx(FlexBasic_default, {
+		align: "center",
+		className,
+		gap: isBorderless ? 6 : 2,
+		horizontal: true,
+		style,
+		...rest,
+		children: compact || isBorderless ? /* @__PURE__ */ jsx(Center_default, {
+			as: "kbd",
+			className: cx(variants({
+				inverseTheme,
+				isDarkMode,
+				variant
+			}), classNames?.kbdClassName),
+			gap: 6,
+			horizontal: true,
+			style: customStyles?.kbdStyle,
+			children: keysGroup.map((key, index) => /* @__PURE__ */ jsx("div", { children: mapping[key] ?? startCase(key) }, index))
+		}) : keysGroup.map((key, index) => /* @__PURE__ */ jsx(Center_default, {
+			as: "kbd",
+			className: cx(variants({
+				inverseTheme,
+				isDarkMode,
+				variant
+			}), classNames?.kbdClassName),
+			style: customStyles?.kbdStyle,
+			children: mapping[key] ?? startCase(key)
+		}, index))
+	});
+});
+Hotkey.displayName = "Hotkey";
+var Hotkey_default = Hotkey;
+
+//#endregion
+export { Hotkey_default as default };
+//# sourceMappingURL=Hotkey.mjs.map

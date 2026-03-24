@@ -1,0 +1,20 @@
+import { FlexboxProps } from "../../../Flex/type.mjs";
+import "../../../Flex/index.mjs";
+import * as react70 from "react";
+import { Ref } from "react";
+
+//#region src/Markdown/components/SearchResultCards/index.d.ts
+interface SearchResultItem {
+  alt?: string;
+  summary?: string;
+  title?: string;
+  url: string;
+}
+interface SearchResultCardsProps extends FlexboxProps {
+  dataSource: string[] | SearchResultItem[];
+  ref?: Ref<HTMLDivElement>;
+}
+declare const SearchResultCards: react70.NamedExoticComponent<SearchResultCardsProps>;
+//#endregion
+export { SearchResultCards, SearchResultCardsProps };
+//# sourceMappingURL=index.d.mts.map

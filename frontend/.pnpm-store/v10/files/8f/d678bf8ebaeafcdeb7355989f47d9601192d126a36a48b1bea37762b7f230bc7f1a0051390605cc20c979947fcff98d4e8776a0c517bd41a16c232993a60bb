@@ -1,0 +1,269 @@
+'use client';
+
+import Center_default from "../Flex/Center.mjs";
+import Icon_default from "../Icon/Icon.mjs";
+import { handleVariants, panelVariants, styles, toggleVariants } from "./style.mjs";
+import { reversePlacement } from "./utils.mjs";
+import { memo, use, useCallback, useEffect, useMemo, useReducer, useRef, useTransition } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { ConfigProvider } from "antd";
+import { cx } from "antd-style";
+import useMergeState from "use-merge-value";
+import { useHover } from "ahooks";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from "lucide-react";
+import isEqual from "fast-deep-equal";
+import { Resizable } from "re-resizable";
+
+//#region src/DraggablePanel/DraggablePanel.tsx
+const DEFAULT_HEIGHT = 180;
+const DEFAULT_WIDTH = 280;
+const DEFAULT_HEADER_HEIGHT = 0;
+const DEFAULT_PIN = true;
+const DEFAULT_MODE = "fixed";
+const DEFAULT_EXPANDABLE = true;
+const DEFAULT_EXPAND = true;
+const DEFAULT_SHOW_HANDLE_WIDE_AREA = true;
+function draggablePanelReducer(state, action) {
+	switch (action.type) {
+		case "START_RESIZE": return {
+			...state,
+			isResizing: true,
+			showExpand: false
+		};
+		case "STOP_RESIZE": return {
+			...state,
+			isResizing: false,
+			showExpand: true
+		};
+		case "SET_SHOW_EXPAND": return {
+			...state,
+			showExpand: action.payload
+		};
+		default: return state;
+	}
+}
+const DraggablePanel = memo(({ headerHeight = DEFAULT_HEADER_HEIGHT, fullscreen, maxHeight, pin = DEFAULT_PIN, mode = DEFAULT_MODE, children, placement = "right", resize, style, showBorder = true, showHandleHighlight = false, showHandleWideArea = DEFAULT_SHOW_HANDLE_WIDE_AREA, backgroundColor, size, defaultSize: customizeDefaultSize, minWidth, minHeight, maxWidth, onSizeChange, onSizeDragging, expandable = DEFAULT_EXPANDABLE, expand, defaultExpand = DEFAULT_EXPAND, onExpandChange, className, showHandleWhenCollapsed, destroyOnClose, styles: customStyles, classNames, dir }) => {
+	const ref = useRef(null);
+	const isHovering = useHover(ref);
+	const isVertical = placement === "top" || placement === "bottom";
+	const [isPending, startTransition] = useTransition();
+	const hoverTimeoutRef = useRef(void 0);
+	const { direction: antdDirection } = use(ConfigProvider.ConfigContext);
+	const direction = dir ?? antdDirection;
+	const internalPlacement = useMemo(() => {
+		return direction === "rtl" && ["left", "right"].includes(placement) ? placement === "left" ? "right" : "left" : placement;
+	}, [direction, placement]);
+	const cssVariables = useMemo(() => ({
+		"--draggable-panel-bg": backgroundColor || "",
+		"--draggable-panel-header-height": `${headerHeight}px`
+	}), [backgroundColor, headerHeight]);
+	const [isExpand, setIsExpand] = useMergeState(defaultExpand, {
+		onChange: onExpandChange,
+		value: expand
+	});
+	const [state, dispatch] = useReducer(draggablePanelReducer, {
+		isResizing: false,
+		showExpand: true
+	});
+	useEffect(() => {
+		if (pin) return;
+		if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+		if (isHovering && !isExpand) startTransition(() => {
+			setIsExpand(true);
+		});
+		else if (!isHovering && isExpand) hoverTimeoutRef.current = setTimeout(() => {
+			startTransition(() => {
+				setIsExpand(false);
+			});
+		}, 150);
+	}, [
+		pin,
+		isHovering,
+		isExpand,
+		setIsExpand
+	]);
+	useEffect(() => {
+		return () => {
+			if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+		};
+	}, []);
+	const canResizing = resize !== false && isExpand;
+	const resizing = useMemo(() => ({
+		bottom: false,
+		bottomLeft: false,
+		bottomRight: false,
+		left: false,
+		right: false,
+		top: false,
+		topLeft: false,
+		topRight: false,
+		[reversePlacement(internalPlacement)]: true,
+		...resize
+	}), [internalPlacement, resize]);
+	const defaultSize = useMemo(() => {
+		if (isVertical) return {
+			height: DEFAULT_HEIGHT,
+			width: "100%",
+			...customizeDefaultSize
+		};
+		return {
+			height: "100%",
+			width: DEFAULT_WIDTH,
+			...customizeDefaultSize
+		};
+	}, [isVertical, customizeDefaultSize]);
+	const sizeProps = useMemo(() => {
+		if (!isExpand) return isVertical ? {
+			minHeight: 0,
+			size: { height: 0 }
+		} : {
+			minWidth: 0,
+			size: { width: 0 }
+		};
+		return {
+			defaultSize,
+			maxHeight: typeof maxHeight === "number" ? Math.max(maxHeight, 0) : maxHeight,
+			maxWidth: typeof maxWidth === "number" ? Math.max(maxWidth, 0) : maxWidth,
+			minHeight: typeof minHeight === "number" ? Math.max(minHeight, 0) : minHeight,
+			minWidth: typeof minWidth === "number" ? Math.max(minWidth, 0) : minWidth,
+			size
+		};
+	}, [
+		isExpand,
+		isVertical,
+		defaultSize,
+		maxHeight,
+		maxWidth,
+		minHeight,
+		minWidth,
+		size
+	]);
+	const Arrow = useMemo(() => {
+		switch (internalPlacement) {
+			case "top": return ChevronDown;
+			case "bottom": return ChevronUp;
+			case "right": return ChevronLeft;
+			case "left": return ChevronRight;
+			default: return ChevronLeft;
+		}
+	}, [internalPlacement]);
+	const toggleExpand = useCallback(() => {
+		if (!expandable) return;
+		startTransition(() => {
+			setIsExpand(!isExpand);
+		});
+	}, [
+		expandable,
+		isExpand,
+		setIsExpand
+	]);
+	const handle = useMemo(() => /* @__PURE__ */ jsx(Center_default, {
+		className: toggleVariants({
+			placement: internalPlacement,
+			showHandleWideArea
+		}),
+		style: { opacity: isExpand ? pin ? void 0 : 0 : showHandleWhenCollapsed ? 1 : 0 },
+		children: /* @__PURE__ */ jsx(Center_default, {
+			className: classNames?.handle,
+			onClick: toggleExpand,
+			style: customStyles?.handle,
+			children: /* @__PURE__ */ jsx(Icon_default, {
+				className: styles.handlerIcon,
+				icon: Arrow,
+				size: 16,
+				style: {
+					marginBottom: internalPlacement === "top" ? 4 : 0,
+					marginLeft: internalPlacement === "right" ? 4 : 0,
+					marginRight: internalPlacement === "left" ? 4 : 0,
+					marginTop: internalPlacement === "bottom" ? 4 : 0,
+					transform: `rotate(${isExpand ? 180 : 0}deg)`,
+					transition: "transform 0.3s ease"
+				}
+			})
+		})
+	}), [
+		toggleVariants,
+		internalPlacement,
+		isExpand,
+		pin,
+		showHandleWhenCollapsed,
+		classNames?.handle,
+		toggleExpand,
+		customStyles?.handle,
+		styles.handlerIcon,
+		Arrow
+	]);
+	const handleResize = useCallback((_, _direction, reference_, delta) => {
+		onSizeDragging?.(delta, {
+			height: reference_.style.height,
+			width: reference_.style.width
+		});
+	}, [onSizeDragging]);
+	const handleResizeStart = useCallback(() => {
+		dispatch({ type: "START_RESIZE" });
+	}, []);
+	const handleResizeStop = useCallback((e, direction$1, reference_, delta) => {
+		dispatch({ type: "STOP_RESIZE" });
+		onSizeChange?.(delta, {
+			height: reference_.style.height,
+			width: reference_.style.width
+		});
+	}, [onSizeChange]);
+	const inner = useMemo(() => /* @__PURE__ */ jsx(Resizable, {
+		...sizeProps,
+		className: cx(styles.panel, classNames?.content),
+		enable: canResizing ? resizing : void 0,
+		handleClasses: canResizing ? { [reversePlacement(internalPlacement)]: cx(handleVariants({ placement: reversePlacement(internalPlacement) }), showHandleHighlight && styles.handleHighlight) } : {},
+		onResize: handleResize,
+		onResizeStart: handleResizeStart,
+		onResizeStop: handleResizeStop,
+		style: {
+			...cssVariables,
+			opacity: isPending ? .95 : 1,
+			transition: state.isResizing ? "unset" : void 0,
+			...style
+		},
+		children
+	}), [
+		sizeProps,
+		styles.panel,
+		classNames?.content,
+		canResizing,
+		resizing,
+		internalPlacement,
+		handleVariants,
+		showHandleHighlight,
+		styles.handleHighlight,
+		handleResize,
+		handleResizeStart,
+		handleResizeStop,
+		state.isResizing,
+		isPending,
+		style,
+		children,
+		cx
+	]);
+	if (fullscreen) return /* @__PURE__ */ jsx("div", {
+		className: cx(styles.fullscreen, className),
+		style: cssVariables,
+		children
+	});
+	return /* @__PURE__ */ jsxs("aside", {
+		className: cx(panelVariants({
+			isExpand,
+			mode,
+			placement: internalPlacement,
+			showBorder
+		}), className),
+		dir,
+		ref,
+		style: cssVariables,
+		children: [expandable && state.showExpand && handle, destroyOnClose ? isExpand && inner : inner]
+	});
+}, isEqual);
+DraggablePanel.displayName = "DraggablePanel";
+var DraggablePanel_default = DraggablePanel;
+
+//#endregion
+export { DraggablePanel_default as default };
+//# sourceMappingURL=DraggablePanel.mjs.map

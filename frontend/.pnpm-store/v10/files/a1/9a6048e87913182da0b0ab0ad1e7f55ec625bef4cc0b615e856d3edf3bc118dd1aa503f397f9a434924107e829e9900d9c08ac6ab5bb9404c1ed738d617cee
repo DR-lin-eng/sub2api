@@ -1,0 +1,8 @@
+import { InputProps } from "./type.mjs";
+import * as react136 from "react";
+
+//#region src/Input/Input.d.ts
+declare const Input: react136.NamedExoticComponent<InputProps>;
+//#endregion
+export { Input };
+//# sourceMappingURL=Input.d.mts.map

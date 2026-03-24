@@ -1,0 +1,15 @@
+import { MenuCheckboxItemType } from "./checkboxItem.mjs";
+import { GenericItemType } from "./type.mjs";
+
+//#region src/Menu/baseItem.d.ts
+
+/**
+ * Base item union for Base UI driven menus (DropdownMenu / ContextMenu).
+ *
+ * Note: This intentionally does NOT change `GenericItemType` itself,
+ * because `GenericItemType` maps to rc-menu/antd Menu item types.
+ */
+type BaseMenuItemType<T = unknown> = GenericItemType<T> | MenuCheckboxItemType;
+//#endregion
+export { BaseMenuItemType };
+//# sourceMappingURL=baseItem.d.mts.map

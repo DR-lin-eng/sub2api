@@ -1,0 +1,74 @@
+'use client';
+
+import { LOBE_THEME_APP_ID } from "../ThemeProvider/constants.mjs";
+import { TOOLTIP_CONTAINER_ATTR } from "../Tooltip/TooltipPortal.mjs";
+import { preventDefaultAndStopPropagation } from "../utils/dom.mjs";
+import { styles } from "../Menu/sharedStyle.mjs";
+import { useIsClient } from "../hooks/useIsClient.mjs";
+import { registerDevSingleton } from "../utils/devSingleton.mjs";
+import { renderContextMenuItems } from "./renderItems.mjs";
+import { closeContextMenu, getServerSnapshot, getSnapshot, setContextMenuState, subscribe, updateLastPointer } from "./store.mjs";
+import { memo, useEffect, useMemo, useSyncExternalStore } from "react";
+import { jsx } from "react/jsx-runtime";
+import { ContextMenu } from "@base-ui/react/context-menu";
+
+//#region src/ContextMenu/ContextMenuHost.tsx
+const ContextMenuHost = memo(() => {
+	const isClient = useIsClient();
+	const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+	useEffect(() => {
+		if (!isClient) return;
+		const themeApp = document.querySelector(`#${LOBE_THEME_APP_ID}`);
+		const tooltipContainer = document.querySelector(`[${TOOLTIP_CONTAINER_ATTR}="true"]`);
+		return registerDevSingleton("ContextMenuHost", themeApp ?? tooltipContainer ?? document.body);
+	}, [isClient]);
+	useEffect(() => {
+		const handler = (event) => updateLastPointer(event);
+		window.addEventListener("pointerdown", handler, true);
+		window.addEventListener("contextmenu", handler, true);
+		return () => {
+			window.removeEventListener("pointerdown", handler, true);
+			window.removeEventListener("contextmenu", handler, true);
+		};
+	}, []);
+	const menuItems = useMemo(() => renderContextMenuItems(state.items), [state.items]);
+	const portalContainer = useMemo(() => {
+		if (!isClient) return null;
+		const themeApp = document.querySelector(`#${LOBE_THEME_APP_ID}`);
+		if (themeApp) return themeApp;
+		const tooltipContainer = document.querySelector(`[${TOOLTIP_CONTAINER_ATTR}="true"]`);
+		if (tooltipContainer) return tooltipContainer;
+		return document.body;
+	}, [isClient]);
+	if (!isClient) return null;
+	if (!state.open && state.items.length === 0) return null;
+	if (!portalContainer) return null;
+	return /* @__PURE__ */ jsx(ContextMenu.Root, {
+		onOpenChange: (open) => {
+			if (open) {
+				setContextMenuState({ open });
+				return;
+			}
+			closeContextMenu();
+		},
+		open: state.open,
+		children: /* @__PURE__ */ jsx(ContextMenu.Portal, {
+			container: portalContainer,
+			children: /* @__PURE__ */ jsx(ContextMenu.Positioner, {
+				anchor: state.anchor ?? void 0,
+				className: styles.positioner,
+				sideOffset: 6,
+				children: /* @__PURE__ */ jsx(ContextMenu.Popup, {
+					className: styles.popup,
+					onContextMenu: preventDefaultAndStopPropagation,
+					children: menuItems
+				})
+			})
+		})
+	});
+});
+ContextMenuHost.displayName = "ContextMenuHost";
+
+//#endregion
+export { ContextMenuHost };
+//# sourceMappingURL=ContextMenuHost.mjs.map

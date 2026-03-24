@@ -1,0 +1,8 @@
+import { PreviewGroupProps } from "./type.mjs";
+import * as react37 from "react";
+
+//#region src/Image/PreviewGroup.d.ts
+declare const PreviewGroup: react37.NamedExoticComponent<PreviewGroupProps>;
+//#endregion
+export { PreviewGroup };
+//# sourceMappingURL=PreviewGroup.d.mts.map

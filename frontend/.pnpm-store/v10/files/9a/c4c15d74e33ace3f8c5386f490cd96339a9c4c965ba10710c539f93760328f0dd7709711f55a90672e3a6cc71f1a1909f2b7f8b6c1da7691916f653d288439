@@ -1,0 +1,9 @@
+import { ButtonProps } from "../../Button/type.mjs";
+import "../../Button/index.mjs";
+import * as react128 from "react";
+
+//#region src/awesome/BottomGradientButton/BottomGradientButton.d.ts
+declare const BottomGradientButton: react128.NamedExoticComponent<ButtonProps>;
+//#endregion
+export { BottomGradientButton };
+//# sourceMappingURL=BottomGradientButton.d.mts.map

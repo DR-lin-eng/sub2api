@@ -1,0 +1,9 @@
+import { DivProps } from "../../types/index.mjs";
+import * as react61 from "react";
+
+//#region src/DraggablePanel/components/DraggablePanelFooter.d.ts
+type DraggablePanelFooterProps = DivProps;
+declare const DraggablePanelFooter: react61.NamedExoticComponent<DivProps>;
+//#endregion
+export { DraggablePanelFooter, DraggablePanelFooterProps };
+//# sourceMappingURL=DraggablePanelFooter.d.mts.map

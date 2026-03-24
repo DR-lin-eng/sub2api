@@ -1,0 +1,64 @@
+import { createStaticStyles } from "antd-style";
+
+//#region src/mdx/Steps/style.ts
+const styles = createStaticStyles(({ css: css$1, cssVar: cssVar$1 }) => {
+	return { container: css$1`
+      --lobe-markdown-header-multiple: 0.5;
+      --lobe-markdown-margin-multiple: 1;
+
+      position: relative;
+      margin-block: calc(var(--lobe-markdown-margin-multiple) * 1em);
+      padding-inline-start: 2.5em;
+
+      &::before {
+        content: '';
+
+        position: absolute;
+        inset-block-start: 0.25em;
+        inset-inline-start: 0.9em;
+
+        display: block;
+
+        width: 1px;
+        height: calc(100% - 0.5em);
+
+        background: ${cssVar$1.colorBorderSecondary};
+      }
+
+      h3 {
+        counter-increment: step;
+
+        &::before {
+          content: counter(step);
+
+          position: absolute;
+          z-index: 1;
+          inset-inline-start: 0;
+
+          display: inline-block;
+
+          width: 1.8em;
+          height: 1.8em;
+          margin-block-start: -0.05em;
+          border-radius: 9999px;
+
+          font-size: 0.8em;
+          font-weight: 500;
+          line-height: 1.8em;
+          color: ${cssVar$1.colorTextSecondary};
+          text-align: center;
+
+          background: ${cssVar$1.colorBgElevated};
+          box-shadow: 0 0 0 2px ${cssVar$1.colorBgLayout};
+        }
+
+        &:not(:first-child) {
+          margin-block-start: 2em;
+        }
+      }
+    ` };
+});
+
+//#endregion
+export { styles };
+//# sourceMappingURL=style.mjs.map

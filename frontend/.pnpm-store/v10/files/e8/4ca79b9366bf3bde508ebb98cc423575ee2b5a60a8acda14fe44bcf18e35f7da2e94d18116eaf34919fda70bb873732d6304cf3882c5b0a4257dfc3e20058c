@@ -1,0 +1,8 @@
+import { MermaidProps } from "./type.mjs";
+import * as react31 from "react";
+
+//#region src/Mermaid/Mermaid.d.ts
+declare const Mermaid: react31.NamedExoticComponent<MermaidProps>;
+//#endregion
+export { Mermaid };
+//# sourceMappingURL=Mermaid.d.mts.map

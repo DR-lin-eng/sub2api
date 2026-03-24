@@ -1,0 +1,8 @@
+import { ChatListProps } from "./type.mjs";
+import * as react132 from "react";
+
+//#region src/chat/ChatList/ChatList.d.ts
+declare const ChatList: react132.NamedExoticComponent<ChatListProps>;
+//#endregion
+export { ChatList };
+//# sourceMappingURL=ChatList.d.mts.map

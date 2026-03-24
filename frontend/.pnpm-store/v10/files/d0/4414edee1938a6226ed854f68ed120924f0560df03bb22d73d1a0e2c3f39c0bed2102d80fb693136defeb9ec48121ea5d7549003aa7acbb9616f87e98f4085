@@ -1,0 +1,8 @@
+import { GridProps } from "./type.mjs";
+import { FC } from "react";
+
+//#region src/Grid/Grid.d.ts
+declare const Grid: FC<GridProps>;
+//#endregion
+export { Grid };
+//# sourceMappingURL=Grid.d.mts.map

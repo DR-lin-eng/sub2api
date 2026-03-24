@@ -1,0 +1,55 @@
+import { antdPlacementToFloating } from "./antdPlacementToFloating.mjs";
+import { useMemo, useRef } from "react";
+import { arrow, autoUpdate, flip, offset, shift, useDismiss, useFloating, useFocus, useHover, useInteractions, useRole } from "@floating-ui/react";
+
+//#region src/Tooltip/useTooltipFloating.ts
+const useTooltipFloating = ({ arrow: arrow$1, placement, openDelay, closeDelay, mouseEnterDelay, mouseLeaveDelay, disabled, open, onOpenChange }) => {
+	const arrowRef = useRef(null);
+	const floatingPlacement = useMemo(() => antdPlacementToFloating(placement), [placement]);
+	const { context, floatingStyles, refs } = useFloating({
+		middleware: useMemo(() => {
+			const base = [
+				offset(8),
+				flip(),
+				shift({ padding: 8 })
+			];
+			if (arrow$1) base.push(arrow({ element: arrowRef }));
+			return base;
+		}, [arrow$1]),
+		onOpenChange,
+		open,
+		placement: floatingPlacement,
+		whileElementsMounted: autoUpdate
+	});
+	const { getFloatingProps, getReferenceProps } = useInteractions([
+		useHover(context, {
+			delay: useMemo(() => ({
+				close: closeDelay ?? (mouseLeaveDelay !== void 0 ? mouseLeaveDelay * 1e3 : 100),
+				open: openDelay ?? (mouseEnterDelay !== void 0 ? mouseEnterDelay * 1e3 : 400)
+			}), [
+				closeDelay,
+				mouseEnterDelay,
+				mouseLeaveDelay,
+				openDelay
+			]),
+			enabled: !disabled,
+			move: false
+		}),
+		useFocus(context, { enabled: !disabled }),
+		useDismiss(context, { enabled: !disabled }),
+		useRole(context, { role: "tooltip" })
+	]);
+	return {
+		arrowRef,
+		context,
+		floatingPlacement,
+		floatingStyles,
+		getFloatingProps,
+		getReferenceProps,
+		refs
+	};
+};
+
+//#endregion
+export { useTooltipFloating };
+//# sourceMappingURL=useTooltipFloating.mjs.map

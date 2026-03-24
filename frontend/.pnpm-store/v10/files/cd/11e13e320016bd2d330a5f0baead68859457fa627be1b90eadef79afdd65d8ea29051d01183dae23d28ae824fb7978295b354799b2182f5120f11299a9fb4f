@@ -1,0 +1,65 @@
+'use client';
+
+import { composeEventHandlers } from "../utils/composeEventHandlers.mjs";
+import { TooltipGroupApiContext } from "./groupContext.mjs";
+import { useMergedTooltipProps } from "./useMergedTooltipProps.mjs";
+import { useTooltipTrigger } from "./useTooltipTrigger.mjs";
+import { cloneElement, isValidElement, useContext, useEffect, useMemo, useRef } from "react";
+import { mergeRefs } from "react-merge-refs";
+
+//#region src/Tooltip/TooltipInGroup.tsx
+const TooltipInGroup = ({ ref, children, ...props }) => {
+	const group = useContext(TooltipGroupApiContext);
+	const triggerElRef = useRef(null);
+	const item = useMergedTooltipProps(props);
+	const trigger = useTooltipTrigger(children);
+	const referenceNode = useMemo(() => {
+		if (!isValidElement(trigger)) return trigger;
+		const originalRef = trigger.ref;
+		const triggerProps = trigger.props || {};
+		const setTriggerEl = (node) => {
+			triggerElRef.current = node instanceof HTMLElement ? node : null;
+		};
+		return cloneElement(trigger, {
+			...triggerProps,
+			onBlur: composeEventHandlers(triggerProps.onBlur, (e) => {
+				group?.closeFromTrigger(e.currentTarget, item);
+			}),
+			onFocus: composeEventHandlers(triggerProps.onFocus, (e) => {
+				group?.openFromTrigger(e.currentTarget, item);
+			}),
+			onKeyDown: composeEventHandlers(triggerProps.onKeyDown, (e) => {
+				if (e?.key === "Escape") group?.closeImmediately();
+			}),
+			onPointerEnter: composeEventHandlers(triggerProps.onPointerEnter, (e) => {
+				group?.openFromTrigger(e.currentTarget, item);
+			}),
+			onPointerLeave: composeEventHandlers(triggerProps.onPointerLeave, (e) => {
+				group?.closeFromTrigger(e.currentTarget, item);
+			}),
+			ref: mergeRefs([
+				originalRef,
+				setTriggerEl,
+				ref
+			])
+		});
+	}, [
+		group,
+		item,
+		ref,
+		trigger
+	]);
+	useEffect(() => {
+		return () => {
+			if (!group) return;
+			const el = triggerElRef.current;
+			if (el && group.isActiveTrigger(el)) group.closeImmediately();
+		};
+	}, [group]);
+	return referenceNode;
+};
+TooltipInGroup.displayName = "TooltipInGroup";
+
+//#endregion
+export { TooltipInGroup };
+//# sourceMappingURL=TooltipInGroup.mjs.map

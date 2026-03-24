@@ -1,0 +1,8 @@
+import { TabBarProps } from "./type.mjs";
+import * as react122 from "react";
+
+//#region src/mobile/TabBar/TabBar.d.ts
+declare const TabBar: react122.NamedExoticComponent<TabBarProps>;
+//#endregion
+export { TabBar };
+//# sourceMappingURL=TabBar.d.mts.map

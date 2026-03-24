@@ -1,0 +1,107 @@
+'use client';
+
+import FlexBasic_default from "../../Flex/FlexBasic.mjs";
+import Icon_default from "../../Icon/Icon.mjs";
+import Text_default from "../../Text/Text.mjs";
+import { preventDefaultAndStopPropagation } from "../../utils/dom.mjs";
+import { styles } from "./style.mjs";
+import { getChatItemTime } from "./time.mjs";
+import { memo } from "react";
+import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+import { cx } from "antd-style";
+import { Loader2, MessageSquare } from "lucide-react";
+
+//#region src/List/ListItem/index.tsx
+const ListItem = memo(({ ref, active, avatar, loading, description, date, title, onHoverChange, actions, className, style, showAction, children, classNames, addon, pin, styles: customStyles, ...rest }) => {
+	const loadingNode = /* @__PURE__ */ jsx(Icon_default, {
+		icon: Loader2,
+		spin: true
+	});
+	const pinNode = pin && /* @__PURE__ */ jsx("div", {
+		className: cx(styles.pin, classNames?.pin),
+		style: customStyles?.pin,
+		children: /* @__PURE__ */ jsx("div", { className: styles.triangle })
+	});
+	const actionsNode = actions && /* @__PURE__ */ jsx(FlexBasic_default, {
+		className: cx(styles.actions, classNames?.actions),
+		gap: 4,
+		horizontal: true,
+		onClick: preventDefaultAndStopPropagation,
+		style: {
+			display: showAction ? void 0 : "none",
+			...customStyles?.actions
+		},
+		children: actions
+	});
+	const timeNode = date && /* @__PURE__ */ jsx("div", {
+		className: cx(styles.date, classNames?.date),
+		style: {
+			opacity: showAction ? 0 : void 0,
+			...customStyles?.date
+		},
+		children: getChatItemTime(date)
+	});
+	return /* @__PURE__ */ jsxs(FlexBasic_default, {
+		align: "flex-start",
+		className: cx(styles.root, active && styles.active, className),
+		distribution: "space-between",
+		gap: 8,
+		horizontal: true,
+		onMouseEnter: () => {
+			onHoverChange?.(true);
+		},
+		onMouseLeave: () => {
+			onHoverChange?.(false);
+		},
+		padding: 12,
+		ref,
+		style,
+		...rest,
+		children: [
+			pinNode,
+			/* @__PURE__ */ jsxs(FlexBasic_default, {
+				align: "flex-start",
+				className: classNames?.container,
+				flex: 1,
+				gap: 8,
+				horizontal: true,
+				style: {
+					overflow: "hidden",
+					...customStyles?.container
+				},
+				children: [avatar ?? /* @__PURE__ */ jsx(Icon_default, {
+					icon: MessageSquare,
+					style: { marginTop: 4 }
+				}), /* @__PURE__ */ jsxs(FlexBasic_default, {
+					className: cx(styles.content, classNames?.content),
+					gap: 4,
+					style: customStyles?.content,
+					children: [
+						/* @__PURE__ */ jsx(Text_default, {
+							as: "h3",
+							className: cx(styles.title, classNames?.title),
+							ellipsis: true,
+							style: customStyles?.title,
+							children: title
+						}),
+						description && /* @__PURE__ */ jsx(Text_default, {
+							className: cx(styles.desc, classNames?.desc),
+							ellipsis: true,
+							style: customStyles?.desc,
+							children: description
+						}),
+						addon
+					]
+				})]
+			}),
+			loading ? loadingNode : /* @__PURE__ */ jsxs(Fragment$1, { children: [actionsNode, timeNode] }),
+			children
+		]
+	});
+});
+ListItem.displayName = "ListItem";
+var ListItem_default = ListItem;
+
+//#endregion
+export { ListItem_default as default };
+//# sourceMappingURL=index.mjs.map

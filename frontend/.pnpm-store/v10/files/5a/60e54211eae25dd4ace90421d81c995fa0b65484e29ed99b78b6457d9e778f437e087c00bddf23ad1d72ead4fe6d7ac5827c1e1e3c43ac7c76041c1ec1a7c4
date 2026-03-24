@@ -1,0 +1,8 @@
+import { AvatarGroupProps } from "../type.mjs";
+import * as react7 from "react";
+
+//#region src/Avatar/AvatarGroup/index.d.ts
+declare const AvatarGroup: react7.NamedExoticComponent<AvatarGroupProps>;
+//#endregion
+export { AvatarGroup };
+//# sourceMappingURL=index.d.mts.map

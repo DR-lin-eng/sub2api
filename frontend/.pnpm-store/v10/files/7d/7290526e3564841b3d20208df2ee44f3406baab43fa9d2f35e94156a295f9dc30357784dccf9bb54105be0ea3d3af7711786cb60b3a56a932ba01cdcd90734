@@ -1,0 +1,8 @@
+import { AccordionProps } from "./type.mjs";
+import * as react23 from "react";
+
+//#region src/Accordion/Accordion.d.ts
+declare const Accordion: react23.NamedExoticComponent<AccordionProps>;
+//#endregion
+export { Accordion };
+//# sourceMappingURL=Accordion.d.mts.map

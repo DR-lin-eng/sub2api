@@ -1,0 +1,8 @@
+import { DrawerProps } from "./type.mjs";
+import * as react21 from "react";
+
+//#region src/Drawer/Drawer.d.ts
+declare const Drawer: react21.NamedExoticComponent<DrawerProps>;
+//#endregion
+export { Drawer };
+//# sourceMappingURL=Drawer.d.mts.map

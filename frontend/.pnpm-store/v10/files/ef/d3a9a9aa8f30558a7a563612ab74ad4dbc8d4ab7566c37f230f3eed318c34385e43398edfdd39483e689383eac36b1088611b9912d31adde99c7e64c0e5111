@@ -1,0 +1,46 @@
+'use client';
+
+import Button_default from "../../Button/Button.mjs";
+import { styles } from "./style.mjs";
+import { memo, useMemo } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
+import { cssVar, cx, useThemeMode } from "antd-style";
+
+//#region src/awesome/GradientButton/GradientButton.tsx
+const GradientButton = memo(({ glow = true, children, className, size, disabled, style, ...rest }) => {
+	const { isDarkMode } = useThemeMode();
+	const cssVariables = useMemo(() => {
+		if (!size || disabled) return {};
+		let borderRadius;
+		switch (size) {
+			case "large":
+				borderRadius = cssVar.borderRadiusLG;
+				break;
+			case "small":
+				borderRadius = cssVar.borderRadiusSM;
+				break;
+			default:
+				borderRadius = cssVar.borderRadius;
+				break;
+		}
+		return { "--gradient-button-border-radius": borderRadius };
+	}, [size, disabled]);
+	return /* @__PURE__ */ jsxs(Button_default, {
+		className: cx(!disabled && (isDarkMode ? styles.buttonDark : styles.buttonLight), className),
+		disabled,
+		size,
+		style: {
+			...cssVariables,
+			...style
+		},
+		variant: disabled ? void 0 : "text",
+		...rest,
+		children: [glow && /* @__PURE__ */ jsx("div", { className: styles.glow }), children]
+	});
+});
+GradientButton.displayName = "GradientButton";
+var GradientButton_default = GradientButton;
+
+//#endregion
+export { GradientButton_default as default };
+//# sourceMappingURL=GradientButton.mjs.map

@@ -1,0 +1,8 @@
+import { MessageModalProps } from "./type.mjs";
+import * as react116 from "react";
+
+//#region src/chat/MessageModal/MessageModal.d.ts
+declare const MessageModal: react116.NamedExoticComponent<MessageModalProps>;
+//#endregion
+export { MessageModal };
+//# sourceMappingURL=MessageModal.d.mts.map

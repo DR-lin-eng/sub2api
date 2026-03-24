@@ -1,0 +1,8 @@
+import { CollapseProps } from "./type.mjs";
+import * as react5 from "react";
+
+//#region src/Collapse/Collapse.d.ts
+declare const Collapse: react5.NamedExoticComponent<CollapseProps>;
+//#endregion
+export { Collapse };
+//# sourceMappingURL=Collapse.d.mts.map

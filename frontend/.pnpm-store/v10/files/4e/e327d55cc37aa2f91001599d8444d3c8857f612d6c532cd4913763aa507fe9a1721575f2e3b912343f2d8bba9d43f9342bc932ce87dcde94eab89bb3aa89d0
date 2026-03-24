@@ -1,0 +1,8 @@
+import { HotkeyInputProps } from "./type.mjs";
+import * as react38 from "react";
+
+//#region src/HotkeyInput/HotkeyInput.d.ts
+declare const HotkeyInput: react38.NamedExoticComponent<HotkeyInputProps>;
+//#endregion
+export { HotkeyInput };
+//# sourceMappingURL=HotkeyInput.d.mts.map

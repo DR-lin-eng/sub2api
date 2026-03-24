@@ -1,0 +1,47 @@
+import { createStaticStyles } from "antd-style";
+
+//#region src/EmojiPicker/style.ts
+const prefixCls = "ant";
+const styles = createStaticStyles(({ css: css$1, cssVar: cssVar$1 }) => ({
+	picker: css$1`
+    position: relative;
+
+    em-emoji-picker {
+      --rgb-accent: var(--emoji-picker-rgb-accent, 0, 0, 0);
+      --shadow: none;
+      --rgb-background: var(--emoji-picker-rgb-background, 255, 255, 255);
+      --border-radius: 0;
+    }
+  `,
+	popover: css$1`
+    .${prefixCls}-popover-container {
+      overflow: hidden;
+      padding: 0;
+    }
+  `,
+	root: css$1`
+    position: relative;
+    transition: background 150ms ${cssVar$1.motionEaseOut};
+
+    &:hover {
+      background: ${cssVar$1.colorFillSecondary};
+    }
+  `,
+	tabs: css$1`
+    border-block-end: 1px solid ${cssVar$1.colorBorderSecondary};
+
+    .ant-tabs-tab {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      width: 32px;
+      height: 32px;
+      padding: 0 !important;
+    }
+  `
+}));
+
+//#endregion
+export { styles };
+//# sourceMappingURL=style.mjs.map

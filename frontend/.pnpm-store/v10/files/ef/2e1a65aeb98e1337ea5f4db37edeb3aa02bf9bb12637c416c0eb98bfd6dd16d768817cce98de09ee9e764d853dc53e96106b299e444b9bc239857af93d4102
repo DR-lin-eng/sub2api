@@ -1,0 +1,8 @@
+import { FormSubmitFooterProps } from "../type.mjs";
+import * as react20 from "react";
+
+//#region src/Form/components/FormSubmitFooter.d.ts
+declare const FormSubmitFooter: react20.NamedExoticComponent<FormSubmitFooterProps>;
+//#endregion
+export { FormSubmitFooter };
+//# sourceMappingURL=FormSubmitFooter.d.mts.map

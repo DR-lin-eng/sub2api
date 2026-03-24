@@ -1,0 +1,8 @@
+import { FooterProps } from "./type.mjs";
+import * as react10 from "react";
+
+//#region src/Footer/Footer.d.ts
+declare const Footer: react10.NamedExoticComponent<FooterProps>;
+//#endregion
+export { Footer };
+//# sourceMappingURL=Footer.d.mts.map

@@ -1,0 +1,8 @@
+import { ChatInputAreaInnerProps } from "../type.mjs";
+import * as react113 from "react";
+
+//#region src/chat/ChatInputArea/components/ChatInputAreaInner.d.ts
+declare const ChatInputAreaInner: react113.NamedExoticComponent<ChatInputAreaInnerProps>;
+//#endregion
+export { ChatInputAreaInner };
+//# sourceMappingURL=ChatInputAreaInner.d.mts.map

@@ -1,0 +1,8 @@
+import { AlertProps } from "./type.mjs";
+import * as react11 from "react";
+
+//#region src/Alert/Alert.d.ts
+declare const Alert: react11.NamedExoticComponent<AlertProps>;
+//#endregion
+export { Alert };
+//# sourceMappingURL=Alert.d.mts.map
