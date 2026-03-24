@@ -85,6 +85,9 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean
+  auto_delete_401_accounts: boolean
+  auto_delete_429_accounts: boolean
+  auto_delete_useless_proxies: boolean
 }
 
 export interface UpdateSettingsRequest {
@@ -140,6 +143,9 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string
   max_claude_code_version?: string
   allow_ungrouped_key_scheduling?: boolean
+  auto_delete_401_accounts?: boolean
+  auto_delete_429_accounts?: boolean
+  auto_delete_useless_proxies?: boolean
 }
 
 /**

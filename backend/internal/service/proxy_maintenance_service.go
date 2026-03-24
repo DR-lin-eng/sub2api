@@ -23,17 +23,20 @@ type ProxyMaintenanceService struct {
 	planRepo   ProxyMaintenancePlanRepository
 	resultRepo ProxyMaintenanceResultRepository
 	adminSvc   AdminService
+	settingSvc *SettingService
 }
 
 func NewProxyMaintenanceService(
 	planRepo ProxyMaintenancePlanRepository,
 	resultRepo ProxyMaintenanceResultRepository,
 	adminSvc AdminService,
+	settingSvc *SettingService,
 ) *ProxyMaintenanceService {
 	return &ProxyMaintenanceService{
 		planRepo:   planRepo,
 		resultRepo: resultRepo,
 		adminSvc:   adminSvc,
+		settingSvc: settingSvc,
 	}
 }
 
@@ -193,6 +196,7 @@ func (s *ProxyMaintenanceService) run(ctx context.Context, sourceProxyIDs []int6
 		}
 		movedAccounts += assignment.AccountCount
 	}
+	deletedProxyIDs := s.cleanupFailedUnusedProxies(ctx, checked)
 
 	healthyCount := 0
 	failedCount := 0
@@ -225,6 +229,7 @@ func (s *ProxyMaintenanceService) run(ctx context.Context, sourceProxyIDs []int6
 		ErrorMessage:   errorMessage,
 		Details: map[string]any{
 			"selected_proxy_ids": selectedIDs,
+			"deleted_proxy_ids":  deletedProxyIDs,
 		},
 		StartedAt:  startedAt,
 		FinishedAt: time.Now().UTC(),
@@ -377,6 +382,29 @@ func pickProxyMaintenanceTarget(healthy []ProxyWithAccountCount, projectedUsage 
 
 func int64Pointer(value int64) *int64 {
 	return &value
+}
+
+func (s *ProxyMaintenanceService) cleanupFailedUnusedProxies(ctx context.Context, checked []proxyHealthInspection) []int64 {
+	if s == nil || s.adminSvc == nil || s.settingSvc == nil || !s.settingSvc.IsAutoDeleteUselessProxiesEnabled(ctx) {
+		return nil
+	}
+	deleted := make([]int64, 0)
+	for _, check := range checked {
+		if check.Success || check.Proxy.ID <= 0 {
+			continue
+		}
+		accounts, err := s.adminSvc.GetProxyAccounts(ctx, check.Proxy.ID)
+		if err != nil || len(accounts) > 0 {
+			continue
+		}
+		deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.adminSvc.DeleteProxy(deleteCtx, check.Proxy.ID); err == nil {
+			deleted = append(deleted, check.Proxy.ID)
+		}
+		cancel()
+	}
+	sort.Slice(deleted, func(i, j int) bool { return deleted[i] < deleted[j] })
+	return deleted
 }
 
 func normalizeProxyMaintenanceIDs(ids []int64) []int64 {

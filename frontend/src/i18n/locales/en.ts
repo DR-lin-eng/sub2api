@@ -4201,6 +4201,16 @@ export default {
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
         allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.'
       },
+      cleanup: {
+        title: 'Auto Cleanup',
+        description: 'Independent cleanup toggles for clearly invalid accounts and unused proxies.',
+        autoDelete401Accounts: 'Auto-delete 401 Accounts',
+        autoDelete401AccountsHint: 'Delete the affected account automatically when the upstream returns 401.',
+        autoDelete429Accounts: 'Auto-delete 429 Accounts',
+        autoDelete429AccountsHint: 'Delete the affected account automatically when the upstream returns 429. This is aggressive and should be enabled only if you intentionally want to discard rate-limited accounts.',
+        autoDeleteUselessProxies: 'Auto-delete Useless Proxies',
+        autoDeleteUselessProxiesHint: 'After proxy auto-maintenance finishes, automatically delete failed proxies that no longer have any bound accounts.'
+      },
       site: {
         title: 'Site Settings',
         description: 'Customize site branding',

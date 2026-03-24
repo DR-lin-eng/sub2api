@@ -23,6 +23,8 @@ const (
 	defaultOpenAIStreamingIdleTimeout        = 120 * time.Second
 	openAIStreamingHighReasoningHeaderExtra  = 30 * time.Second
 	openAIStreamingXHighReasoningHeaderExtra = 90 * time.Second
+	openAIStreamingHighReasoningIdleExtra    = 60 * time.Second
+	openAIStreamingXHighReasoningIdleExtra   = 240 * time.Second
 	defaultOpenAIStreamingLargeBodyThreshold = 64 * 1024
 	defaultOpenAIStreamingXLargeThreshold    = 256 * 1024
 	defaultOpenAIStreamingHugeThreshold      = 1024 * 1024
@@ -38,6 +40,8 @@ type openAIHealthPrefetchJob struct {
 	AccountID      int64
 	RequestedModel string
 }
+
+type openAIReasoningEffortContextKey struct{}
 
 type openAIHealthPrefetchState struct {
 	inFlight atomic.Bool
@@ -358,15 +362,47 @@ func (s *OpenAIGatewayService) applyOpenAITransportOverride(req *http.Request, b
 	return req.WithContext(ctx)
 }
 
-func (s *OpenAIGatewayService) openAIStreamIdleTimeout() time.Duration {
+func withOpenAIReasoningEffort(ctx context.Context, reasoningEffort *string) context.Context {
+	if reasoningEffort == nil || strings.TrimSpace(*reasoningEffort) == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, openAIReasoningEffortContextKey{}, strings.TrimSpace(*reasoningEffort))
+}
+
+func openAIReasoningEffortFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(openAIReasoningEffortContextKey{}).(string)
+	return strings.TrimSpace(value)
+}
+
+func extendOpenAIIdleTimeoutForReasoning(base time.Duration, reasoningEffort string) time.Duration {
+	switch strings.TrimSpace(reasoningEffort) {
+	case "xhigh":
+		return base + openAIStreamingXHighReasoningIdleExtra
+	case "high":
+		return base + openAIStreamingHighReasoningIdleExtra
+	default:
+		return base
+	}
+}
+
+func (s *OpenAIGatewayService) openAIStreamIdleTimeout(ctx context.Context) time.Duration {
 	budget := s.openAIStreamingPhaseBudget()
+	base := time.Duration(0)
 	if budget.StreamIdleBudget > 0 {
-		return budget.StreamIdleBudget
+		base = budget.StreamIdleBudget
+	} else if s != nil && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		base = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
-		return time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	if base <= 0 {
+		return 0
 	}
-	return 0
+	return extendOpenAIIdleTimeoutForReasoning(base, openAIReasoningEffortFromContext(ctx))
 }
 
 func (s *OpenAIGatewayService) openAIHTTPFlushBatchSize() int {

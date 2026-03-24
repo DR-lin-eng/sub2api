@@ -4,7 +4,7 @@
 # Copy this file to /etc/sub2api/config.yaml and modify as needed
 # 复制此文件到 /etc/sub2api/config.yaml 并根据需要修改
 #
-# Documentation / 文档: https://github.com/Wei-Shaw/sub2api
+# Documentation / 文档: https://github.com/DR-lin-eng/sub2api
 
 # =============================================================================
 # Server Configuration
@@ -1028,6 +1028,9 @@ gemini:
 # Update Configuration (在线更新配置)
 # =============================================================================
 update:
+  # GitHub repository used for online updates, format: owner/name
+  # 在线更新使用的 GitHub 仓库，格式：owner/name
+  repo: "DR-lin-eng/sub2api"
   # Proxy URL for accessing GitHub (used for online updates and pricing data)
   # 用于访问 GitHub 的代理地址（用于在线更新和定价数据获取）
   # Supports: http, https, socks5, socks5h

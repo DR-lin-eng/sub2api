@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -129,6 +130,17 @@ func TestApplyOpenAITransportOverride_ExtendsHeaderTimeoutForXHighReasoning(t *t
 	require.True(t, ok)
 	require.Equal(t, defaultOpenAIStreamingConnectQuickFail, override.DialTimeout)
 	require.Equal(t, defaultOpenAIStreamingHeaderQuickFail+openAIStreamingXHighReasoningHeaderExtra, override.ResponseHeaderTimeout)
+}
+
+func TestOpenAIStreamIdleTimeout_ExtendsForXHighReasoning(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	ctx := withOpenAIReasoningEffort(context.Background(), strPtr("xhigh"))
+	got := svc.openAIStreamIdleTimeout(ctx)
+	require.Equal(t, defaultOpenAIStreamingIdleTimeout+openAIStreamingXHighReasoningIdleExtra, got)
+}
+
+func strPtr(value string) *string {
+	return &value
 }
 
 func TestGetOpenAIRequestBodyMap_ParseErrorWithoutCache(t *testing.T) {

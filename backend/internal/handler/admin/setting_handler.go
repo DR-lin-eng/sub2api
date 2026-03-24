@@ -127,6 +127,9 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                 settings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                 settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          settings.AllowUngroupedKeyScheduling,
+		AutoDelete401Accounts:                settings.AutoDelete401Accounts,
+		AutoDelete429Accounts:                settings.AutoDelete429Accounts,
+		AutoDeleteUselessProxies:             settings.AutoDeleteUselessProxies,
 		BackendModeEnabled:                   settings.BackendModeEnabled,
 	})
 }
@@ -204,6 +207,9 @@ type UpdateSettingsRequest struct {
 
 	// 分组隔离
 	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+	AutoDelete401Accounts       bool `json:"auto_delete_401_accounts"`
+	AutoDelete429Accounts       bool `json:"auto_delete_429_accounts"`
+	AutoDeleteUselessProxies    bool `json:"auto_delete_useless_proxies"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -508,6 +514,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:             req.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:             req.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:      req.AllowUngroupedKeyScheduling,
+		AutoDelete401Accounts:            req.AutoDelete401Accounts,
+		AutoDelete429Accounts:            req.AutoDelete429Accounts,
+		AutoDeleteUselessProxies:         req.AutoDeleteUselessProxies,
 		BackendModeEnabled:               req.BackendModeEnabled,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
@@ -609,6 +618,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                 updatedSettings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                 updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          updatedSettings.AllowUngroupedKeyScheduling,
+		AutoDelete401Accounts:                updatedSettings.AutoDelete401Accounts,
+		AutoDelete429Accounts:                updatedSettings.AutoDelete429Accounts,
+		AutoDeleteUselessProxies:             updatedSettings.AutoDeleteUselessProxies,
 		BackendModeEnabled:                   updatedSettings.BackendModeEnabled,
 	})
 }
@@ -769,6 +781,15 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AllowUngroupedKeyScheduling != after.AllowUngroupedKeyScheduling {
 		changed = append(changed, "allow_ungrouped_key_scheduling")
+	}
+	if before.AutoDelete401Accounts != after.AutoDelete401Accounts {
+		changed = append(changed, "auto_delete_401_accounts")
+	}
+	if before.AutoDelete429Accounts != after.AutoDelete429Accounts {
+		changed = append(changed, "auto_delete_429_accounts")
+	}
+	if before.AutoDeleteUselessProxies != after.AutoDeleteUselessProxies {
+		changed = append(changed, "auto_delete_useless_proxies")
 	}
 	if before.BackendModeEnabled != after.BackendModeEnabled {
 		changed = append(changed, "backend_mode_enabled")

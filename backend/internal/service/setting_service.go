@@ -489,6 +489,9 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 
 	// 分组隔离
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
+	updates[SettingKeyAutoDelete401Accounts] = strconv.FormatBool(settings.AutoDelete401Accounts)
+	updates[SettingKeyAutoDelete429Accounts] = strconv.FormatBool(settings.AutoDelete429Accounts)
+	updates[SettingKeyAutoDeleteUselessProxies] = strconv.FormatBool(settings.AutoDeleteUselessProxies)
 
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
@@ -767,6 +770,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling: "false",
+		SettingKeyAutoDelete401Accounts:       "false",
+		SettingKeyAutoDelete429Accounts:       "false",
+		SettingKeyAutoDeleteUselessProxies:    "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -903,6 +909,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+	result.AutoDelete401Accounts = settings[SettingKeyAutoDelete401Accounts] == "true"
+	result.AutoDelete429Accounts = settings[SettingKeyAutoDelete429Accounts] == "true"
+	result.AutoDeleteUselessProxies = settings[SettingKeyAutoDeleteUselessProxies] == "true"
 
 	return result
 }
@@ -1282,6 +1291,30 @@ func (s *SettingService) IsUngroupedKeySchedulingAllowed(ctx context.Context) bo
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyAllowUngroupedKeyScheduling)
 	if err != nil {
 		return false // fail-closed: 查询失败时默认不允许
+	}
+	return value == "true"
+}
+
+func (s *SettingService) IsAutoDelete401AccountsEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDelete401Accounts)
+	if err != nil {
+		return false
+	}
+	return value == "true"
+}
+
+func (s *SettingService) IsAutoDelete429AccountsEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDelete429Accounts)
+	if err != nil {
+		return false
+	}
+	return value == "true"
+}
+
+func (s *SettingService) IsAutoDeleteUselessProxiesEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDeleteUselessProxies)
+	if err != nil {
+		return false
 	}
 	return value == "true"
 }

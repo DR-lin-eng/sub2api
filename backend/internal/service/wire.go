@@ -64,8 +64,9 @@ func coordinatorOrSingleProcess() bool {
 
 // BuildInfo contains build information
 type BuildInfo struct {
-	Version   string
-	BuildType string
+	Version     string
+	BuildType   string
+	ReleaseRepo string
 }
 
 // ProvidePricingService creates and initializes PricingService
@@ -79,8 +80,12 @@ func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient)
 }
 
 // ProvideUpdateService creates UpdateService with BuildInfo
-func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, buildInfo BuildInfo) *UpdateService {
-	return NewUpdateService(cache, githubClient, buildInfo.Version, buildInfo.BuildType)
+func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, buildInfo BuildInfo, cfg *config.Config) *UpdateService {
+	releaseRepo := buildInfo.ReleaseRepo
+	if cfg != nil && strings.TrimSpace(cfg.Update.Repo) != "" {
+		releaseRepo = cfg.Update.Repo
+	}
+	return NewUpdateService(cache, githubClient, buildInfo.Version, buildInfo.BuildType, releaseRepo)
 }
 
 // ProvideEmailQueueService creates EmailQueueService with default worker count
@@ -453,8 +458,9 @@ func ProvideProxyMaintenanceService(
 	planRepo ProxyMaintenancePlanRepository,
 	resultRepo ProxyMaintenanceResultRepository,
 	adminSvc AdminService,
+	settingSvc *SettingService,
 ) *ProxyMaintenanceService {
-	return NewProxyMaintenanceService(planRepo, resultRepo, adminSvc)
+	return NewProxyMaintenanceService(planRepo, resultRepo, adminSvc, settingSvc)
 }
 
 func ProvideProxyMaintenanceRunnerService(

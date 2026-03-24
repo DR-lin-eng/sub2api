@@ -1801,7 +1801,9 @@ func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context,
 	if reason == "" {
 		reason = "openai auto temp-unschedule"
 	}
-	if err := s.accountRepo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+	writeCtx, cancel := context.WithTimeout(context.Background(), defaultOpenAITempUnscheduleWriteGap)
+	defer cancel()
+	if err := s.accountRepo.SetTempUnschedulable(writeCtx, accountID, until, reason); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] temp unschedule failed: account=%d err=%v", accountID, err)
 		return
 	}
@@ -2404,8 +2406,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Handle normal response
 		var usage *OpenAIUsage
 		var firstTokenMs *int
+		reasoningEffort := extractOpenAIReasoningEffort(reqBody, originalModel)
+		streamCtx := withOpenAIReasoningEffort(ctx, reasoningEffort)
 		if reqStream {
-			streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, mappedModel)
+			streamResult, err := s.handleStreamingResponse(streamCtx, resp, c, account, startTime, originalModel, mappedModel)
 			if err != nil {
 				return nil, err
 			}
@@ -2429,7 +2433,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			usage = &OpenAIUsage{}
 		}
 
-		reasoningEffort := extractOpenAIReasoningEffort(reqBody, originalModel)
 		serviceTier := extractOpenAIServiceTier(reqBody)
 
 		return &OpenAIForwardResult{
@@ -2576,7 +2579,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	if reqStream {
-		result, err := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime)
+		streamCtx := withOpenAIReasoningEffort(ctx, reasoningEffort)
+		result, err := s.handleStreamingResponsePassthrough(streamCtx, resp, c, account, startTime)
 		if err != nil {
 			return nil, err
 		}
@@ -3535,7 +3539,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 
-	streamInterval := s.openAIStreamIdleTimeout()
+	streamInterval := s.openAIStreamIdleTimeout(ctx)
 	// 仅监控上游数据间隔超时，不被下游写入阻塞影响
 	var intervalTicker *time.Ticker
 	if streamInterval > 0 {

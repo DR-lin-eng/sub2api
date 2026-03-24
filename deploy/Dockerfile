@@ -11,6 +11,8 @@ ARG GOLANG_IMAGE=golang:1.26.1-alpine
 ARG ALPINE_IMAGE=alpine:3.20
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
+ARG RELEASE_REPO=DR-lin-eng/sub2api
+ARG REPO_URL=https://github.com/DR-lin-eng/sub2api
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -41,6 +43,7 @@ ARG COMMIT=docker
 ARG DATE
 ARG GOPROXY
 ARG GOSUMDB
+ARG RELEASE_REPO
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
@@ -63,7 +66,7 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 # Build the binary (BuildType=release for CI builds, embed frontend)
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -tags embed \
-    -ldflags="-s -w -X main.Commit=${COMMIT} -X main.Date=${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)} -X main.BuildType=release" \
+    -ldflags="-s -w -X main.Commit=${COMMIT} -X main.Date=${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)} -X main.BuildType=release -X main.ReleaseRepo=${RELEASE_REPO}" \
     -o /app/sub2api \
     ./cmd/server
 
@@ -71,11 +74,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Stage 3: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
+ARG REPO_URL
 
 # Labels
-LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
+LABEL maintainer="Sub2API Contributors"
 LABEL description="Sub2API - AI API Gateway Platform"
-LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
+LABEL org.opencontainers.image.source="${REPO_URL}"
 
 # Install runtime dependencies
 RUN apk add --no-cache \

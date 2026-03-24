@@ -29,10 +29,11 @@ var embeddedVersion string
 
 // Build-time variables (can be set by ldflags)
 var (
-	Version   = ""
-	Commit    = "unknown"
-	Date      = "unknown"
-	BuildType = "source" // "source" for manual builds, "release" for CI builds (set by ldflags)
+	Version     = ""
+	Commit      = "unknown"
+	Date        = "unknown"
+	BuildType   = "source"            // "source" for manual builds, "release" for CI builds (set by ldflags)
+	ReleaseRepo = "DR-lin-eng/sub2api" // GitHub owner/repo used by online update checks
 )
 
 func init() {
@@ -137,8 +138,9 @@ func runMainServer() {
 	}
 
 	buildInfo := handler.BuildInfo{
-		Version:   Version,
-		BuildType: BuildType,
+		Version:     Version,
+		BuildType:   BuildType,
+		ReleaseRepo: ReleaseRepo,
 	}
 
 	if err := runServerProcessModel(cfg, buildInfo); err != nil {

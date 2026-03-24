@@ -84,6 +84,10 @@ type SystemSettings struct {
 	// 分组隔离
 	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
 
+	AutoDelete401Accounts    bool `json:"auto_delete_401_accounts"`
+	AutoDelete429Accounts    bool `json:"auto_delete_429_accounts"`
+	AutoDeleteUselessProxies bool `json:"auto_delete_useless_proxies"`
+
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 }

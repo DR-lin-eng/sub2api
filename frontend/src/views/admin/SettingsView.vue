@@ -1171,6 +1171,63 @@
             </div>
           </div>
         </div>
+
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.cleanup.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.cleanup.description') }}
+            </p>
+          </div>
+          <div class="space-y-4 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.cleanup.autoDelete401Accounts') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.cleanup.autoDelete401AccountsHint') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input v-model="form.auto_delete_401_accounts" type="checkbox" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.cleanup.autoDelete429Accounts') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.cleanup.autoDelete429AccountsHint') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input v-model="form.auto_delete_429_accounts" type="checkbox" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.cleanup.autoDeleteUselessProxies') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.cleanup.autoDeleteUselessProxiesHint') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input v-model="form.auto_delete_useless_proxies" type="checkbox" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
         </div><!-- /Tab: Gateway — Claude Code, Scheduling -->
 
         <!-- Tab: General -->
@@ -1381,7 +1438,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <a
-                href="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/docs/ADMIN_PAYMENT_INTEGRATION_API.md"
+                href="https://raw.githubusercontent.com/DR-lin-eng/sub2api/main/docs/ADMIN_PAYMENT_INTEGRATION_API.md"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="text-blue-600 hover:underline dark:text-blue-400"
@@ -1914,7 +1971,7 @@ interface DefaultSubscriptionGroupOption {
   [key: string]: unknown
 }
 
-type SettingsForm = SystemSettings & {
+interface SettingsForm extends SystemSettings {
   smtp_password: string
   turnstile_secret_key: string
   linuxdo_connect_client_secret: string
@@ -1983,7 +2040,10 @@ const form = reactive<SettingsForm>({
   min_claude_code_version: '',
   max_claude_code_version: '',
   // 分组隔离
-  allow_ungrouped_key_scheduling: false
+  allow_ungrouped_key_scheduling: false,
+  auto_delete_401_accounts: false,
+  auto_delete_429_accounts: false,
+  auto_delete_useless_proxies: false
 })
 
 const defaultSubscriptionGroupOptions = computed<DefaultSubscriptionGroupOption[]>(() =>
@@ -2277,7 +2337,10 @@ async function saveSettings() {
       identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
-      allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling
+      allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      auto_delete_401_accounts: form.auto_delete_401_accounts,
+      auto_delete_429_accounts: form.auto_delete_429_accounts,
+      auto_delete_useless_proxies: form.auto_delete_useless_proxies
     }
     const updated = await adminAPI.settings.updateSettings(payload)
     Object.assign(form, updated)

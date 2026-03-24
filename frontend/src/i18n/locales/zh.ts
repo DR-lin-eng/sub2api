@@ -4364,6 +4364,16 @@ export default {
         allowUngroupedKey: '允许未分组 Key 调度',
         allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
       },
+      cleanup: {
+        title: '自动清理',
+        description: '为明显失效的账号和代理提供自动清理开关。每个开关独立生效。',
+        autoDelete401Accounts: '自动删除 401 账号',
+        autoDelete401AccountsHint: '当上游返回 401 时自动删除对应账号。适合清理明确失效的凭证账号。',
+        autoDelete429Accounts: '自动删除 429 账号',
+        autoDelete429AccountsHint: '当上游返回 429 时自动删除对应账号。该策略较激进，请仅在你明确想淘汰限流账号时开启。',
+        autoDeleteUselessProxies: '自动删除无用代理',
+        autoDeleteUselessProxiesHint: '代理自动维护完成后，如果失败代理已无任何绑定账号，则自动删除该代理。'
+      },
       site: {
         title: '站点设置',
         description: '自定义站点品牌',

@@ -111,6 +111,8 @@ jobs:
             VERSION=${{ steps.image.outputs.image_tag }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.build_time.outputs.date }}
+            RELEASE_REPO=${{ github.repository }}
+            REPO_URL=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

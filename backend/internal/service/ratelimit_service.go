@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -149,6 +150,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
+		if s.shouldAutoDeleteAccountOn401(ctx) {
+			return s.autoDeleteAccountForStatus(account, statusCode, upstreamMsg)
+		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
 		// Antigravity 除外：其 401 由 applyErrorPolicy 的 temp_unschedulable_rules 自行控制。
 		if account.Type == AccountTypeOAuth && account.Platform != PlatformAntigravity {
@@ -163,9 +167,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				account.Credentials = make(map[string]any)
 			}
 			account.Credentials["expires_at"] = time.Now().Format(time.RFC3339)
-			if err := s.accountRepo.Update(ctx, account); err != nil {
+			writeCtx, cancel := s.detachedWriteContext()
+			if err := s.accountRepo.Update(writeCtx, account); err != nil {
+				cancel()
 				slog.Warn("oauth_401_force_refresh_update_failed", "account_id", account.ID, "error", err)
 			} else {
+				cancel()
 				slog.Info("oauth_401_force_refresh_set", "account_id", account.ID, "platform", account.Platform)
 			}
 			// 3. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
@@ -178,7 +185,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				cooldownMinutes = 10
 			}
 			until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
-			if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+			if err := s.setTempUnschedulableDetached(account.ID, until, msg); err != nil {
 				slog.Warn("oauth_401_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
 			}
 			shouldDisable = true
@@ -213,6 +220,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		)
 		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
 	case 429:
+		if s.shouldAutoDeleteAccountOn429(ctx) {
+			return s.autoDeleteAccountForStatus(account, statusCode, upstreamMsg)
+		}
 		s.handle429(ctx, account, headers, responseBody)
 		shouldDisable = false
 	case 529:
@@ -609,7 +619,7 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度
 func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account, errorMsg string) {
-	if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
+	if err := s.setAccountErrorDetached(account.ID, errorMsg); err != nil {
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
 		return
 	}
@@ -675,7 +685,7 @@ func (s *RateLimitService) handleAntigravity403(ctx context.Context, account *Ac
 // handleCustomErrorCode 处理自定义错误码，停止账号调度
 func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *Account, statusCode int, errorMsg string) {
 	msg := "Custom error code " + strconv.Itoa(statusCode) + ": " + errorMsg
-	if err := s.accountRepo.SetError(ctx, account.ID, msg); err != nil {
+	if err := s.setAccountErrorDetached(account.ID, msg); err != nil {
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "status_code", statusCode, "error", err)
 		return
 	}
@@ -689,7 +699,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	if account.Platform == PlatformOpenAI {
 		s.persistOpenAICodexSnapshot(ctx, account, headers)
 		if resetAt := s.calculateOpenAI429ResetTime(headers); resetAt != nil {
-			if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+			if err := s.setRateLimitedDetached(account.ID, *resetAt); err != nil {
 				slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 				return
 			}
@@ -700,7 +710,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 
 	// 2. Anthropic 平台：尝试解析 per-window 头（5h / 7d），选择实际触发的窗口
 	if result := calculateAnthropic429ResetTime(headers); result != nil {
-		if err := s.accountRepo.SetRateLimited(ctx, account.ID, result.resetAt); err != nil {
+		if err := s.setRateLimitedDetached(account.ID, result.resetAt); err != nil {
 			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 			return
 		}
@@ -729,7 +739,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			// 尝试解析 OpenAI 的 usage_limit_reached 错误
 			if resetAt := parseOpenAIRateLimitResetTime(responseBody); resetAt != nil {
 				resetTime := time.Unix(*resetAt, 0)
-				if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetTime); err != nil {
+				if err := s.setRateLimitedDetached(account.ID, resetTime); err != nil {
 					slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 					return
 				}
@@ -740,7 +750,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			// 尝试解析 Gemini 格式（用于其他平台）
 			if resetAt := ParseGeminiRateLimitResetTime(responseBody); resetAt != nil {
 				resetTime := time.Unix(*resetAt, 0)
-				if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetTime); err != nil {
+				if err := s.setRateLimitedDetached(account.ID, resetTime); err != nil {
 					slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 					return
 				}
@@ -762,7 +772,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		// 其他平台：没有重置时间，使用默认5分钟
 		resetAt := time.Now().Add(5 * time.Minute)
 		slog.Warn("rate_limit_no_reset_time", "account_id", account.ID, "platform", account.Platform, "using_default", "5m")
-		if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+		if err := s.setRateLimitedDetached(account.ID, resetAt); err != nil {
 			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 		}
 		return
@@ -773,7 +783,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	if err != nil {
 		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
 		resetAt := time.Now().Add(5 * time.Minute)
-		if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+		if err := s.setRateLimitedDetached(account.ID, resetAt); err != nil {
 			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 		}
 		return
@@ -782,7 +792,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	resetAt := time.Unix(ts, 0)
 
 	// 标记限流状态
-	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+	if err := s.setRateLimitedDetached(account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 		return
 	}
@@ -1444,7 +1454,7 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 		reason = strings.TrimSpace(state.ErrorMessage)
 	}
 
-	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+	if err := s.setTempUnschedulableDetached(account.ID, until, reason); err != nil {
 		slog.Warn("temp_unsched_set_failed", "account_id", account.ID, "error", err)
 		return false
 	}
@@ -1548,7 +1558,7 @@ func (s *RateLimitService) triggerStreamTimeoutTempUnsched(ctx context.Context, 
 		reason = state.ErrorMessage
 	}
 
-	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+	if err := s.setTempUnschedulableDetached(account.ID, until, reason); err != nil {
 		slog.Warn("stream_timeout_set_temp_unsched_failed", "account_id", account.ID, "error", err)
 		return false
 	}
@@ -1574,7 +1584,7 @@ func (s *RateLimitService) triggerStreamTimeoutTempUnsched(ctx context.Context, 
 func (s *RateLimitService) triggerStreamTimeoutError(ctx context.Context, account *Account, model string) bool {
 	errorMsg := "Stream data interval timeout (repeated failures) for model: " + model
 
-	if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
+	if err := s.setAccountErrorDetached(account.ID, errorMsg); err != nil {
 		slog.Warn("stream_timeout_set_error_failed", "account_id", account.ID, "error", err)
 		return false
 	}
@@ -1587,5 +1597,53 @@ func (s *RateLimitService) triggerStreamTimeoutError(ctx context.Context, accoun
 	}
 
 	slog.Warn("stream_timeout_account_error", "account_id", account.ID, "model", model)
+	return true
+}
+
+func (s *RateLimitService) detachedWriteContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+func (s *RateLimitService) setAccountErrorDetached(accountID int64, errorMsg string) error {
+	writeCtx, cancel := s.detachedWriteContext()
+	defer cancel()
+	return s.accountRepo.SetError(writeCtx, accountID, errorMsg)
+}
+
+func (s *RateLimitService) setTempUnschedulableDetached(accountID int64, until time.Time, reason string) error {
+	writeCtx, cancel := s.detachedWriteContext()
+	defer cancel()
+	return s.accountRepo.SetTempUnschedulable(writeCtx, accountID, until, reason)
+}
+
+func (s *RateLimitService) setRateLimitedDetached(accountID int64, resetAt time.Time) error {
+	writeCtx, cancel := s.detachedWriteContext()
+	defer cancel()
+	return s.accountRepo.SetRateLimited(writeCtx, accountID, resetAt)
+}
+
+func (s *RateLimitService) shouldAutoDeleteAccountOn401(ctx context.Context) bool {
+	return s != nil && s.settingService != nil && s.settingService.IsAutoDelete401AccountsEnabled(ctx)
+}
+
+func (s *RateLimitService) shouldAutoDeleteAccountOn429(ctx context.Context) bool {
+	return s != nil && s.settingService != nil && s.settingService.IsAutoDelete429AccountsEnabled(ctx)
+}
+
+func (s *RateLimitService) autoDeleteAccountForStatus(account *Account, statusCode int, upstreamMsg string) bool {
+	if s == nil || s.accountRepo == nil || account == nil || account.ID <= 0 {
+		return true
+	}
+	reason := strings.TrimSpace(upstreamMsg)
+	if reason == "" {
+		reason = fmt.Sprintf("auto delete on upstream status %d", statusCode)
+	}
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.accountRepo.Delete(deleteCtx, account.ID); err != nil {
+		slog.Warn("auto_delete_account_failed", "account_id", account.ID, "status_code", statusCode, "error", err)
+		return true
+	}
+	slog.Warn("auto_delete_account_succeeded", "account_id", account.ID, "status_code", statusCode, "reason", reason)
 	return true
 }

@@ -26,31 +26,6 @@ permissions:
   packages: write
 
 jobs:
-  # Update VERSION file with tag version
-  update-version:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Update VERSION file
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
-          echo "$VERSION" > backend/cmd/server/VERSION
-          echo "Updated VERSION file to: $VERSION"
-
-      - name: Upload VERSION artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: version-file
-          path: backend/cmd/server/VERSION
-          retention-days: 1
-
   build-frontend:
     runs-on: ubuntu-latest
     steps:
@@ -85,7 +60,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [update-version, build-frontend]
+    needs: [build-frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,17 +69,42 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Download VERSION artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: version-file
-          path: backend/cmd/server/
+      - name: Write release VERSION file
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION=${{ github.event.inputs.tag }}
+            VERSION=${VERSION#v}
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          echo "$VERSION" > backend/cmd/server/VERSION
+          echo "Release VERSION file set to: $VERSION"
 
       - name: Download frontend artifact
         uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: backend/internal/web/dist/
+
+      - name: Normalize frontend artifact layout
+        shell: bash
+        run: |
+          if [ -f backend/internal/web/dist/index.html ]; then
+            echo "Frontend artifact already in expected location"
+            exit 0
+          fi
+
+          ALT_INDEX=$(find backend/internal/web/dist -path '*/index.html' | head -n 1)
+          if [ -z "$ALT_INDEX" ]; then
+            echo "Expected frontend artifact was not downloaded correctly"
+            find backend/internal/web -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          ALT_DIR=$(dirname "$ALT_INDEX")
+          echo "Flattening nested frontend artifact from: $ALT_DIR"
+          cp -R "$ALT_DIR"/. backend/internal/web/dist/
+          test -f backend/internal/web/dist/index.html
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -246,10 +246,10 @@ jobs:
           if [ -n "$DOCKERHUB_USERNAME" ]; then
             DOCKER_IMAGE="${DOCKERHUB_USERNAME}/sub2api"
             MESSAGE+="# Docker Hub"$'\n'
-            MESSAGE+="docker pull ${DOCKER_IMAGE}:${TAG_NAME}"$'\n'
+            MESSAGE+="docker pull ${DOCKER_IMAGE}:${VERSION}"$'\n'
             MESSAGE+="# GitHub Container Registry"$'\n'
           fi
-          MESSAGE+="docker pull ${GHCR_IMAGE}:${TAG_NAME}"$'\n'
+          MESSAGE+="docker pull ${GHCR_IMAGE}:${VERSION}"$'\n'
           MESSAGE+="\`\`\`"$'\n'$'\n'
           MESSAGE+="🔗 *相关链接:*"$'\n'
           MESSAGE+="• [GitHub Release](https://github.com/${REPO}/releases/tag/${TAG_NAME})"$'\n'
