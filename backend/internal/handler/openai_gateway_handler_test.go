@@ -204,6 +204,42 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
+func TestApplyOpenAIRemoteCompactFailoverPolicy_DisablesSwitching(t *testing.T) {
+	policy := openAIFailoverPolicy{
+		MaxSwitches:           3,
+		AllowSameAccountRetry: true,
+	}
+
+	got := applyOpenAIRemoteCompactFailoverPolicy(policy, true)
+	require.Equal(t, 0, got.MaxSwitches)
+	require.False(t, got.AllowSameAccountRetry)
+
+	unchanged := applyOpenAIRemoteCompactFailoverPolicy(policy, false)
+	require.Equal(t, policy, unchanged)
+}
+
+func TestHandleRemoteCompactFailure_PreservesUpstreamStatusAndMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleRemoteCompactFailure(c, &service.UpstreamFailoverError{
+		StatusCode:   554,
+		ResponseBody: []byte(`{"error":{"message":"remote compact failed for large context"}}`),
+	}, false)
+
+	require.Equal(t, 554, w.Code)
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "upstream_error", errorObj["type"])
+	require.Equal(t, "remote compact failed for large context", errorObj["message"])
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

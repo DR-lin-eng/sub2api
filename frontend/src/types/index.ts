@@ -1032,6 +1032,31 @@ export interface AdminDataImportTask {
   finished_at?: string
 }
 
+export type AdminDataExportTaskStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export interface AdminDataExportTaskResult {
+  filename?: string
+  account_count: number
+  proxy_count: number
+  file_size_bytes: number
+  download_url?: string
+  expires_at?: string
+}
+
+export interface AdminDataExportTask {
+  task_id: string
+  status: AdminDataExportTaskStatus
+  stage?: string
+  current: number
+  total: number
+  progress: number
+  message?: string
+  result?: AdminDataExportTaskResult
+  created_at: string
+  started_at?: string
+  finished_at?: string
+}
+
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'

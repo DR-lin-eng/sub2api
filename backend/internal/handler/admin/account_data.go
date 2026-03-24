@@ -170,24 +170,90 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	}
 
 	payload := DataPayload{
+		Type:       dataType,
+		Version:    dataVersion,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Proxies:    dataProxies,
 		Accounts:   dataAccounts,
 	}
 
 	if shouldDownloadExportData(c) {
-		raw, err := json.Marshal(payload)
-		if err != nil {
+		c.Header("Content-Type", "application/json")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", buildAccountExportFilename()))
+		c.Status(http.StatusOK)
+		encoder := json.NewEncoder(c.Writer)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(payload); err != nil {
 			response.InternalError(c, "Failed to serialize export data")
 			return
 		}
-		c.Header("Content-Type", "application/json")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", buildAccountExportFilename()))
-		c.Data(http.StatusOK, "application/json", raw)
 		return
 	}
 
 	response.Success(c, payload)
+}
+
+func (h *AccountHandler) CreateExportTask(c *gin.Context) {
+	if h == nil || h.exportTaskManager == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Export task manager not available")
+		return
+	}
+
+	req, err := parseAccountExportTaskRequest(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	task := h.exportTaskManager.createTask(accountExportTaskPayload{Request: req})
+	if task == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Failed to create export task")
+		return
+	}
+
+	task.execute = func(ctx context.Context, task *accountExportTask, progress func(stage string, current, total int, message string)) (accountExportArtifact, error) {
+		return h.buildAccountExportArtifact(ctx, req, progress)
+	}
+
+	if err := h.exportTaskManager.submitTask(task); err != nil {
+		response.Error(c, http.StatusTooManyRequests, err.Error())
+		return
+	}
+
+	response.Accepted(c, task.state)
+}
+
+func (h *AccountHandler) GetExportTask(c *gin.Context) {
+	if h == nil || h.exportTaskManager == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Export task manager not available")
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		response.BadRequest(c, "task_id is required")
+		return
+	}
+	task, ok := h.exportTaskManager.getTask(taskID)
+	if !ok || task == nil {
+		response.NotFound(c, "Export task not found")
+		return
+	}
+	response.Success(c, task)
+}
+
+func (h *AccountHandler) DownloadExportTask(c *gin.Context) {
+	if h == nil || h.exportTaskManager == nil {
+		response.NotFound(c, "Export artifact not found")
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	token := strings.TrimSpace(c.Query("token"))
+	path, filename, ok := h.exportTaskManager.resolveDownload(taskID, token)
+	if !ok {
+		response.NotFound(c, "Export artifact not found or expired")
+		return
+	}
+	c.FileAttachment(path, filename)
 }
 
 func shouldDownloadExportData(c *gin.Context) bool {
@@ -213,6 +279,170 @@ func buildAccountExportFilename() string {
 		now.Hour(),
 		now.Minute(),
 		now.Second(),
+	)
+}
+
+func parseAccountExportTaskRequest(c *gin.Context) (DataExportTaskRequest, error) {
+	var req DataExportTaskRequest
+	if c == nil || c.Request == nil {
+		return req, errors.New("invalid request")
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return req, errors.New("Invalid request: " + err.Error())
+	}
+	req.IDs = normalizeInt64IDList(req.IDs)
+	return req, nil
+}
+
+func (h *AccountHandler) buildAccountExportArtifact(
+	ctx context.Context,
+	req DataExportTaskRequest,
+	progress func(stage string, current, total int, message string),
+) (accountExportArtifact, error) {
+	var artifact accountExportArtifact
+	includeProxies := true
+	if req.IncludeProxies != nil {
+		includeProxies = *req.IncludeProxies
+	}
+	if progress != nil {
+		progress("collecting_accounts", 0, 1, "Collecting accounts for export")
+	}
+	accounts, err := h.resolveExportAccountsForTask(ctx, req)
+	if err != nil {
+		return artifact, err
+	}
+	if progress != nil {
+		progress("collecting_proxies", 1, 3, "Collecting proxies for export")
+	}
+	proxies := []service.Proxy{}
+	if includeProxies {
+		proxies, err = h.resolveExportProxies(ctx, accounts)
+		if err != nil {
+			return artifact, err
+		}
+	}
+
+	proxyKeyByID := make(map[int64]string, len(proxies))
+	dataProxies := make([]DataProxy, 0, len(proxies))
+	for i := range proxies {
+		p := proxies[i]
+		key := buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)
+		proxyKeyByID[p.ID] = key
+		dataProxies = append(dataProxies, DataProxy{
+			ProxyKey: key,
+			Name:     p.Name,
+			Protocol: p.Protocol,
+			Host:     p.Host,
+			Port:     p.Port,
+			Username: p.Username,
+			Password: p.Password,
+			Status:   p.Status,
+		})
+	}
+
+	if progress != nil {
+		progress("serializing", 2, 3, "Building export artifact")
+	}
+	dataAccounts := make([]DataAccount, 0, len(accounts))
+	for i := range accounts {
+		acc := accounts[i]
+		var proxyKey *string
+		if acc.ProxyID != nil {
+			if key, ok := proxyKeyByID[*acc.ProxyID]; ok {
+				proxyKey = &key
+			}
+		}
+		var expiresAt *int64
+		if acc.ExpiresAt != nil {
+			v := acc.ExpiresAt.Unix()
+			expiresAt = &v
+		}
+		dataAccounts = append(dataAccounts, DataAccount{
+			Name:               acc.Name,
+			Notes:              acc.Notes,
+			Platform:           acc.Platform,
+			Type:               acc.Type,
+			Credentials:        acc.Credentials,
+			Extra:              acc.Extra,
+			GroupIDs:           normalizeInt64IDList(acc.GroupIDs),
+			ProxyKey:           proxyKey,
+			Concurrency:        acc.Concurrency,
+			Priority:           acc.Priority,
+			RateMultiplier:     acc.RateMultiplier,
+			ExpiresAt:          expiresAt,
+			AutoPauseOnExpired: &acc.AutoPauseOnExpired,
+		})
+	}
+
+	payload := DataPayload{
+		Type:       dataType,
+		Version:    dataVersion,
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		Proxies:    dataProxies,
+		Accounts:   dataAccounts,
+	}
+
+	file, err := os.CreateTemp("", "sub2api-account-export-*.json")
+	if err != nil {
+		return artifact, err
+	}
+	defer func() { _ = file.Close() }()
+	encoder := json.NewEncoder(file)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		_ = os.Remove(file.Name())
+		return artifact, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return artifact, err
+	}
+	if progress != nil {
+		progress("completed", 3, 3, "Export completed")
+	}
+	return accountExportArtifact{
+		Filepath:      file.Name(),
+		Filename:      buildAccountExportFilename(),
+		AccountCount:  len(dataAccounts),
+		ProxyCount:    len(dataProxies),
+		FileSizeBytes: info.Size(),
+	}, nil
+}
+
+func (h *AccountHandler) resolveExportAccountsForTask(ctx context.Context, req DataExportTaskRequest) ([]service.Account, error) {
+	if len(req.IDs) > 0 {
+		accounts, err := h.adminService.GetAccountsByIDs(ctx, req.IDs)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]service.Account, 0, len(accounts))
+		for _, acc := range accounts {
+			if acc == nil {
+				continue
+			}
+			out = append(out, *acc)
+		}
+		return out, nil
+	}
+	filters := req.Filters
+	if filters == nil {
+		filters = &DataExportTaskFilters{}
+	}
+	search := strings.TrimSpace(filters.Search)
+	if len(search) > 100 {
+		search = search[:100]
+	}
+	return h.listAccountsFiltered(
+		ctx,
+		strings.TrimSpace(filters.Platform),
+		strings.TrimSpace(filters.Type),
+		strings.TrimSpace(filters.Status),
+		search,
+		strings.TrimSpace(filters.Group),
+		strings.TrimSpace(filters.Plan),
+		strings.TrimSpace(filters.OAuthType),
+		strings.TrimSpace(filters.TierID),
 	)
 }
 
@@ -710,12 +940,24 @@ func buildAccountDedupKey(platform, accountType, name, apiKey, accessToken, refr
 	}
 }
 
-func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, accountType, status, search string) ([]service.Account, error) {
+func (h *AccountHandler) listAccountsFiltered(ctx context.Context, platform, accountType, status, search, group, plan, oauthType, tierID string) ([]service.Account, error) {
+	var groupID int64
+	if strings.TrimSpace(group) != "" {
+		if strings.TrimSpace(group) == accountListGroupUngroupedQueryValue {
+			groupID = service.AccountListGroupUngrouped
+		} else {
+			parsedGroupID, err := strconv.ParseInt(strings.TrimSpace(group), 10, 64)
+			if err != nil || parsedGroupID < 0 {
+				return nil, fmt.Errorf("invalid group filter: %s", group)
+			}
+			groupID = parsedGroupID
+		}
+	}
 	page := 1
 	pageSize := dataPageCap
 	var out []service.Account
 	for {
-		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, "", "", "", 0)
+		items, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, groupID)
 		if err != nil {
 			return nil, err
 		}
@@ -748,10 +990,14 @@ func (h *AccountHandler) resolveExportAccounts(ctx context.Context, ids []int64,
 	accountType := c.Query("type")
 	status := c.Query("status")
 	search := strings.TrimSpace(c.Query("search"))
+	group := strings.TrimSpace(c.Query("group"))
+	plan := strings.TrimSpace(c.Query("plan"))
+	oauthType := strings.TrimSpace(c.Query("oauth_type"))
+	tierID := strings.TrimSpace(c.Query("tier_id"))
 	if len(search) > 100 {
 		search = search[:100]
 	}
-	return h.listAccountsFiltered(ctx, platform, accountType, status, search)
+	return h.listAccountsFiltered(ctx, platform, accountType, status, search, group, plan, oauthType, tierID)
 }
 
 func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []service.Account) ([]service.Proxy, error) {

@@ -51,6 +51,15 @@ type openAIFailoverPolicy struct {
 	AllowSameAccountRetry bool
 }
 
+func applyOpenAIRemoteCompactFailoverPolicy(policy openAIFailoverPolicy, remoteCompact bool) openAIFailoverPolicy {
+	if !remoteCompact {
+		return policy
+	}
+	policy.MaxSwitches = 0
+	policy.AllowSameAccountRetry = false
+	return policy
+}
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -267,6 +276,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	defer h.recoverResponsesPanic(c, &streamStarted)
 	compactStartedAt := time.Now()
 	defer h.logOpenAIRemoteCompactOutcome(c, compactStartedAt)
+	remoteCompact := isOpenAIRemoteCompactPath(c)
 	setOpenAIClientTransportHTTP(c)
 
 	requestStart := time.Now()
@@ -404,11 +414,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.resolveOpenAIStickySessionHash(c, apiKey, subject.UserID, reqModel, reqStream, sessionHashBody)
 
 	failoverPolicy := h.resolveOpenAIFailoverPolicy(body, reqStream)
+	failoverPolicy = applyOpenAIRemoteCompactFailoverPolicy(failoverPolicy, remoteCompact)
 	maxAccountSwitches := failoverPolicy.MaxSwitches
 	if maxAccountSwitches != h.maxAccountSwitches || !failoverPolicy.AllowSameAccountRetry {
 		reqLog.Info("openai.streaming_failover_policy_applied",
 			zap.Int("body_bytes", len(body)),
 			zap.Bool("stream", reqStream),
+			zap.Bool("remote_compact", remoteCompact),
 			zap.Int("effective_max_switches", maxAccountSwitches),
 			zap.Bool("allow_same_account_retry", failoverPolicy.AllowSameAccountRetry),
 		)
@@ -496,6 +508,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				failoverErr = adjustOpenAIFailoverForLargeStreamingRequest(failoverErr, body, reqStream, h.cfg)
 				h.gatewayService.RegisterOpenAIRuntimeFailure(account, failoverErr)
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if remoteCompact {
+					if failoverErr.TempUnscheduleFor > 0 || failoverErr.StatusCode == http.StatusUnauthorized {
+						_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
+						h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
+					}
+					h.handleRemoteCompactFailure(c, failoverErr, streamStarted)
+					return
+				}
 				// 池模式：同账号重试
 				if failoverPolicy.AllowSameAccountRetry && failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
@@ -1671,6 +1691,62 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleRemoteCompactFailure(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
+	if failoverErr == nil {
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream compact request failed", streamStarted)
+		return
+	}
+
+	statusCode := failoverErr.StatusCode
+	if statusCode < 400 || statusCode > 599 {
+		statusCode = http.StatusBadGateway
+	}
+	responseBody := failoverErr.ResponseBody
+
+	if h.errorPassthroughService != nil && len(responseBody) > 0 {
+		if rule := h.errorPassthroughService.MatchRule("openai", statusCode, responseBody); rule != nil {
+			respCode := statusCode
+			if !rule.PassthroughCode && rule.ResponseCode != nil {
+				respCode = *rule.ResponseCode
+			}
+
+			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			if !rule.PassthroughBody && rule.CustomMessage != nil {
+				msg = *rule.CustomMessage
+			}
+
+			if rule.SkipMonitoring {
+				c.Set(service.OpsSkipPassthroughKey, true)
+			}
+
+			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+			return
+		}
+	}
+
+	upstreamMsg := strings.TrimSpace(service.ExtractUpstreamErrorMessage(responseBody))
+	if upstreamMsg == "" {
+		upstreamMsg = strings.TrimSpace(failoverErr.Error())
+	}
+	if upstreamMsg == "" {
+		_, _, mappedMsg := h.mapUpstreamError(statusCode)
+		upstreamMsg = mappedMsg
+	}
+	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+
+	errType := "upstream_error"
+	switch statusCode {
+	case http.StatusBadRequest:
+		errType = "invalid_request_error"
+	case http.StatusUnauthorized:
+		errType = "authentication_error"
+	case http.StatusTooManyRequests:
+		errType = "rate_limit_error"
+	}
+
+	h.handleStreamingAwareError(c, statusCode, errType, upstreamMsg, streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况

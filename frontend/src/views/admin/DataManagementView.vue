@@ -1,5 +1,7 @@
 <template>
     <div class="space-y-6">
+      <DataOpsToolkit />
+
       <div class="card p-6">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -190,6 +192,7 @@ import { useI18n } from 'vue-i18n'
 import type { SoraS3Profile } from '@/api/admin/settings'
 import { adminAPI } from '@/api'
 import { useAppStore } from '@/stores'
+import DataOpsToolkit from '@/views/admin/components/DataOpsToolkit.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()

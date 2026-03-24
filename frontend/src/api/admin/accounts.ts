@@ -20,6 +20,7 @@ import type {
   AdminDataPayload,
   AdminDataImportResult,
   AdminDataImportTask,
+  AdminDataExportTask,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse
 } from '@/types'
@@ -595,6 +596,28 @@ export async function getImportTask(taskID: string): Promise<AdminDataImportTask
   return data
 }
 
+export async function createExportTask(payload?: {
+  ids?: number[]
+  filters?: Pick<AccountListFilters, 'platform' | 'type' | 'status' | 'search' | 'group' | 'plan' | 'oauth_type' | 'tier_id'>
+  include_proxies?: boolean
+}): Promise<AdminDataExportTask> {
+  const { data } = await apiClient.post<AdminDataExportTask>('/admin/accounts/data/export-tasks', {
+    ids: payload?.ids,
+    filters: payload?.filters,
+    include_proxies: payload?.include_proxies
+  }, {
+    timeout: 0
+  })
+  return data
+}
+
+export async function getExportTask(taskID: string): Promise<AdminDataExportTask> {
+  const { data } = await apiClient.get<AdminDataExportTask>(`/admin/accounts/data/export-tasks/${taskID}`, {
+    timeout: 0
+  })
+  return data
+}
+
 /**
  * Get Antigravity default model mapping from backend
  * @returns Default model mapping (from -> to)
@@ -742,6 +765,8 @@ export const accountsAPI = {
   importData,
   createImportTask,
   getImportTask,
+  createExportTask,
+  getExportTask,
   getAntigravityDefaultModelMapping,
   batchClearError,
   batchRefresh,

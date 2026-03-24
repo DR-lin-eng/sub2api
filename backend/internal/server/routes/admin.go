@@ -276,6 +276,8 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", h.Admin.Account.ExportData)
 		accounts.POST("/data", h.Admin.Account.ImportData)
+		accounts.POST("/data/export-tasks", h.Admin.Account.CreateExportTask)
+		accounts.GET("/data/export-tasks/:task_id", h.Admin.Account.GetExportTask)
 		accounts.POST("/data/tasks", h.Admin.Account.CreateImportTask)
 		accounts.GET("/data/tasks/:task_id", h.Admin.Account.GetImportTask)
 		accounts.POST("/batch-update-credentials", h.Admin.Account.BatchUpdateCredentials)

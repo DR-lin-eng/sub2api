@@ -1213,24 +1213,124 @@ const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
 }
-const formatExportTimestamp = () => {
-  const now = new Date()
-  const pad2 = (value: number) => String(value).padStart(2, '0')
-  return `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`
-}
 const openExportDataDialog = () => {
   includeProxyOnExport.value = true
   showExportDataDialog.value = true
 }
+
+let exportTaskPollTimer: number | null = null
+
+const clearExportTaskPollTimer = () => {
+  if (exportTaskPollTimer != null) {
+    window.clearTimeout(exportTaskPollTimer)
+    exportTaskPollTimer = null
+  }
+}
+
+const describeExportTaskStage = (stage?: string) => {
+  switch (stage) {
+    case 'queued':
+      return t('admin.accounts.dataExportTaskQueued')
+    case 'collecting_accounts':
+      return t('admin.accounts.dataExportTaskCollectingAccounts')
+    case 'collecting_proxies':
+      return t('admin.accounts.dataExportTaskCollectingProxies')
+    case 'serializing':
+      return t('admin.accounts.dataExportTaskSerializing')
+    case 'completed':
+      return t('admin.accounts.dataExportTaskCompleted')
+    case 'failed':
+      return t('admin.accounts.dataExportTaskFailed')
+    default:
+      return t('common.loading')
+  }
+}
+
+const triggerExportTaskDownload = (downloadURL: string, filename?: string) => {
+  const link = document.createElement('a')
+  link.href = downloadURL
+  if (filename) {
+    link.download = filename
+  }
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+const pollExportTask = async (taskID: string, toastID: string) => {
+  try {
+    const task = await adminAPI.accounts.getExportTask(taskID)
+    if (task.status === 'completed') {
+      clearExportTaskPollTimer()
+      const downloadURL = task.result?.download_url
+      if (!downloadURL) {
+        appStore.updateToast(toastID, {
+          type: 'error',
+          title: t('admin.accounts.dataExportFailed'),
+          message: t('admin.accounts.dataExportFailed'),
+          subtitle: t('admin.accounts.dataExportTaskMissingDownload'),
+          duration: 5000
+        })
+        return
+      }
+      triggerExportTaskDownload(downloadURL, task.result?.filename)
+      appStore.updateToast(toastID, {
+        type: 'success',
+        title: t('admin.accounts.dataExported'),
+        message: t('admin.accounts.dataExported'),
+        subtitle: t('admin.accounts.dataExportTaskCompletedSummary', {
+          account_count: task.result?.account_count || 0,
+          proxy_count: task.result?.proxy_count || 0
+        }),
+        progress: 100,
+        duration: 4000
+      })
+      return
+    }
+    if (task.status === 'failed') {
+      clearExportTaskPollTimer()
+      appStore.updateToast(toastID, {
+        type: 'error',
+        title: t('admin.accounts.dataExportFailed'),
+        message: t('admin.accounts.dataExportFailed'),
+        subtitle: task.message || t('errors.networkError'),
+        duration: 5000
+      })
+      return
+    }
+
+    appStore.updateToast(toastID, {
+      type: 'info',
+      title: t('admin.accounts.dataExportTaskRunning'),
+      message: t('admin.accounts.dataExportTaskRunning'),
+      subtitle: describeExportTaskStage(task.stage),
+      progress: task.progress
+    })
+    exportTaskPollTimer = window.setTimeout(() => {
+      void pollExportTask(taskID, toastID)
+    }, 1200)
+  } catch (error: any) {
+    clearExportTaskPollTimer()
+    appStore.updateToast(toastID, {
+      type: 'error',
+      title: t('admin.accounts.dataExportFailed'),
+      message: t('admin.accounts.dataExportFailed'),
+      subtitle: error?.message || t('errors.networkError'),
+      duration: 5000
+    })
+  }
+}
+
 const handleExportData = async () => {
   if (exportingData.value) return
   exportingData.value = true
   try {
-    const exportFile = await adminAPI.accounts.exportData(
+    const task = await adminAPI.accounts.createExportTask(
       selIds.value.length > 0
-        ? { ids: selIds.value, includeProxies: includeProxyOnExport.value }
+        ? { ids: selIds.value, include_proxies: includeProxyOnExport.value }
         : {
-            includeProxies: includeProxyOnExport.value,
+            include_proxies: includeProxyOnExport.value,
             filters: {
               platform: params.platform,
               type: params.type,
@@ -1243,13 +1343,13 @@ const handleExportData = async () => {
             }
           }
     )
-    const url = URL.createObjectURL(exportFile.blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = exportFile.filename || `sub2api-account-${formatExportTimestamp()}.json`
-    link.click()
-    URL.revokeObjectURL(url)
-    appStore.showSuccess(t('admin.accounts.dataExported'))
+    clearExportTaskPollTimer()
+    const toastID = appStore.showToast('info', t('admin.accounts.dataExportTaskQueued'), undefined, {
+      title: t('admin.accounts.dataExportTaskQueued'),
+      subtitle: t('admin.accounts.dataExportTaskQueuedHint'),
+      progress: task.progress
+    })
+    void pollExportTask(task.task_id, toastID)
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.accounts.dataExportFailed'))
   } finally {
@@ -1423,5 +1523,6 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('scroll', handleScroll, true)
   document.removeEventListener('click', handleClickOutside)
+  clearExportTaskPollTimer()
 })
 </script>

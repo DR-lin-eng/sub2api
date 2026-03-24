@@ -78,6 +78,11 @@ func RegisterAuthRoutes(
 		settings.GET("/public", h.Setting.GetPublicSettings)
 	}
 
+	public := v1.Group("/public")
+	{
+		public.GET("/account-export-tasks/:task_id/download", h.Admin.Account.DownloadExportTask)
+	}
+
 	// 需要认证的当前用户信息
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
