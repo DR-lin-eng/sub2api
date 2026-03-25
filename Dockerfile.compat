@@ -1,0 +1,127 @@
+# =============================================================================
+# Sub2API Compatibility Dockerfile
+# =============================================================================
+# Goal:
+# - Favor runtime compatibility over minimal image size
+# - Use Debian/glibc instead of Alpine/musl
+# - Avoid aggressive linker stripping for the backend binary
+# - Keep a separate build path so the default image workflow remains unchanged
+# =============================================================================
+
+ARG NODE_IMAGE=node:24-bookworm
+ARG GOLANG_IMAGE=golang:1.26.1
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG POSTGRES_IMAGE=postgres:18-bookworm
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
+ARG RELEASE_REPO=dr-lin-eng/sub2api
+ARG REPO_URL=https://github.com/dr-lin-eng/sub2api
+
+# -----------------------------------------------------------------------------
+# Stage 1: Frontend Builder
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS frontend-builder
+
+WORKDIR /app/frontend
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend/ ./
+RUN pnpm run build
+
+# -----------------------------------------------------------------------------
+# Stage 2: Backend Builder
+# -----------------------------------------------------------------------------
+FROM ${GOLANG_IMAGE} AS backend-builder
+
+ARG VERSION=
+ARG COMMIT=docker
+ARG DATE
+ARG GOPROXY
+ARG GOSUMDB
+ARG RELEASE_REPO
+
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+ENV GOAMD64=v1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/backend
+
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+COPY backend/ ./
+COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
+
+RUN VERSION_VALUE="${VERSION}" && \
+    if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(tr -d '\r\n' < ./cmd/server/VERSION)"; fi && \
+    RELEASE_REPO_VALUE="${RELEASE_REPO}" && \
+    DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    CGO_ENABLED=0 GOOS=linux GOAMD64=v1 go build \
+    -tags embed \
+    -buildvcs=false \
+    -ldflags="-X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release -X main.ReleaseRepo=${RELEASE_REPO_VALUE}" \
+    -o /app/sub2api \
+    ./cmd/server
+
+# -----------------------------------------------------------------------------
+# Stage 3: PostgreSQL Client
+# -----------------------------------------------------------------------------
+FROM ${POSTGRES_IMAGE} AS pg-client
+
+# -----------------------------------------------------------------------------
+# Stage 4: Final Runtime Image
+# -----------------------------------------------------------------------------
+FROM ${RUNTIME_IMAGE}
+ARG REPO_URL
+
+LABEL maintainer="Sub2API Contributors"
+LABEL description="Sub2API - AI API Gateway Platform (compat build)"
+LABEL org.opencontainers.image.source="${REPO_URL}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    curl \
+    gosu \
+    libpq5 \
+    zstd \
+    liblz4-1 \
+    libkrb5-3 \
+    libldap-2.5-0 \
+    libedit2 \
+    && rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/sbin/gosu /usr/local/bin/su-exec
+
+COPY --from=pg-client /usr/lib/postgresql/18/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pg-client /usr/lib/postgresql/18/bin/psql /usr/local/bin/psql
+
+RUN groupadd -g 1000 sub2api && \
+    useradd -u 1000 -g sub2api -s /bin/sh -m sub2api
+
+WORKDIR /app
+
+COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
+
+RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
+
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:${SERVER_PORT:-8080}/health >/dev/null || exit 1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/sub2api"]
