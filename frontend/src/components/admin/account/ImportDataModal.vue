@@ -101,7 +101,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import type { AdminDataImportResult, AdminDataImportTask, AdminGroup } from '@/types'
+import type { AdminDataImportResult, AdminDataImportTask, AdminDataImportUploadSession, AdminGroup } from '@/types'
 
 interface Props {
   show: boolean
@@ -175,6 +175,44 @@ const buildTaskSubtitle = (task: AdminDataImportTask) => {
 
 const buildTaskMessage = (task: AdminDataImportTask) => {
   return task.message || task.stage || task.status
+}
+
+const uploadFileByChunks = async (
+  file: File,
+  session: AdminDataImportUploadSession,
+  toastID: string
+) => {
+  let currentOffset = session.received_bytes || 0
+  const chunkSize = Math.max(256 * 1024, session.chunk_size || 4 * 1024 * 1024)
+
+  while (currentOffset < file.size) {
+    const nextOffset = Math.min(file.size, currentOffset + chunkSize)
+    const chunk = file.slice(currentOffset, nextOffset)
+    try {
+      const updated = await adminAPI.accounts.uploadImportChunk({
+        session_id: session.session_id,
+        offset: currentOffset,
+        chunk,
+        onUploadProgress: (chunkProgress) => {
+          const uploaded = currentOffset + Math.round((chunk.size * chunkProgress) / 100)
+          const overall = Math.min(100, Math.max(0, Math.round((uploaded / file.size) * 100)))
+          appStore.updateToast(toastID, {
+            title: t('admin.accounts.dataImportTitle'),
+            subtitle: `${overall}%`,
+            message: t('admin.accounts.dataImportUploading'),
+            progress: overall
+          })
+        }
+      })
+      currentOffset = updated.received_bytes
+    } catch {
+      const resumed = await adminAPI.accounts.getImportUploadSession(session.session_id)
+      if ((resumed.received_bytes || 0) <= currentOffset) {
+        throw new Error(t('admin.accounts.dataImportUploadStalled'))
+      }
+      currentOffset = resumed.received_bytes || 0
+    }
+  }
 }
 
 const scheduleTaskPoll = (taskID: string, toastID: string) => {
@@ -258,19 +296,14 @@ const handleImport = async () => {
     progress: 0
   })
   try {
-    const task = await adminAPI.accounts.createImportTask({
-      file: file.value,
+    const uploadSession = await adminAPI.accounts.createImportUploadSession({
+      filename: file.value.name,
+      total_bytes: file.value.size,
       group_ids: selectedGroupIDs.value,
-      skip_default_group_bind: true,
-      onUploadProgress: (progress) => {
-        appStore.updateToast(toastID, {
-          title: t('admin.accounts.dataImportTitle'),
-          subtitle: `${progress}%`,
-          message: t('admin.accounts.dataImportUploading'),
-          progress
-        })
-      }
+      skip_default_group_bind: true
     })
+    await uploadFileByChunks(file.value, uploadSession, toastID)
+    const task = await adminAPI.accounts.finalizeImportUploadSession(uploadSession.session_id)
     appStore.updateToast(toastID, {
       type: 'info',
       title: t('admin.accounts.dataImportTitle'),

@@ -1032,6 +1032,23 @@ export interface AdminDataImportTask {
   finished_at?: string
 }
 
+export type AdminDataImportUploadSessionStatus = 'pending' | 'uploading' | 'uploaded' | 'finalized'
+
+export interface AdminDataImportUploadSession {
+  session_id: string
+  filename: string
+  total_bytes: number
+  received_bytes: number
+  chunk_size: number
+  status: AdminDataImportUploadSessionStatus
+  group_ids?: number[]
+  skip_default_group_bind?: boolean
+  task_id?: string
+  created_at: string
+  updated_at: string
+  expires_at: string
+}
+
 export type AdminDataExportTaskStatus = 'queued' | 'running' | 'completed' | 'failed'
 
 export interface AdminDataExportTaskResult {

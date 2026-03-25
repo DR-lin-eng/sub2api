@@ -20,6 +20,7 @@ import type {
   AdminDataPayload,
   AdminDataImportResult,
   AdminDataImportTask,
+  AdminDataImportUploadSession,
   AdminDataExportTask,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse
@@ -603,6 +604,61 @@ export async function getImportTask(taskID: string): Promise<AdminDataImportTask
   return data
 }
 
+export async function createImportUploadSession(payload: {
+  filename: string
+  total_bytes: number
+  group_ids?: number[]
+  skip_default_group_bind?: boolean
+}): Promise<AdminDataImportUploadSession> {
+  const { data } = await apiClient.post<AdminDataImportUploadSession>('/admin/accounts/data/upload-sessions', payload, {
+    timeout: 0
+  })
+  return data
+}
+
+export async function getImportUploadSession(sessionID: string): Promise<AdminDataImportUploadSession> {
+  const { data } = await apiClient.get<AdminDataImportUploadSession>(`/admin/accounts/data/upload-sessions/${sessionID}`, {
+    timeout: 0
+  })
+  return data
+}
+
+export async function uploadImportChunk(payload: {
+  session_id: string
+  offset: number
+  chunk: Blob
+  onUploadProgress?: (progress: number) => void
+}): Promise<AdminDataImportUploadSession> {
+  const { data } = await apiClient.put<AdminDataImportUploadSession>(
+    `/admin/accounts/data/upload-sessions/${payload.session_id}`,
+    payload.chunk,
+    {
+      params: { offset: payload.offset },
+      timeout: 0,
+      headers: {
+        'Content-Type': 'application/octet-stream'
+      },
+      onUploadProgress: payload.onUploadProgress
+        ? (event) => {
+            const total = Number(event.total || payload.chunk.size || 0)
+            const loaded = Number(event.loaded || 0)
+            if (total > 0) {
+              payload.onUploadProgress!(Math.min(100, Math.max(0, Math.round((loaded / total) * 100))))
+            }
+          }
+        : undefined
+    }
+  )
+  return data
+}
+
+export async function finalizeImportUploadSession(sessionID: string): Promise<AdminDataImportTask> {
+  const { data } = await apiClient.post<AdminDataImportTask>(`/admin/accounts/data/upload-sessions/${sessionID}/finalize`, {}, {
+    timeout: 0
+  })
+  return data
+}
+
 export async function createExportTask(payload?: {
   ids?: number[]
   filters?: Pick<AccountListFilters, 'platform' | 'type' | 'status' | 'search' | 'group' | 'plan' | 'oauth_type' | 'tier_id'>
@@ -772,6 +828,10 @@ export const accountsAPI = {
   importData,
   createImportTask,
   getImportTask,
+  createImportUploadSession,
+  getImportUploadSession,
+  uploadImportChunk,
+  finalizeImportUploadSession,
   createExportTask,
   getExportTask,
   getAntigravityDefaultModelMapping,

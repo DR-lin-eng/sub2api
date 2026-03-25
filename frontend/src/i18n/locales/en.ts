@@ -1859,6 +1859,7 @@ export default {
       dataImportButton: 'Start Import',
       dataImporting: 'Importing...',
       dataImportUploading: 'Uploading file...',
+      dataImportUploadStalled: 'Upload stalled and could not resume. Please try again.',
       dataImportSelectFile: 'Please select a data file',
       dataImportParseFailed: 'Failed to parse data file',
       dataImportFailed: 'Data import failed',

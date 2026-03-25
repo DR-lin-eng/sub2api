@@ -60,6 +60,7 @@ type AccountHandler struct {
 	accountExportService    *service.AccountExportService
 	importTaskManager       *accountImportTaskManager
 	exportTaskManager       *accountExportTaskManager
+	uploadSessionManager    *accountImportUploadSessionManager
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -96,6 +97,7 @@ func NewAccountHandler(
 		accountExportService:    accountExportService,
 		importTaskManager:       defaultAccountImportTaskManager(),
 		exportTaskManager:       defaultAccountExportTaskManager(),
+		uploadSessionManager:    defaultAccountImportUploadSessionManager(),
 	}
 }
 
