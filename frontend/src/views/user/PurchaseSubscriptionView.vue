@@ -46,11 +46,41 @@
           </div>
         </div>
 
+        <div
+          v-else-if="isMixedContentBlocked"
+          class="flex h-full items-center justify-center p-10 text-center"
+        >
+          <div class="max-w-md">
+            <div
+              class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300"
+            >
+              <Icon name="externalLink" size="lg" />
+            </div>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('purchase.mixedContentTitle') }}
+            </h3>
+            <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
+              {{ t('purchase.mixedContentDesc') }}
+            </p>
+            <a
+              :href="purchaseUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              referrerpolicy="no-referrer"
+              class="btn btn-primary mt-6"
+            >
+              <Icon name="externalLink" size="sm" class="mr-1.5" :stroke-width="2" />
+              {{ t('purchase.openInNewTab') }}
+            </a>
+          </div>
+        </div>
+
         <div v-else class="purchase-embed-shell">
           <a
             :href="purchaseUrl"
             target="_blank"
             rel="noopener noreferrer"
+            referrerpolicy="no-referrer"
             class="btn btn-secondary btn-sm purchase-open-fab"
           >
             <Icon name="externalLink" size="sm" class="mr-1.5" :stroke-width="2" />
@@ -60,6 +90,7 @@
             :src="purchaseUrl"
             class="purchase-embed-frame"
             allowfullscreen
+            referrerpolicy="no-referrer"
           ></iframe>
         </div>
       </div>
@@ -71,14 +102,17 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores'
-import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
+import {
+  buildEmbeddedUrl,
+  detectTheme,
+  isEmbeddedUrl,
+  isMixedContentEmbeddingBlocked,
+} from '@/utils/embedded-url'
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
-const authStore = useAuthStore()
 
 const loading = ref(false)
 const purchaseTheme = ref<'light' | 'dark'>('light')
@@ -90,12 +124,16 @@ const purchaseEnabled = computed(() => {
 
 const purchaseUrl = computed(() => {
   const baseUrl = (appStore.cachedPublicSettings?.purchase_subscription_url || '').trim()
-  return buildEmbeddedUrl(baseUrl, authStore.user?.id, authStore.token, purchaseTheme.value, locale.value)
+  return buildEmbeddedUrl(baseUrl, purchaseTheme.value, locale.value)
 })
 
 const isValidUrl = computed(() => {
-  const url = purchaseUrl.value
-  return url.startsWith('http://') || url.startsWith('https://')
+  return isEmbeddedUrl(purchaseUrl.value)
+})
+
+const isMixedContentBlocked = computed(() => {
+  if (!isValidUrl.value || typeof window === 'undefined') return false
+  return isMixedContentEmbeddingBlocked(window.location.protocol, purchaseUrl.value)
 })
 
 onMounted(async () => {

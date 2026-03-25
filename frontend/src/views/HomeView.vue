@@ -4,12 +4,12 @@
     <!-- iframe mode -->
     <iframe
       v-if="isHomeContentUrl"
-      :src="homeContent.trim()"
+      :src="homeContentUrl"
       class="h-screen w-full border-0"
       allowfullscreen
+      referrerpolicy="no-referrer"
     ></iframe>
-    <!-- HTML mode - SECURITY: homeContent is admin-only setting, XSS risk is acceptable -->
-    <div v-else v-html="homeContent"></div>
+    <div v-else v-html="renderedHomeContent"></div>
   </div>
 
   <!-- Default Home Page -->
@@ -410,6 +410,8 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { renderRichContent } from '@/utils/sanitize'
+import { sanitizeUrl } from '@/utils/url'
 
 const { t } = useI18n()
 
@@ -422,12 +424,11 @@ const siteLogo = computed(() => appStore.cachedPublicSettings?.site_logo || appS
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'AI API Gateway Platform')
 const docUrl = computed(() => appStore.cachedPublicSettings?.doc_url || appStore.docUrl || '')
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
+const homeContentUrl = computed(() => sanitizeUrl(homeContent.value))
+const renderedHomeContent = computed(() => renderRichContent(homeContent.value))
 
 // Check if homeContent is a URL (for iframe display)
-const isHomeContentUrl = computed(() => {
-  const content = homeContent.value.trim()
-  return content.startsWith('http://') || content.startsWith('https://')
-})
+const isHomeContentUrl = computed(() => !!homeContentUrl.value)
 
 // Theme
 const isDark = ref(document.documentElement.classList.contains('dark'))

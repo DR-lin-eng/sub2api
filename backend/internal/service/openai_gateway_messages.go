@@ -251,6 +251,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	var finalResponse *apicompat.ResponsesResponse
 	var usage OpenAIUsage
+	partial := newBufferedResponsesAccumulator(originalModel, requestID)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -268,6 +269,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			)
 			continue
 		}
+		partial.applyEvent(&event)
 
 		// Terminal events carry the complete ResponsesResponse with output + usage.
 		if (event.Type == "response.completed" || event.Type == "response.incomplete" || event.Type == "response.failed") &&
@@ -295,8 +297,15 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	}
 
 	if finalResponse == nil {
-		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
-		return nil, fmt.Errorf("upstream stream ended without terminal event")
+		if partial.hasUsefulOutput() {
+			logger.L().Info("openai messages buffered: upstream ended without terminal event, returning partial response",
+				zap.String("request_id", requestID),
+			)
+			finalResponse = partial.responseSnapshot()
+		} else {
+			writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
+			return nil, fmt.Errorf("upstream stream ended without terminal event")
+		}
 	}
 
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)

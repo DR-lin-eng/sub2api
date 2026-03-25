@@ -43,11 +43,38 @@
           </div>
         </div>
 
+        <div v-else-if="isMixedContentBlocked" class="flex h-full items-center justify-center p-10 text-center">
+          <div class="max-w-md">
+            <div
+              class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300"
+            >
+              <Icon name="externalLink" size="lg" />
+            </div>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('customPage.mixedContentTitle') }}
+            </h3>
+            <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
+              {{ t('customPage.mixedContentDesc') }}
+            </p>
+            <a
+              :href="embeddedUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              referrerpolicy="no-referrer"
+              class="btn btn-primary mt-6"
+            >
+              <Icon name="externalLink" size="sm" class="mr-1.5" :stroke-width="2" />
+              {{ t('customPage.openInNewTab') }}
+            </a>
+          </div>
+        </div>
+
         <div v-else class="custom-embed-shell">
           <a
             :href="embeddedUrl"
             target="_blank"
             rel="noopener noreferrer"
+            referrerpolicy="no-referrer"
             class="btn btn-secondary btn-sm custom-open-fab"
           >
             <Icon name="externalLink" size="sm" class="mr-1.5" :stroke-width="2" />
@@ -57,6 +84,7 @@
             :src="embeddedUrl"
             class="custom-embed-frame"
             allowfullscreen
+            referrerpolicy="no-referrer"
           ></iframe>
         </div>
       </div>
@@ -73,7 +101,12 @@ import { useAuthStore } from '@/stores/auth'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
+import {
+  buildEmbeddedUrl,
+  detectTheme,
+  isEmbeddedUrl,
+  isMixedContentEmbeddingBlocked,
+} from '@/utils/embedded-url'
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -102,18 +135,16 @@ const menuItem = computed(() => {
 
 const embeddedUrl = computed(() => {
   if (!menuItem.value) return ''
-  return buildEmbeddedUrl(
-    menuItem.value.url,
-    authStore.user?.id,
-    authStore.token,
-    pageTheme.value,
-    locale.value,
-  )
+  return buildEmbeddedUrl(menuItem.value.url, pageTheme.value, locale.value)
 })
 
 const isValidUrl = computed(() => {
-  const url = embeddedUrl.value
-  return url.startsWith('http://') || url.startsWith('https://')
+  return isEmbeddedUrl(embeddedUrl.value)
+})
+
+const isMixedContentBlocked = computed(() => {
+  if (!isValidUrl.value || typeof window === 'undefined') return false
+  return isMixedContentEmbeddingBlocked(window.location.protocol, embeddedUrl.value)
 })
 
 onMounted(async () => {

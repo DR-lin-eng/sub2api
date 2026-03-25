@@ -182,7 +182,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	soraGenerationRepository := repository.NewSoraGenerationRepository(db)
 	soraQuotaService := service.NewSoraQuotaService(userRepository, groupRepository, settingService)
 	soraGenerationService := service.NewSoraGenerationService(soraGenerationRepository, soraS3Storage, soraQuotaService)
-	settingHandler := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, soraS3Storage)
+	settingHandler := admin.NewSettingHandler(settingService, userService, emailService, turnstileService, opsService, soraS3Storage)
 	opsHandler := admin.NewOpsHandler(opsService)
 	updateCache := repository.NewUpdateCache(redisClient)
 	gitHubReleaseClient := repository.ProvideGitHubReleaseClient(configConfig)

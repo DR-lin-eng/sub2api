@@ -723,6 +723,9 @@ func TestValidateAbsoluteHTTPURL(t *testing.T) {
 	if err := ValidateAbsoluteHTTPURL("https://example.com/path"); err != nil {
 		t.Fatalf("ValidateAbsoluteHTTPURL valid url error: %v", err)
 	}
+	if err := ValidateAbsoluteHTTPURL("http://example.com/path"); err != nil {
+		t.Fatalf("ValidateAbsoluteHTTPURL should allow http: %v", err)
+	}
 	if err := ValidateAbsoluteHTTPURL(""); err == nil {
 		t.Fatalf("ValidateAbsoluteHTTPURL should reject empty url")
 	}
@@ -734,6 +737,18 @@ func TestValidateAbsoluteHTTPURL(t *testing.T) {
 	}
 	if err := ValidateAbsoluteHTTPURL("https://example.com/#frag"); err == nil {
 		t.Fatalf("ValidateAbsoluteHTTPURL should reject fragment")
+	}
+}
+
+func TestValidateAbsoluteHTTPSURL(t *testing.T) {
+	if err := ValidateAbsoluteHTTPSURL("https://example.com/path"); err != nil {
+		t.Fatalf("ValidateAbsoluteHTTPSURL valid url error: %v", err)
+	}
+	if err := ValidateAbsoluteHTTPSURL("http://example.com/path"); err == nil {
+		t.Fatalf("ValidateAbsoluteHTTPSURL should reject http")
+	}
+	if err := ValidateAbsoluteHTTPSURL("mailto:user@example.com"); err == nil {
+		t.Fatalf("ValidateAbsoluteHTTPSURL should reject non-http scheme")
 	}
 }
 

@@ -4420,7 +4420,7 @@ export default {
         enabledHint: '仅在标准模式（非简单模式）下展示',
         url: '充值/订阅页面 URL',
         urlPlaceholder: 'https://example.com/purchase',
-        urlHint: '必须是完整的 http(s) 链接',
+        urlHint: '必须是完整的 http(s) 链接。推荐使用 HTTPS；HTTP 更适合可信内网或测试环境。',
         iframeWarning:
           '⚠️ iframe 提示：部分网站会通过 X-Frame-Options 或 CSP（frame-ancestors）禁止被 iframe 嵌入，出现空白时可引导用户使用”新窗口打开”。',
         integrationDoc: '支付集成文档',
@@ -4813,7 +4813,10 @@ export default {
     notEnabledTitle: '该功能未开启',
     notEnabledDesc: '管理员暂未开启充值/订阅入口，请联系管理员。',
     notConfiguredTitle: '充值/订阅链接未配置',
-    notConfiguredDesc: '管理员已开启入口，但尚未配置充值/订阅链接，请联系管理员。'
+    notConfiguredDesc: '管理员已开启入口，但尚未配置有效的充值/订阅链接，请联系管理员。',
+    mixedContentTitle: '请改用新窗口打开',
+    mixedContentDesc:
+      '当前页面通过 HTTPS 打开，但目标页面使用的是 HTTP。浏览器会拦截这种 iframe 混合内容，所以这里只提供新窗口打开。'
   },
 
   // Custom Page (iframe embed)
@@ -4824,6 +4827,9 @@ export default {
     notFoundDesc: '该自定义页面不存在或已被删除。',
     notConfiguredTitle: '页面链接未配置',
     notConfiguredDesc: '该自定义页面的 URL 未正确配置。',
+    mixedContentTitle: '请改用新窗口打开',
+    mixedContentDesc:
+      '当前页面通过 HTTPS 打开，但目标页面使用的是 HTTP。浏览器会拦截这种 iframe 混合内容，所以这里只提供新窗口打开。',
   },
 
   // Announcements Page

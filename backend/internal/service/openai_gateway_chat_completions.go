@@ -246,6 +246,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	var finalResponse *apicompat.ResponsesResponse
 	var usage OpenAIUsage
+	partial := newBufferedResponsesAccumulator(originalModel, requestID)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -262,6 +263,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			)
 			continue
 		}
+		partial.applyEvent(&event)
 
 		if (event.Type == "response.completed" || event.Type == "response.incomplete" || event.Type == "response.failed") &&
 			event.Response != nil {
@@ -288,8 +290,15 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	}
 
 	if finalResponse == nil {
-		writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
-		return nil, fmt.Errorf("upstream stream ended without terminal event")
+		if partial.hasUsefulOutput() {
+			logger.L().Info("openai chat_completions buffered: upstream ended without terminal event, returning partial response",
+				zap.String("request_id", requestID),
+			)
+			finalResponse = partial.responseSnapshot()
+		} else {
+			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
+			return nil, fmt.Errorf("upstream stream ended without terminal event")
+		}
 	}
 
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)

@@ -4255,7 +4255,7 @@ export default {
         enabledHint: 'Only shown in standard mode (not simple mode)',
         url: 'Recharge / Subscription URL',
         urlPlaceholder: 'https://example.com/purchase',
-        urlHint: 'Must be an absolute http(s) URL',
+        urlHint: 'Must be an absolute http(s) URL. HTTPS is recommended; HTTP is best limited to trusted LAN/test environments.',
         iframeWarning:
           '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.',
         integrationDoc: 'Payment Integration Docs',
@@ -4650,7 +4650,10 @@ export default {
     notEnabledDesc: 'The administrator has not enabled the recharge/subscription entry. Please contact admin.',
     notConfiguredTitle: 'Recharge / Subscription URL not configured',
     notConfiguredDesc:
-      'The administrator enabled the entry but has not configured a recharge/subscription URL. Please contact admin.'
+      'The administrator enabled the entry but has not configured a valid recharge/subscription URL. Please contact admin.',
+    mixedContentTitle: 'Open in a new tab instead',
+    mixedContentDesc:
+      'This page is loaded over HTTPS, but the target page uses HTTP. Browsers block that iframe for security reasons, so we only offer a new-tab fallback here.'
   },
 
   // Custom Page (iframe embed)
@@ -4661,6 +4664,9 @@ export default {
     notFoundDesc: 'This custom page does not exist or has been removed.',
     notConfiguredTitle: 'Page URL not configured',
     notConfiguredDesc: 'The URL for this custom page has not been properly configured.',
+    mixedContentTitle: 'Open in a new tab instead',
+    mixedContentDesc:
+      'This page is loaded over HTTPS, but the target page uses HTTP. Browsers block that iframe for security reasons, so we only offer a new-tab fallback here.',
   },
 
   // Announcements Page

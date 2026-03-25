@@ -2543,6 +2543,15 @@ func GetServerAddress() string {
 
 // ValidateAbsoluteHTTPURL 验证是否为有效的绝对 HTTP(S) URL
 func ValidateAbsoluteHTTPURL(raw string) error {
+	return validateAbsoluteHTTPURL(raw, false)
+}
+
+// ValidateAbsoluteHTTPSURL 验证是否为有效的绝对 HTTPS URL
+func ValidateAbsoluteHTTPSURL(raw string) error {
+	return validateAbsoluteHTTPURL(raw, true)
+}
+
+func validateAbsoluteHTTPURL(raw string, httpsOnly bool) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fmt.Errorf("empty url")
@@ -2554,7 +2563,11 @@ func ValidateAbsoluteHTTPURL(raw string) error {
 	if !u.IsAbs() {
 		return fmt.Errorf("must be absolute")
 	}
-	if !isHTTPScheme(u.Scheme) {
+	if httpsOnly {
+		if !strings.EqualFold(u.Scheme, "https") {
+			return fmt.Errorf("unsupported scheme: %s", u.Scheme)
+		}
+	} else if !isHTTPScheme(u.Scheme) {
 		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
 	if strings.TrimSpace(u.Host) == "" {

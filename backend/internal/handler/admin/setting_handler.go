@@ -38,6 +38,7 @@ func generateMenuItemID() (string, error) {
 // SettingHandler 系统设置处理器
 type SettingHandler struct {
 	settingService   *service.SettingService
+	userService      *service.UserService
 	emailService     *service.EmailService
 	turnstileService *service.TurnstileService
 	opsService       *service.OpsService
@@ -45,9 +46,10 @@ type SettingHandler struct {
 }
 
 // NewSettingHandler 创建系统设置处理器
-func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, soraS3Storage *service.SoraS3Storage) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, userService *service.UserService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, soraS3Storage *service.SoraS3Storage) *SettingHandler {
 	return &SettingHandler{
 		settingService:   settingService,
+		userService:      userService,
 		emailService:     emailService,
 		turnstileService: turnstileService,
 		opsService:       opsService,
@@ -999,7 +1001,23 @@ func (h *SettingHandler) GetAdminAPIKey(c *gin.Context) {
 // RegenerateAdminAPIKey 生成/重新生成管理员 API Key
 // POST /api/v1/admin/settings/admin-api-key/regenerate
 func (h *SettingHandler) RegenerateAdminAPIKey(c *gin.Context) {
-	key, err := h.settingService.GenerateAdminAPIKey(c.Request.Context())
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Error(c, http.StatusUnauthorized, "Authorization required")
+		return
+	}
+
+	adminTokenVersion := int64(0)
+	if h.userService != nil {
+		admin, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+		if err != nil || admin == nil || !admin.IsActive() || !admin.IsAdmin() {
+			response.Error(c, http.StatusUnauthorized, "Admin user not found")
+			return
+		}
+		adminTokenVersion = admin.TokenVersion
+	}
+
+	key, err := h.settingService.GenerateAdminAPIKey(c.Request.Context(), subject.UserID, adminTokenVersion)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

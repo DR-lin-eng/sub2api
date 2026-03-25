@@ -221,58 +221,92 @@ func normalizeCodexModel(model string) string {
 		modelID = parts[len(parts)-1]
 	}
 
-	if mapped := getNormalizedCodexModel(modelID); mapped != "" {
-		return mapped
+	candidates := []string{modelID}
+	if baseModel, _, stripped := splitOpenAIModelReasoningVariant(modelID); stripped && baseModel != "" && !strings.EqualFold(baseModel, modelID) {
+		candidates = append(candidates, baseModel)
 	}
 
-	normalized := strings.ToLower(modelID)
+	for _, candidate := range candidates {
+		if mapped := getNormalizedCodexModel(candidate); mapped != "" {
+			return mapped
+		}
+	}
 
-	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
-		return "gpt-5.4-mini"
-	}
-	if strings.Contains(normalized, "gpt-5.4-nano") || strings.Contains(normalized, "gpt 5.4 nano") {
-		return "gpt-5.4-nano"
-	}
-	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
-		return "gpt-5.4"
-	}
-	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
-		return "gpt-5.2-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
-		return "gpt-5.2"
-	}
-	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
-		return "gpt-5.3-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
-		return "gpt-5.3-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex-max") || strings.Contains(normalized, "gpt 5.1 codex max") {
-		return "gpt-5.1-codex-max"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex-mini") || strings.Contains(normalized, "gpt 5.1 codex mini") {
-		return "gpt-5.1-codex-mini"
-	}
-	if strings.Contains(normalized, "codex-mini-latest") ||
-		strings.Contains(normalized, "gpt-5-codex-mini") ||
-		strings.Contains(normalized, "gpt 5 codex mini") {
-		return "codex-mini-latest"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex") || strings.Contains(normalized, "gpt 5.1 codex") {
-		return "gpt-5.1-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.1") || strings.Contains(normalized, "gpt 5.1") {
-		return "gpt-5.1"
-	}
-	if strings.Contains(normalized, "codex") {
-		return "gpt-5.1-codex"
-	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.1"
+	for _, candidate := range candidates {
+		normalized := strings.ToLower(candidate)
+
+		if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
+			return "gpt-5.4-mini"
+		}
+		if strings.Contains(normalized, "gpt-5.4-nano") || strings.Contains(normalized, "gpt 5.4 nano") {
+			return "gpt-5.4-nano"
+		}
+		if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
+			return "gpt-5.4"
+		}
+		if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
+			return "gpt-5.2-codex"
+		}
+		if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
+			return "gpt-5.2"
+		}
+		if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
+			return "gpt-5.3-codex"
+		}
+		if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
+			return "gpt-5.3-codex"
+		}
+		if strings.Contains(normalized, "gpt-5.1-codex-max") || strings.Contains(normalized, "gpt 5.1 codex max") {
+			return "gpt-5.1-codex-max"
+		}
+		if strings.Contains(normalized, "gpt-5.1-codex-mini") || strings.Contains(normalized, "gpt 5.1 codex mini") {
+			return "gpt-5.1-codex-mini"
+		}
+		if strings.Contains(normalized, "codex-mini-latest") ||
+			strings.Contains(normalized, "gpt-5-codex-mini") ||
+			strings.Contains(normalized, "gpt 5 codex mini") {
+			return "codex-mini-latest"
+		}
+		if strings.Contains(normalized, "gpt-5.1-codex") || strings.Contains(normalized, "gpt 5.1 codex") {
+			return "gpt-5.1-codex"
+		}
+		if strings.Contains(normalized, "gpt-5.1") || strings.Contains(normalized, "gpt 5.1") {
+			return "gpt-5.1"
+		}
+		if strings.Contains(normalized, "codex") {
+			return "gpt-5.1-codex"
+		}
+		if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
+			return "gpt-5.1"
+		}
 	}
 
 	return "gpt-5.1"
+}
+
+func splitOpenAIModelReasoningVariant(model string) (baseModel string, reasoningEffort string, stripped bool) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", "", false
+	}
+
+	for i := len(model) - 1; i >= 0; i-- {
+		switch model[i] {
+		case '-', '_', ' ':
+			suffix := strings.TrimSpace(model[i+1:])
+			effort := normalizeOpenAIReasoningEffort(suffix)
+			if suffix != "" && (effort != "" || strings.EqualFold(suffix, "none") || strings.EqualFold(suffix, "minimal")) {
+				base := strings.TrimSpace(model[:i])
+				if base == "" {
+					return model, effort, false
+				}
+				return base, effort, true
+			}
+			return model, "", false
+		}
+	}
+
+	return model, "", false
 }
 
 func SupportsVerbosity(model string) bool {

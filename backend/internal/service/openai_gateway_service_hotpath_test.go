@@ -87,6 +87,13 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "high",
 		},
 		{
+			name:      "支持 模型-推理强度 风格",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.4-xhigh",
+			wantNil:   false,
+			wantValue: "xhigh",
+		},
+		{
 			name:    "未知后缀不返回",
 			body:    []byte(`{"input":"hi"}`),
 			model:   "gpt-5-unknown",

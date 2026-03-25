@@ -122,8 +122,95 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	})
 }
 
+func TestAdminAuthAPIKeyRespectsBoundAdminTokenVersion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	admin := &service.User{
+		ID:           7,
+		Email:        "admin@example.com",
+		Role:         service.RoleAdmin,
+		Status:       service.StatusActive,
+		TokenVersion: 3,
+		Concurrency:  2,
+	}
+	repo := &settingRepoStub{values: map[string]string{}}
+	settingService := service.NewSettingService(repo, &config.Config{})
+	key, err := settingService.GenerateAdminAPIKey(context.Background(), admin.ID, admin.TokenVersion)
+	require.NoError(t, err)
+
+	userRepo := &stubUserRepo{
+		getByID: func(ctx context.Context, id int64) (*service.User, error) {
+			if id != admin.ID {
+				return nil, service.ErrUserNotFound
+			}
+			clone := *admin
+			return &clone, nil
+		},
+		getFirstAdmin: func(ctx context.Context) (*service.User, error) {
+			clone := *admin
+			return &clone, nil
+		},
+	}
+	userService := service.NewUserService(userRepo, nil, nil)
+
+	router := gin.New()
+	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(nil, userService, settingService)))
+	router.GET("/t", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	t.Run("bound_admin_allows", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/t", nil)
+		req.Header.Set("x-api-key", key)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("token_version_change_revokes_key", func(t *testing.T) {
+		admin.TokenVersion++
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/t", nil)
+		req.Header.Set("x-api-key", key)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+		require.Contains(t, w.Body.String(), "INVALID_ADMIN_KEY")
+	})
+}
+
+func TestAdminAuthAPIKeyRejectsLegacyUnboundKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repo := &settingRepoStub{
+		values: map[string]string{
+			service.SettingKeyAdminAPIKey: "admin-legacy-test-key",
+		},
+	}
+	settingService := service.NewSettingService(repo, &config.Config{})
+	userService := service.NewUserService(&stubUserRepo{
+		getFirstAdmin: func(ctx context.Context) (*service.User, error) {
+			return &service.User{ID: 1, Role: service.RoleAdmin, Status: service.StatusActive}, nil
+		},
+	}, nil, nil)
+
+	router := gin.New()
+	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(nil, userService, settingService)))
+	router.GET("/t", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set("x-api-key", "admin-legacy-test-key")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Contains(t, w.Body.String(), "INVALID_ADMIN_KEY")
+}
+
 type stubUserRepo struct {
-	getByID func(ctx context.Context, id int64) (*service.User, error)
+	getByID      func(ctx context.Context, id int64) (*service.User, error)
+	getFirstAdmin func(ctx context.Context) (*service.User, error)
 }
 
 func (s *stubUserRepo) Create(ctx context.Context, user *service.User) error {
@@ -142,7 +229,10 @@ func (s *stubUserRepo) GetByEmail(ctx context.Context, email string) (*service.U
 }
 
 func (s *stubUserRepo) GetFirstAdmin(ctx context.Context) (*service.User, error) {
-	panic("unexpected GetFirstAdmin call")
+	if s.getFirstAdmin == nil {
+		panic("GetFirstAdmin not stubbed")
+	}
+	return s.getFirstAdmin(ctx)
 }
 
 func (s *stubUserRepo) Update(ctx context.Context, user *service.User) error {
@@ -199,4 +289,50 @@ func (s *stubUserRepo) EnableTotp(ctx context.Context, userID int64) error {
 
 func (s *stubUserRepo) DisableTotp(ctx context.Context, userID int64) error {
 	panic("unexpected DisableTotp call")
+}
+
+type settingRepoStub struct {
+	values map[string]string
+}
+
+func (s *settingRepoStub) Get(ctx context.Context, key string) (*service.Setting, error) {
+	panic("unexpected Get call")
+}
+
+func (s *settingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	if value, ok := s.values[key]; ok {
+		return value, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
+func (s *settingRepoStub) Set(ctx context.Context, key, value string) error {
+	if s.values == nil {
+		s.values = make(map[string]string)
+	}
+	s.values[key] = value
+	return nil
+}
+
+func (s *settingRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value, ok := s.values[key]; ok {
+			out[key] = value
+		}
+	}
+	return out, nil
+}
+
+func (s *settingRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
+	panic("unexpected SetMultiple call")
+}
+
+func (s *settingRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
+	panic("unexpected GetAll call")
+}
+
+func (s *settingRepoStub) Delete(ctx context.Context, key string) error {
+	delete(s.values, key)
+	return nil
 }

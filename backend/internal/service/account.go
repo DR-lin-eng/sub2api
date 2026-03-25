@@ -539,7 +539,20 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 		return mappedModel, true
 	}
 	// 通配符匹配（最长优先）
-	return matchWildcardMappingResult(mapping, requestedModel)
+	if mappedModel, matched = matchWildcardMappingResult(mapping, requestedModel); matched {
+		return mappedModel, true
+	}
+	// 对 OpenAI/Codex 风格的 "模型-推理强度" 变体做一次基础模型回退匹配，
+	// 让诸如 gpt-5.4-xhigh 可以命中已配置的 gpt-5.4 映射规则。
+	if baseModel, _, stripped := splitOpenAIModelReasoningVariant(requestedModel); stripped && baseModel != "" && baseModel != requestedModel {
+		if mappedModel, exists := mapping[baseModel]; exists {
+			return mappedModel, true
+		}
+		if mappedModel, matched = matchWildcardMappingResult(mapping, baseModel); matched {
+			return mappedModel, true
+		}
+	}
+	return requestedModel, false
 }
 
 func (a *Account) GetBaseURL() string {

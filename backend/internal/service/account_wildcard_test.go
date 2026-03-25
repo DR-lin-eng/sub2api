@@ -260,6 +260,26 @@ func TestAccountGetMappedModel(t *testing.T) {
 			requestedModel: "claude-sonnet-4-5",
 			expected:       "claude-sonnet-4-5",
 		},
+		{
+			name: "reasoning suffix falls back to base exact match",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.4": "gpt-5.4-mini",
+				},
+			},
+			requestedModel: "gpt-5.4-xhigh",
+			expected:       "gpt-5.4-mini",
+		},
+		{
+			name: "reasoning suffix falls back to base wildcard match",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.4*": "gpt-5.4-mini",
+				},
+			},
+			requestedModel: "gpt-5.4-xhigh",
+			expected:       "gpt-5.4-mini",
+		},
 	}
 
 	for _, tt := range tests {

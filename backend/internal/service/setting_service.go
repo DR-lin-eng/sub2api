@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -78,6 +81,28 @@ var backendModeSF singleflight.Group
 const backendModeCacheTTL = 60 * time.Second
 const backendModeErrorTTL = 5 * time.Second
 const backendModeDBTimeout = 5 * time.Second
+
+const adminAPIKeyRecordVersion = 2
+
+var (
+	homeContentScriptTagPattern  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script\s*>`)
+	homeContentEventAttrPattern  = regexp.MustCompile(`(?i)\son[a-z0-9_-]+\s*=\s*(".*?"|'.*?'|[^\s>]+)`)
+	homeContentJavascriptPattern = regexp.MustCompile(`(?i)javascript:`)
+)
+
+type adminAPIKeyRecord struct {
+	Version           int    `json:"version"`
+	KeyHash           string `json:"key_hash"`
+	MaskedKey         string `json:"masked_key"`
+	AdminUserID       int64  `json:"admin_user_id"`
+	AdminTokenVersion int64  `json:"admin_token_version"`
+}
+
+type AdminAPIKeyBinding struct {
+	AdminUserID       int64
+	AdminTokenVersion int64
+	Legacy            bool
+}
 
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
@@ -189,15 +214,48 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
 		ContactInfo:                      settings[SettingKeyContactInfo],
 		DocURL:                           settings[SettingKeyDocURL],
-		HomeContent:                      settings[SettingKeyHomeContent],
+		HomeContent:                      sanitizePublicHomeContent(settings[SettingKeyHomeContent]),
 		HideCcsImportButton:              settings[SettingKeyHideCcsImportButton] == "true",
 		PurchaseSubscriptionEnabled:      settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
-		PurchaseSubscriptionURL:          strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
+		PurchaseSubscriptionURL:          sanitizePublicEmbeddedURL(settings[SettingKeyPurchaseSubscriptionURL]),
 		SoraClientEnabled:                settings[SettingKeySoraClientEnabled] == "true",
 		CustomMenuItems:                  settings[SettingKeyCustomMenuItems],
 		LinuxDoOAuthEnabled:              linuxDoEnabled,
 		BackendModeEnabled:               settings[SettingKeyBackendModeEnabled] == "true",
 	}, nil
+}
+
+func sanitizePublicHomeContent(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if isAbsoluteHTTPURL(raw) {
+		return raw
+	}
+	sanitized := homeContentScriptTagPattern.ReplaceAllString(raw, "")
+	sanitized = homeContentEventAttrPattern.ReplaceAllString(sanitized, "")
+	sanitized = homeContentJavascriptPattern.ReplaceAllString(sanitized, "blocked:")
+	return strings.TrimSpace(sanitized)
+}
+
+func isAbsoluteHTTPURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !u.IsAbs() || strings.TrimSpace(u.Host) == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
+}
+
+func sanitizePublicEmbeddedURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if err := config.ValidateAbsoluteHTTPURL(raw); err != nil {
+		return ""
+	}
+	return raw
 }
 
 // SetOnUpdateCallback sets a callback function to be called when settings are updated
@@ -287,6 +345,7 @@ func filterUserVisibleMenuItems(raw string) json.RawMessage {
 	}
 	var items []struct {
 		Visibility string `json:"visibility"`
+		URL        string `json:"url"`
 	}
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return json.RawMessage("[]")
@@ -300,7 +359,7 @@ func filterUserVisibleMenuItems(raw string) json.RawMessage {
 
 	var filtered []json.RawMessage
 	for i, item := range items {
-		if item.Visibility != "admin" {
+		if item.Visibility != "admin" && extractOriginFromURL(item.URL) != "" {
 			filtered = append(filtered, fullItems[i])
 		}
 	}
@@ -995,8 +1054,42 @@ func (s *SettingService) GetIdentityPatchPrompt(ctx context.Context) string {
 	return value
 }
 
+func hashAdminAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+func maskAdminAPIKey(key string) string {
+	if len(key) > 14 {
+		return key[:10] + "..." + key[len(key)-4:]
+	}
+	return key
+}
+
+func parseAdminAPIKeyRecord(raw string) (*adminAPIKeyRecord, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return nil, false
+	}
+	var record adminAPIKeyRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return nil, false
+	}
+	if record.Version != adminAPIKeyRecordVersion || record.KeyHash == "" || record.AdminUserID <= 0 {
+		return nil, false
+	}
+	if record.MaskedKey == "" {
+		record.MaskedKey = "configured"
+	}
+	return &record, true
+}
+
 // GenerateAdminAPIKey 生成新的管理员 API Key
-func (s *SettingService) GenerateAdminAPIKey(ctx context.Context) (string, error) {
+func (s *SettingService) GenerateAdminAPIKey(ctx context.Context, adminUserID int64, adminTokenVersion int64) (string, error) {
+	if adminUserID <= 0 {
+		return "", fmt.Errorf("invalid admin user id")
+	}
+
 	// 生成 32 字节随机数 = 64 位十六进制字符
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -1004,9 +1097,19 @@ func (s *SettingService) GenerateAdminAPIKey(ctx context.Context) (string, error
 	}
 
 	key := AdminAPIKeyPrefix + hex.EncodeToString(bytes)
+	recordBytes, err := json.Marshal(adminAPIKeyRecord{
+		Version:           adminAPIKeyRecordVersion,
+		KeyHash:           hashAdminAPIKey(key),
+		MaskedKey:         maskAdminAPIKey(key),
+		AdminUserID:       adminUserID,
+		AdminTokenVersion: adminTokenVersion,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal admin api key record: %w", err)
+	}
 
 	// 存储到 settings 表
-	if err := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, key); err != nil {
+	if err := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, string(recordBytes)); err != nil {
 		return "", fmt.Errorf("save admin api key: %w", err)
 	}
 
@@ -1027,27 +1130,41 @@ func (s *SettingService) GetAdminAPIKeyStatus(ctx context.Context) (maskedKey st
 		return "", false, nil
 	}
 
-	// 脱敏：显示前 10 位和后 4 位
-	if len(key) > 14 {
-		maskedKey = key[:10] + "..." + key[len(key)-4:]
-	} else {
-		maskedKey = key
+	if record, ok := parseAdminAPIKeyRecord(key); ok {
+		return record.MaskedKey, true, nil
 	}
 
-	return maskedKey, true, nil
+	return maskAdminAPIKey(key), true, nil
 }
 
-// GetAdminAPIKey 获取完整的管理员 API Key（仅供内部验证使用）
-// 如果未配置返回空字符串和 nil 错误，只有数据库错误时才返回 error
-func (s *SettingService) GetAdminAPIKey(ctx context.Context) (string, error) {
-	key, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
+// ValidateAdminAPIKey 校验管理员 API Key 并返回其绑定主体。
+// 旧版纯文本 Key 会被视为需要轮换，不再接受认证。
+func (s *SettingService) ValidateAdminAPIKey(ctx context.Context, presentedKey string) (*AdminAPIKeyBinding, error) {
+	presentedKey = strings.TrimSpace(presentedKey)
+	if presentedKey == "" {
+		return nil, nil
+	}
+
+	storedKey, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
 	if err != nil {
 		if errors.Is(err, ErrSettingNotFound) {
-			return "", nil // 未配置，返回空字符串
+			return nil, nil
 		}
-		return "", err // 数据库错误
+		return nil, err
 	}
-	return key, nil
+	if stored := strings.TrimSpace(storedKey); stored != "" {
+		if record, ok := parseAdminAPIKeyRecord(stored); ok {
+			if subtle.ConstantTimeCompare([]byte(hashAdminAPIKey(presentedKey)), []byte(record.KeyHash)) != 1 {
+				return nil, nil
+			}
+			return &AdminAPIKeyBinding{
+				AdminUserID:       record.AdminUserID,
+				AdminTokenVersion: record.AdminTokenVersion,
+			}, nil
+		}
+		return nil, nil
+	}
+	return nil, nil
 }
 
 // DeleteAdminAPIKey 删除管理员 API Key

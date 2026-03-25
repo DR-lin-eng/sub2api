@@ -58,6 +58,32 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 			defaultMappedModel: "gpt-4o-mini",
 			expectedModel:      "gpt-5.4",
 		},
+		{
+			name: "reasoning suffix falls back to base model exact mapping",
+			account: &Account{
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gpt-5.4": "gpt-5.4-mini",
+					},
+				},
+			},
+			requestedModel:     "gpt-5.4-xhigh",
+			defaultMappedModel: "gpt-4o-mini",
+			expectedModel:      "gpt-5.4-mini",
+		},
+		{
+			name: "reasoning suffix falls back to wildcard mapping",
+			account: &Account{
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gpt-5.4*": "gpt-5.4-mini",
+					},
+				},
+			},
+			requestedModel:     "gpt-5.4-xhigh",
+			defaultMappedModel: "gpt-4o-mini",
+			expectedModel:      "gpt-5.4-mini",
+		},
 	}
 
 	for _, tt := range tests {

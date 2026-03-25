@@ -20,6 +20,7 @@ type snapshotCacheEntry struct {
 type snapshotCache struct {
 	mu    sync.RWMutex
 	ttl   time.Duration
+	max   int
 	items map[string]snapshotCacheEntry
 	sf    singleflight.Group
 }
@@ -35,6 +36,7 @@ func newSnapshotCache(ttl time.Duration) *snapshotCache {
 	}
 	return &snapshotCache{
 		ttl:   ttl,
+		max:   256,
 		items: make(map[string]snapshotCacheEntry),
 	}
 }
@@ -73,7 +75,9 @@ func (c *snapshotCache) Set(key string, payload any) snapshotCacheEntry {
 		return entry
 	}
 	c.mu.Lock()
+	c.pruneExpiredLocked(time.Now())
 	c.items[key] = entry
+	c.evictOverflowLocked()
 	c.mu.Unlock()
 	return entry
 }
@@ -120,6 +124,39 @@ func buildETagFromAny(payload any) string {
 	}
 	sum := sha256.Sum256(raw)
 	return "\"" + hex.EncodeToString(sum[:]) + "\""
+}
+
+func (c *snapshotCache) pruneExpiredLocked(now time.Time) {
+	if c == nil {
+		return
+	}
+	for key, entry := range c.items {
+		if now.After(entry.ExpiresAt) {
+			delete(c.items, key)
+		}
+	}
+}
+
+func (c *snapshotCache) evictOverflowLocked() {
+	if c == nil || c.max <= 0 || len(c.items) <= c.max {
+		return
+	}
+	for len(c.items) > c.max {
+		oldestKey := ""
+		var oldest time.Time
+		first := true
+		for key, entry := range c.items {
+			if first || entry.ExpiresAt.Before(oldest) {
+				oldestKey = key
+				oldest = entry.ExpiresAt
+				first = false
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(c.items, oldestKey)
+	}
 }
 
 func parseBoolQueryWithDefault(raw string, def bool) bool {

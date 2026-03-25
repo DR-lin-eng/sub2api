@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -61,4 +62,35 @@ func TestSettingService_GetPublicSettings_ExposesRegistrationEmailSuffixWhitelis
 	settings, err := svc.GetPublicSettings(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, []string{"@example.com", "@foo.bar"}, settings.RegistrationEmailSuffixWhitelist)
+}
+
+func TestSettingService_GetPublicSettings_SanitizesHomeContent(t *testing.T) {
+	repo := &settingPublicRepoStub{
+		values: map[string]string{
+			SettingKeyHomeContent: `<div onclick="steal()">hello</div><script>alert(1)</script><a href="javascript:alert(1)">x</a>`,
+		},
+	}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, settings.HomeContent, "<script")
+	require.NotContains(t, settings.HomeContent, "onclick=")
+	require.NotContains(t, strings.ToLower(settings.HomeContent), "javascript:")
+	require.Contains(t, settings.HomeContent, "hello")
+}
+
+func TestSettingService_GetPublicSettings_AllowsHTTPEmbeddedURL(t *testing.T) {
+	repo := &settingPublicRepoStub{
+		values: map[string]string{
+			SettingKeyPurchaseSubscriptionEnabled: "true",
+			SettingKeyPurchaseSubscriptionURL:     "http://pay.example.com/checkout",
+		},
+	}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.PurchaseSubscriptionEnabled)
+	require.Equal(t, "http://pay.example.com/checkout", settings.PurchaseSubscriptionURL)
 }

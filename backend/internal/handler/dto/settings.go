@@ -2,6 +2,7 @@ package dto
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 )
 
@@ -216,9 +217,17 @@ func ParseUserVisibleMenuItems(raw string) []CustomMenuItem {
 	items := ParseCustomMenuItems(raw)
 	filtered := make([]CustomMenuItem, 0, len(items))
 	for _, item := range items {
-		if item.Visibility != "admin" {
+		if item.Visibility != "admin" && isHTTPSMenuItemURL(item.URL) {
 			filtered = append(filtered, item)
 		}
 	}
 	return filtered
+}
+
+func isHTTPSMenuItemURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !u.IsAbs() || strings.TrimSpace(u.Host) == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https") || strings.EqualFold(u.Scheme, "http")
 }

@@ -236,6 +236,8 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.4":                   "gpt-5.4",
 		"gpt-5.4-high":              "gpt-5.4",
+		"gpt-5.4-xhigh":             "gpt-5.4",
+		"gpt-5.4-mini-xhigh":        "gpt-5.4-mini",
 		"gpt-5.4-chat-latest":       "gpt-5.4",
 		"gpt 5.4":                   "gpt-5.4",
 		"gpt-5.4-mini":              "gpt-5.4-mini",
@@ -253,6 +255,30 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 
 	for input, expected := range cases {
 		require.Equal(t, expected, normalizeCodexModel(input))
+	}
+}
+
+func TestSplitOpenAIModelReasoningVariant(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		wantBase   string
+		wantEffort string
+		wantStrip  bool
+	}{
+		{name: "gpt-5.4-xhigh", model: "gpt-5.4-xhigh", wantBase: "gpt-5.4", wantEffort: "xhigh", wantStrip: true},
+		{name: "gpt-5.1-codex-max-high", model: "gpt-5.1-codex-max-high", wantBase: "gpt-5.1-codex-max", wantEffort: "high", wantStrip: true},
+		{name: "minimal suffix", model: "gpt-5.4-minimal", wantBase: "gpt-5.4", wantEffort: "", wantStrip: true},
+		{name: "no reasoning suffix", model: "gpt-5.4-mini", wantBase: "gpt-5.4-mini", wantEffort: "", wantStrip: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBase, gotEffort, gotStrip := splitOpenAIModelReasoningVariant(tt.model)
+			require.Equal(t, tt.wantBase, gotBase)
+			require.Equal(t, tt.wantEffort, gotEffort)
+			require.Equal(t, tt.wantStrip, gotStrip)
+		})
 	}
 }
 

@@ -2,7 +2,6 @@
 package middleware
 
 import (
-	"crypto/subtle"
 	"errors"
 	"strings"
 
@@ -122,23 +121,35 @@ func validateAdminAPIKey(
 	settingService *service.SettingService,
 	userService *service.UserService,
 ) bool {
-	storedKey, err := settingService.GetAdminAPIKey(c.Request.Context())
+	binding, err := settingService.ValidateAdminAPIKey(c.Request.Context(), key)
 	if err != nil {
 		AbortWithError(c, 500, "INTERNAL_ERROR", "Internal server error")
 		return false
 	}
 
 	// 未配置或不匹配，统一返回相同错误（避免信息泄露）
-	if storedKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) != 1 {
+	if binding == nil {
 		AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
 		return false
 	}
 
-	// 获取真实的管理员用户
-	admin, err := userService.GetFirstAdmin(c.Request.Context())
-	if err != nil {
-		AbortWithError(c, 500, "INTERNAL_ERROR", "No admin user found")
-		return false
+	var admin *service.User
+	if binding.Legacy {
+		admin, err = userService.GetFirstAdmin(c.Request.Context())
+		if err != nil {
+			AbortWithError(c, 500, "INTERNAL_ERROR", "No admin user found")
+			return false
+		}
+	} else {
+		admin, err = userService.GetByID(c.Request.Context(), binding.AdminUserID)
+		if err != nil || admin == nil || !admin.IsActive() || !admin.IsAdmin() {
+			AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
+			return false
+		}
+		if binding.AdminTokenVersion > 0 && admin.TokenVersion != binding.AdminTokenVersion {
+			AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
+			return false
+		}
 	}
 
 	c.Set(string(ContextKeyUser), AuthSubject{

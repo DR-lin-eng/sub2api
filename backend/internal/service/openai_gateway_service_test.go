@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1098,6 +1099,81 @@ func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t 
 	require.Equal(t, 2, result.usage.InputTokens)
 	require.Equal(t, 3, result.usage.OutputTokens)
 	require.Equal(t, 1, result.usage.CacheReadInputTokens)
+}
+
+func TestHandleChatBufferedStreamingResponse_MissingTerminalAfterContentReturnsPartialSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-chat-partial"}},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
+	}()
+
+	result, err := svc.handleChatBufferedStreamingResponse(resp, c, "gpt-5.4", "gpt-5.4", time.Now())
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed))
+	choices, ok := parsed["choices"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, choices)
+	firstChoice, ok := choices[0].(map[string]any)
+	require.True(t, ok)
+	message, ok := firstChoice["message"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "hello", message["content"])
+}
+
+func TestHandleAnthropicBufferedStreamingResponse_MissingTerminalAfterContentReturnsPartialSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-anth-partial"}},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
+	}()
+
+	result, err := svc.handleAnthropicBufferedStreamingResponse(resp, c, "claude-opus-4-6", "gpt-5.4", time.Now())
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed))
+	content, ok := parsed["content"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, content)
+	firstBlock, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "text", firstBlock["type"])
+	require.Equal(t, "hello", firstBlock["text"])
 }
 
 func TestOpenAIStreamingTooLong(t *testing.T) {
