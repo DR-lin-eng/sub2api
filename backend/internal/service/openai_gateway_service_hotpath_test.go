@@ -134,12 +134,12 @@ func TestApplyOpenAITransportOverride_ExtendsHeaderTimeoutForXHighReasoning(t *t
 
 func TestOpenAIStreamIdleTimeout_ExtendsForXHighReasoning(t *testing.T) {
 	svc := &OpenAIGatewayService{}
-	ctx := withOpenAIReasoningEffort(context.Background(), strPtr("xhigh"))
+	ctx := withOpenAIReasoningEffort(context.Background(), hotpathStrPtr("xhigh"))
 	got := svc.openAIStreamIdleTimeout(ctx)
 	require.Equal(t, defaultOpenAIStreamingIdleTimeout+openAIStreamingXHighReasoningIdleExtra, got)
 }
 
-func strPtr(value string) *string {
+func hotpathStrPtr(value string) *string {
 	return &value
 }
 

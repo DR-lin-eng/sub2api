@@ -33,7 +33,7 @@ var (
 	Commit      = "unknown"
 	Date        = "unknown"
 	BuildType   = "source"            // "source" for manual builds, "release" for CI builds (set by ldflags)
-	ReleaseRepo = "DR-lin-eng/sub2api" // GitHub owner/repo used by online update checks
+	ReleaseRepo = "dr-lin-eng/sub2api" // GitHub owner/repo used by online update checks
 )
 
 func init() {

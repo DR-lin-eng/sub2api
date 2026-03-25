@@ -2327,8 +2327,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Send request
 		upstreamStart := time.Now()
 		var cancelQuickFail context.CancelFunc
-		if reqStream {
-			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, reqStream)
+		if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
+			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
 		} else {
 			upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 		}
@@ -2542,8 +2542,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	upstreamStart := time.Now()
 	var cancelQuickFail context.CancelFunc
-	if reqStream {
-		upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, reqStream)
+	if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
+		upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
 	} else {
 		upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 	}
@@ -4342,6 +4342,13 @@ func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 		return trimmedBase
 	}
 	return trimmedBase + trimmedSuffix
+}
+
+func shouldUseOpenAIStagedTransportBudget(c *gin.Context, reqStream bool) bool {
+	if reqStream {
+		return true
+	}
+	return isOpenAIResponsesCompactPath(c)
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {

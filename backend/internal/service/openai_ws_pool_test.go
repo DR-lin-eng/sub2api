@@ -1724,11 +1724,11 @@ func TestOpenAIWSConnPool_SnapshotTransportMetrics(t *testing.T) {
 	dialer, ok := pool.clientDialer.(*coderOpenAIWSClientDialer)
 	require.True(t, ok)
 
-	_, err := dialer.proxyHTTPClient("http://127.0.0.1:28080")
+	_, err := dialer.proxyHTTPClient("http://127.0.0.1:28080", openAIWSDialHTTPVersionAuto)
 	require.NoError(t, err)
-	_, err = dialer.proxyHTTPClient("http://127.0.0.1:28080")
+	_, err = dialer.proxyHTTPClient("http://127.0.0.1:28080", openAIWSDialHTTPVersionAuto)
 	require.NoError(t, err)
-	_, err = dialer.proxyHTTPClient("http://127.0.0.1:28081")
+	_, err = dialer.proxyHTTPClient("http://127.0.0.1:28081", openAIWSDialHTTPVersionAuto)
 	require.NoError(t, err)
 
 	snapshot := pool.SnapshotTransportMetrics()

@@ -60,6 +60,45 @@ func applyOpenAIRemoteCompactFailoverPolicy(policy openAIFailoverPolicy, remoteC
 	return policy
 }
 
+func shouldRetryOpenAIRemoteCompactSilently(
+	failoverErr *service.UpstreamFailoverError,
+	previousResponseID string,
+	switchCount int,
+) bool {
+	if failoverErr == nil || switchCount > 0 {
+		return false
+	}
+	// previous_response_id binds server-side history to one account/session;
+	// retrying on another account is unlikely to be seamless.
+	if strings.TrimSpace(previousResponseID) != "" {
+		return false
+	}
+	switch failoverErr.StatusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, 554:
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason))
+	bodyText := strings.ToLower(strings.TrimSpace(string(failoverErr.ResponseBody)))
+	if failoverErr.FailedProxyID > 0 ||
+		strings.Contains(reason, "proxy") ||
+		strings.Contains(reason, "network") ||
+		strings.Contains(reason, "timeout") ||
+		strings.Contains(bodyText, "context deadline exceeded") ||
+		strings.Contains(bodyText, "timeout") ||
+		strings.Contains(bodyText, "connection refused") ||
+		strings.Contains(bodyText, "connection reset") ||
+		strings.Contains(bodyText, "socks connect") ||
+		strings.Contains(bodyText, "eof") {
+		return true
+	}
+	switch failoverErr.StatusCode {
+	case 0, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -512,6 +551,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					if failoverErr.TempUnscheduleFor > 0 || failoverErr.StatusCode == http.StatusUnauthorized {
 						_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
 						h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
+					}
+					if shouldRetryOpenAIRemoteCompactSilently(failoverErr, previousResponseID, switchCount) {
+						h.gatewayService.RecordOpenAIAccountSwitch()
+						failedAccountIDs[account.ID] = struct{}{}
+						lastFailoverErr = failoverErr
+						switchCount++
+						reqLog.Warn("openai.remote_compact_retrying",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("switch_count", switchCount),
+							zap.String("reason", strings.TrimSpace(failoverErr.TempUnscheduleReason)),
+						)
+						continue
 					}
 					h.handleRemoteCompactFailure(c, failoverErr, streamStarted)
 					return

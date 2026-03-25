@@ -218,6 +218,47 @@ func TestApplyOpenAIRemoteCompactFailoverPolicy_DisablesSwitching(t *testing.T) 
 	require.Equal(t, policy, unchanged)
 }
 
+func TestShouldRetryOpenAIRemoteCompactSilently(t *testing.T) {
+	t.Run("retries_proxy_timeout_once_without_previous_response_id", func(t *testing.T) {
+		err := &service.UpstreamFailoverError{
+			StatusCode:           http.StatusBadGateway,
+			TempUnscheduleReason: "upstream request failed via proxy/network (auto temp-unschedule 20m)",
+			FailedProxyID:        123,
+			ResponseBody:         []byte(`context deadline exceeded`),
+		}
+		require.True(t, shouldRetryOpenAIRemoteCompactSilently(err, "", 0))
+	})
+
+	t.Run("does_not_retry_when_previous_response_id_present", func(t *testing.T) {
+		err := &service.UpstreamFailoverError{
+			StatusCode:           http.StatusGatewayTimeout,
+			TempUnscheduleReason: "upstream request failed via proxy/network (auto temp-unschedule 20m)",
+			ResponseBody:         []byte(`context deadline exceeded`),
+		}
+		require.False(t, shouldRetryOpenAIRemoteCompactSilently(err, "resp_abc123", 0))
+	})
+
+	t.Run("does_not_retry_after_hidden_retry_already_used", func(t *testing.T) {
+		err := &service.UpstreamFailoverError{
+			StatusCode:           http.StatusGatewayTimeout,
+			TempUnscheduleReason: "upstream request failed via proxy/network (auto temp-unschedule 20m)",
+			ResponseBody:         []byte(`context deadline exceeded`),
+		}
+		require.False(t, shouldRetryOpenAIRemoteCompactSilently(err, "", 1))
+	})
+
+	t.Run("does_not_retry_for_auth_or_semantic_errors", func(t *testing.T) {
+		require.False(t, shouldRetryOpenAIRemoteCompactSilently(&service.UpstreamFailoverError{
+			StatusCode:   http.StatusUnauthorized,
+			ResponseBody: []byte(`{"error":{"code":"token_invalidated"}}`),
+		}, "", 0))
+		require.False(t, shouldRetryOpenAIRemoteCompactSilently(&service.UpstreamFailoverError{
+			StatusCode:   554,
+			ResponseBody: []byte(`{"error":{"message":"remote compact failed for large context"}}`),
+		}, "", 0))
+	})
+}
+
 func TestHandleRemoteCompactFailure_PreservesUpstreamStatusAndMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

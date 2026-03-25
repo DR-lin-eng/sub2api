@@ -1480,6 +1480,31 @@ func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testi
 	require.Equal(t, "https://example.com/v1/responses/compact", req.URL.String())
 }
 
+func TestShouldUseOpenAIStagedTransportBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	tests := []struct {
+		name      string
+		path      string
+		reqStream bool
+		want      bool
+	}{
+		{name: "streaming responses", path: "/v1/responses", reqStream: true, want: true},
+		{name: "regular non streaming responses", path: "/v1/responses", reqStream: false, want: false},
+		{name: "compact uses staged budget", path: "/v1/responses/compact", reqStream: false, want: true},
+		{name: "nested compact suffix uses staged budget", path: "/responses/compact/detail", reqStream: false, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, nil)
+			require.Equal(t, tt.want, shouldUseOpenAIStagedTransportBudget(c, tt.reqStream))
+		})
+	}
+}
+
 func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
