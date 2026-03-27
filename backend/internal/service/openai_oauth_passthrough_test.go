@@ -47,6 +47,40 @@ func (u *httpUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, acc
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
+type sequenceHTTPUpstreamRecorder struct {
+	requests []*http.Request
+	bodies   [][]byte
+	resps    []*http.Response
+	errs     []error
+}
+
+func (u *sequenceHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil && req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		u.bodies = append(u.bodies, b)
+		_ = req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	u.requests = append(u.requests, req)
+	if len(u.errs) > 0 {
+		err := u.errs[0]
+		u.errs = u.errs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(u.resps) == 0 {
+		return nil, nil
+	}
+	resp := u.resps[0]
+	u.resps = u.resps[1:]
+	return resp, nil
+}
+
+func (u *sequenceHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, enableTLSFingerprint bool) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
 var structuredLogCaptureMu sync.Mutex
 
 type inMemoryLogSink struct {
@@ -720,6 +754,118 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamingSetsFirstTokenMs(t *test
 	require.GreaterOrEqual(t, *result.FirstTokenMs, 0)
 	require.NotNil(t, result.ServiceTier)
 	require.Equal(t, "priority", *result.ServiceTier)
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_FastMode429DowngradesToFlex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.2","stream":false,"service_tier":"fast","input":[{"type":"text","text":"hi"}]}`)
+	upstream := &sequenceHTTPUpstreamRecorder{
+		resps: []*http.Response{
+			{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-rate"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+			},
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-ok"}},
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"type":"response.output_text.delta","delta":"h"}`,
+					"",
+					`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}`,
+					"",
+					"data: [DONE]",
+					"",
+				}, "\n"))),
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 2)
+	require.Equal(t, "priority", *extractOpenAIServiceTierFromBody(upstream.bodies[0]))
+	require.Equal(t, "flex", *extractOpenAIServiceTierFromBody(upstream.bodies[1]))
+	require.NotNil(t, result.ServiceTier)
+	require.Equal(t, "flex", *result.ServiceTier)
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_FastMode429Then429ReturnsFailoverError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.2","stream":false,"service_tier":"fast","input":[{"type":"text","text":"hi"}]}`)
+	upstream := &sequenceHTTPUpstreamRecorder{
+		resps: []*http.Response{
+			{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-rate-1"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited 1"}}`)),
+			},
+			{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-rate-2"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited 2"}}`)),
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Len(t, upstream.bodies, 2)
+	require.Equal(t, "priority", *extractOpenAIServiceTierFromBody(upstream.bodies[0]))
+	require.Equal(t, "flex", *extractOpenAIServiceTierFromBody(upstream.bodies[1]))
+	require.Empty(t, rec.Body.String())
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_StreamClientDisconnectStillCollectsUsage(t *testing.T) {
