@@ -95,6 +95,11 @@ func Concurrency(v int) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldConcurrency, v))
 }
 
+// UnlimitedConcurrency applies equality check predicate on the "unlimited_concurrency" field. It's identical to UnlimitedConcurrencyEQ.
+func UnlimitedConcurrency(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldUnlimitedConcurrency, v))
+}
+
 // Status applies equality check predicate on the "status" field. It's identical to StatusEQ.
 func Status(v string) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldStatus, v))
@@ -538,6 +543,16 @@ func ConcurrencyLT(v int) predicate.User {
 // ConcurrencyLTE applies the LTE predicate on the "concurrency" field.
 func ConcurrencyLTE(v int) predicate.User {
 	return predicate.User(sql.FieldLTE(FieldConcurrency, v))
+}
+
+// UnlimitedConcurrencyEQ applies the EQ predicate on the "unlimited_concurrency" field.
+func UnlimitedConcurrencyEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldUnlimitedConcurrency, v))
+}
+
+// UnlimitedConcurrencyNEQ applies the NEQ predicate on the "unlimited_concurrency" field.
+func UnlimitedConcurrencyNEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldNEQ(FieldUnlimitedConcurrency, v))
 }
 
 // StatusEQ applies the EQ predicate on the "status" field.

@@ -3,7 +3,7 @@
     <div class="mx-auto max-w-4xl space-y-6">
       <div class="grid grid-cols-1 gap-6 sm:grid-cols-3">
         <StatCard :title="t('profile.accountBalance')" :value="formatCurrency(user?.balance || 0)" :icon="WalletIcon" icon-variant="success" />
-        <StatCard :title="t('profile.concurrencyLimit')" :value="user?.concurrency || 0" :icon="BoltIcon" icon-variant="warning" />
+        <StatCard :title="t('profile.concurrencyLimit')" :value="displayConcurrency" :icon="BoltIcon" icon-variant="warning" />
         <StatCard :title="t('profile.memberSince')" :value="formatDate(user?.created_at || '', { year: 'numeric', month: 'long' })" :icon="CalendarIcon" icon-variant="primary" />
       </div>
       <ProfileInfoCard :user="user" />
@@ -32,6 +32,7 @@ import ProfileTotpCard from '@/components/user/profile/ProfileTotpCard.vue'
 import { Icon } from '@/components/icons'
 
 const { t } = useI18n(); const authStore = useAuthStore(); const user = computed(() => authStore.user)
+const displayConcurrency = computed(() => user.value?.unlimited_concurrency ? '∞' : String(user.value?.concurrency || 0))
 const contactInfo = ref('')
 
 const WalletIcon = { render: () => h('svg', { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' }, [h('path', { d: 'M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12' })]) }

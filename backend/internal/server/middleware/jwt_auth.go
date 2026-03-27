@@ -70,7 +70,7 @@ func jwtAuth(authService *service.AuthService, userService *service.UserService)
 
 		c.Set(string(ContextKeyUser), AuthSubject{
 			UserID:      user.ID,
-			Concurrency: user.Concurrency,
+			Concurrency: user.EffectiveConcurrency(),
 		})
 		c.Set(string(ContextKeyUserRole), user.Role)
 

@@ -40,6 +40,7 @@ type CreateUserRequest struct {
 	Notes                 string  `json:"notes"`
 	Balance               float64 `json:"balance"`
 	Concurrency           int     `json:"concurrency"`
+	UnlimitedConcurrency  bool    `json:"unlimited_concurrency"`
 	AllowedGroups         []int64 `json:"allowed_groups"`
 	SoraStorageQuotaBytes int64   `json:"sora_storage_quota_bytes"`
 }
@@ -47,14 +48,15 @@ type CreateUserRequest struct {
 // UpdateUserRequest represents admin update user request
 // 使用指针类型来区分"未提供"和"设置为0"
 type UpdateUserRequest struct {
-	Email         string   `json:"email" binding:"omitempty,email"`
-	Password      string   `json:"password" binding:"omitempty,min=6"`
-	Username      *string  `json:"username"`
-	Notes         *string  `json:"notes"`
-	Balance       *float64 `json:"balance"`
-	Concurrency   *int     `json:"concurrency"`
-	Status        string   `json:"status" binding:"omitempty,oneof=active disabled"`
-	AllowedGroups *[]int64 `json:"allowed_groups"`
+	Email                string   `json:"email" binding:"omitempty,email"`
+	Password             string   `json:"password" binding:"omitempty,min=6"`
+	Username             *string  `json:"username"`
+	Notes                *string  `json:"notes"`
+	Balance              *float64 `json:"balance"`
+	Concurrency          *int     `json:"concurrency"`
+	UnlimitedConcurrency *bool    `json:"unlimited_concurrency"`
+	Status               string   `json:"status" binding:"omitempty,oneof=active disabled"`
+	AllowedGroups        *[]int64 `json:"allowed_groups"`
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates            map[int64]*float64 `json:"group_rates"`
@@ -111,7 +113,7 @@ func (h *UserHandler) List(c *gin.Context) {
 		for i := range users {
 			usersConcurrency[i] = service.UserWithConcurrency{
 				ID:             users[i].ID,
-				MaxConcurrency: users[i].Concurrency,
+				MaxConcurrency: users[i].EffectiveConcurrency(),
 			}
 		}
 		loadInfo, _ = h.concurrencyService.GetUsersLoadBatch(c.Request.Context(), usersConcurrency)
@@ -188,6 +190,7 @@ func (h *UserHandler) Create(c *gin.Context) {
 		Notes:                 req.Notes,
 		Balance:               req.Balance,
 		Concurrency:           req.Concurrency,
+		UnlimitedConcurrency:  req.UnlimitedConcurrency,
 		AllowedGroups:         req.AllowedGroups,
 		SoraStorageQuotaBytes: req.SoraStorageQuotaBytes,
 	})
@@ -222,6 +225,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		Notes:                 req.Notes,
 		Balance:               req.Balance,
 		Concurrency:           req.Concurrency,
+		UnlimitedConcurrency:  req.UnlimitedConcurrency,
 		Status:                req.Status,
 		AllowedGroups:         req.AllowedGroups,
 		GroupRates:            req.GroupRates,

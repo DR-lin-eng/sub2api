@@ -182,6 +182,7 @@ type UsageInfo struct {
 	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
 	SevenDay           *UsageProgress `json:"seven_day,omitempty"`            // 7天窗口
 	SevenDaySonnet     *UsageProgress `json:"seven_day_sonnet,omitempty"`     // 7天Sonnet窗口
+	KiroQuota          *UsageProgress `json:"kiro_quota,omitempty"`           // Kiro 总额度进度
 	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
 	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
 	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
@@ -204,6 +205,12 @@ type UsageInfo struct {
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
+
+	// Kiro 账号额度信息
+	KiroSubscriptionTitle string  `json:"kiro_subscription_title,omitempty"`
+	KiroCurrentUsage      float64 `json:"kiro_current_usage,omitempty"`
+	KiroUsageLimit        float64 `json:"kiro_usage_limit,omitempty"`
+	KiroRemaining         float64 `json:"kiro_remaining,omitempty"`
 
 	// Antigravity 账号是否被上游禁止 (HTTP 403)
 	IsForbidden     bool   `json:"is_forbidden,omitempty"`
@@ -322,6 +329,14 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 		return usage, err
 	}
 
+	if account.Platform == PlatformKiro {
+		usage, err := s.getKiroUsage(ctx, account)
+		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
 	// 只有oauth类型账号可以通过API获取usage（有profile scope）
 	if account.CanGetUsage() {
 		var apiResp *ClaudeUsageResponse
@@ -411,6 +426,68 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*U
 
 	// API Key账号不支持usage查询
 	return nil, fmt.Errorf("account type %s does not support usage query", account.Type)
+}
+
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+
+	accessToken := account.GetCredential("access_token")
+	if accessToken == "" {
+		refresher := NewKiroTokenRefresher()
+		newCreds, err := refresher.Refresh(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		account.Credentials = newCreds
+		if err := s.accountRepo.Update(ctx, account); err != nil {
+			return nil, err
+		}
+		accessToken = account.GetCredential("access_token")
+	}
+
+	usageService := NewKiroUsageService()
+	limits, err := usageService.FetchUsageLimits(ctx, account, accessToken)
+	if err != nil {
+		return &UsageInfo{
+			Error: "Failed to fetch Kiro usage: " + err.Error(),
+		}, nil
+	}
+
+	currentUsage := limits.CurrentUsage()
+	usageLimit := limits.UsageLimit()
+	remaining := limits.Remaining()
+	utilization := 0.0
+	if usageLimit > 0 {
+		utilization = (currentUsage / usageLimit) * 100
+	}
+
+	var resetAt *time.Time
+	if t := limits.ResetAt(); t != nil {
+		resetAt = t
+	}
+
+	info := &UsageInfo{
+		KiroSubscriptionTitle: limits.SubscriptionTitle(),
+		KiroCurrentUsage:      currentUsage,
+		KiroUsageLimit:        usageLimit,
+		KiroRemaining:         remaining,
+		KiroQuota: &UsageProgress{
+			Utilization: utilization,
+			ResetsAt:    resetAt,
+			WindowStats: &WindowStats{
+				Requests: 0,
+				Tokens:   0,
+				Cost:     currentUsage,
+				UserCost: currentUsage,
+			},
+		},
+	}
+
+	now := time.Now()
+	info.UpdatedAt = &now
+	return info, nil
 }
 
 // GetPassiveUsage 从 Account.Extra 中的被动采样数据构建 UsageInfo，不调用外部 API。

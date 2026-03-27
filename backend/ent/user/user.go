@@ -31,6 +31,8 @@ const (
 	FieldBalance = "balance"
 	// FieldConcurrency holds the string denoting the concurrency field in the database.
 	FieldConcurrency = "concurrency"
+	// FieldUnlimitedConcurrency holds the string denoting the unlimited_concurrency field in the database.
+	FieldUnlimitedConcurrency = "unlimited_concurrency"
 	// FieldStatus holds the string denoting the status field in the database.
 	FieldStatus = "status"
 	// FieldUsername holds the string denoting the username field in the database.
@@ -150,6 +152,7 @@ var Columns = []string{
 	FieldRole,
 	FieldBalance,
 	FieldConcurrency,
+	FieldUnlimitedConcurrency,
 	FieldStatus,
 	FieldUsername,
 	FieldNotes,
@@ -202,6 +205,8 @@ var (
 	DefaultBalance float64
 	// DefaultConcurrency holds the default value on creation for the "concurrency" field.
 	DefaultConcurrency int
+	// DefaultUnlimitedConcurrency holds the default value on creation for the "unlimited_concurrency" field.
+	DefaultUnlimitedConcurrency bool
 	// DefaultStatus holds the default value on creation for the "status" field.
 	DefaultStatus string
 	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
@@ -266,6 +271,11 @@ func ByBalance(opts ...sql.OrderTermOption) OrderOption {
 // ByConcurrency orders the results by the concurrency field.
 func ByConcurrency(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldConcurrency, opts...).ToFunc()
+}
+
+// ByUnlimitedConcurrency orders the results by the unlimited_concurrency field.
+func ByUnlimitedConcurrency(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUnlimitedConcurrency, opts...).ToFunc()
 }
 
 // ByStatus orders the results by the status field.

@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	kiropkg "github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/soraerror"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -511,6 +512,10 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testGeminiAccountConnection(c, account, modelID, prompt)
 	}
 
+	if account.Platform == PlatformKiro {
+		return s.testKiroAccountConnection(c, account, modelID)
+	}
+
 	if account.Platform == PlatformAntigravity {
 		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
@@ -520,6 +525,99 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testKiroAccountConnection(c *gin.Context, account *Account, modelID string) error {
+	ctx := c.Request.Context()
+	testModelID := modelID
+	if strings.TrimSpace(testModelID) == "" {
+		testModelID = "claude-sonnet-4-5-20250929"
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	accessToken := account.GetCredential("access_token")
+	expiresAt := account.GetCredentialAsTime("expires_at")
+	if accessToken == "" || expiresAt == nil || expiresAt.Before(time.Now().Add(3*time.Minute)) {
+		refresher := NewKiroTokenRefresher()
+		newCreds, err := refresher.Refresh(ctx, account)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to refresh Kiro token: %s", err.Error()))
+		}
+		account.Credentials = newCreds
+		if err := s.accountRepo.Update(ctx, account); err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to persist refreshed Kiro token: %s", err.Error()))
+		}
+		accessToken = account.GetCredential("access_token")
+	}
+	if accessToken == "" {
+		return s.sendErrorAndEnd(c, "No Kiro access token available")
+	}
+
+	payload := map[string]any{
+		"model": testModelID,
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": "hi"},
+				},
+			},
+		},
+		"max_tokens": 128,
+		"stream":     true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Kiro test payload")
+	}
+
+	converted, err := kiropkg.ConvertAnthropicRequest(body)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to convert Kiro payload: %s", err.Error()))
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("https://q.%s.amazonaws.com/generateAssistantResponse", KiroRegion(account)),
+		bytes.NewReader(converted.Body),
+	)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Kiro request")
+	}
+
+	machineID := kiropkg.GenerateMachineID(account.GetCredential("machine_id"), "", account.GetCredential("refresh_token"))
+	host := fmt.Sprintf("q.%s.amazonaws.com", KiroRegion(account))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("host", host)
+	req.Header.Set("Connection", "close")
+	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 KiroIDE-%s-%s", KiroVersion(account), machineID))
+	req.Header.Set("User-Agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/%s lang/js md/nodejs#%s api/codewhispererstreaming#1.0.27 m/E KiroIDE-%s-%s", KiroSystemVersion(account), KiroNodeVersion(account), KiroVersion(account), machineID))
+	req.Header.Set("amz-sdk-invocation-id", generateRequestID())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=3")
+
+	resp, err := s.httpUpstream.Do(req, accountProxyURL(account), account.ID, account.Concurrency)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Kiro request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Kiro API returned %d", resp.StatusCode))
+	}
+
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Kiro connection OK"})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection

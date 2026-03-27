@@ -182,6 +182,20 @@ func ProvideAntigravityTokenProvider(
 	return p
 }
 
+// ProvideKiroTokenProvider creates KiroTokenProvider with OAuthRefreshAPI injection
+func ProvideKiroTokenProvider(
+	accountRepo AccountRepository,
+	tokenCache GeminiTokenCache,
+	kiroUsageService *KiroUsageService,
+	refreshAPI *OAuthRefreshAPI,
+) *KiroTokenProvider {
+	p := NewKiroTokenProvider(accountRepo, tokenCache, kiroUsageService)
+	executor := NewKiroTokenRefresher()
+	p.SetRefreshAPI(refreshAPI, executor)
+	p.SetRefreshPolicy(ClaudeProviderRefreshPolicy())
+	return p
+}
+
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
 func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, cfg *config.Config) *DashboardAggregationService {
 	svc := NewDashboardAggregationService(repo, timingWheel, cfg)
@@ -559,6 +573,8 @@ func ProvideGatewayService(
 	settingService *SettingService,
 	proxyRepo ProxyRepository,
 	proxyLatencyCache ProxyLatencyCache,
+	kiroTokenProvider *KiroTokenProvider,
+	kiroGatewayService *KiroGatewayService,
 ) *GatewayService {
 	svc := NewGatewayService(
 		accountRepo,
@@ -585,6 +601,7 @@ func ProvideGatewayService(
 		settingService,
 	)
 	svc.SetProxyFailoverDeps(proxyRepo, proxyLatencyCache)
+	svc.SetKiroDeps(kiroTokenProvider, kiroGatewayService)
 	return svc
 }
 
@@ -627,6 +644,9 @@ var ProviderSet = wire.NewSet(
 	ProvideAntigravityTokenProvider,
 	ProvideOpenAITokenProvider,
 	ProvideClaudeTokenProvider,
+	ProvideKiroTokenProvider,
+	NewKiroUsageService,
+	NewKiroGatewayService,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
 	NewAccountUsageService,

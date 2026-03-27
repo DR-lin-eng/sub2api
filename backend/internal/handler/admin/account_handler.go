@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -2056,6 +2057,11 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	// Handle Sora accounts
 	if account.Platform == service.PlatformSora {
 		response.Success(c, service.DefaultSoraModels(nil))
+		return
+	}
+
+	if account.Platform == service.PlatformKiro {
+		response.Success(c, kiro.DefaultModels)
 		return
 	}
 

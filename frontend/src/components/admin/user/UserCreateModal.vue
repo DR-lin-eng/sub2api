@@ -32,9 +32,16 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.users.columns.concurrency') }}</label>
-          <input v-model.number="form.concurrency" type="number" class="input" />
+          <input v-model.number="form.concurrency" type="number" class="input" :disabled="form.unlimited_concurrency" />
         </div>
       </div>
+      <label class="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 dark:border-dark-600 dark:text-gray-300">
+        <input v-model="form.unlimited_concurrency" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        <div>
+          <div class="font-medium">{{ t('admin.users.unlimitedConcurrency') }}</div>
+          <div class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.users.unlimitedConcurrencyHint') }}</div>
+        </div>
+      </label>
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">
@@ -57,18 +64,21 @@ import Icon from '@/components/icons/Icon.vue'
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits(['close', 'success']); const { t } = useI18n()
 
-const form = reactive({ email: '', password: '', username: '', notes: '', balance: 0, concurrency: 1 })
+const form = reactive({ email: '', password: '', username: '', notes: '', balance: 0, concurrency: 1, unlimited_concurrency: false })
 
 const { loading, submit } = useForm({
   form,
   submitFn: async (data) => {
+    if (!data.unlimited_concurrency && (!data.concurrency || data.concurrency < 1)) {
+      throw new Error(t('admin.users.concurrencyMin'))
+    }
     await adminAPI.users.create(data)
     emit('success'); emit('close')
   },
   successMsg: t('admin.users.userCreated')
 })
 
-watch(() => props.show, (v) => { if(v) Object.assign(form, { email: '', password: '', username: '', notes: '', balance: 0, concurrency: 1 }) })
+watch(() => props.show, (v) => { if(v) Object.assign(form, { email: '', password: '', username: '', notes: '', balance: 0, concurrency: 1, unlimited_concurrency: false }) })
 
 const generateRandomPassword = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*'

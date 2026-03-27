@@ -103,19 +103,21 @@ type CreateUserInput struct {
 	Notes                 string
 	Balance               float64
 	Concurrency           int
+	UnlimitedConcurrency  bool
 	AllowedGroups         []int64
 	SoraStorageQuotaBytes int64
 }
 
 type UpdateUserInput struct {
-	Email         string
-	Password      string
-	Username      *string
-	Notes         *string
-	Balance       *float64 // 使用指针区分"未提供"和"设置为0"
-	Concurrency   *int     // 使用指针区分"未提供"和"设置为0"
-	Status        string
-	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
+	Email                string
+	Password             string
+	Username             *string
+	Notes                *string
+	Balance              *float64 // 使用指针区分"未提供"和"设置为0"
+	Concurrency          *int     // 使用指针区分"未提供"和"设置为0"
+	UnlimitedConcurrency *bool
+	Status               string
+	AllowedGroups        *[]int64 // 使用指针区分"未提供"和"设置为空数组"
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates            map[int64]*float64
@@ -562,13 +564,21 @@ func (s *adminServiceImpl) GetUser(ctx context.Context, id int64) (*User, error)
 }
 
 func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInput) (*User, error) {
+	if !input.UnlimitedConcurrency && input.Concurrency < 0 {
+		return nil, infraerrors.BadRequest("USER_INVALID_CONCURRENCY", "concurrency must be at least 1 unless unlimited concurrency is enabled")
+	}
+	concurrency := input.Concurrency
+	if !input.UnlimitedConcurrency && concurrency == 0 {
+		concurrency = 1
+	}
 	user := &User{
 		Email:                 input.Email,
 		Username:              input.Username,
 		Notes:                 input.Notes,
 		Role:                  RoleUser, // Always create as regular user, never admin
 		Balance:               input.Balance,
-		Concurrency:           input.Concurrency,
+		Concurrency:           concurrency,
+		UnlimitedConcurrency:  input.UnlimitedConcurrency,
 		Status:                StatusActive,
 		AllowedGroups:         input.AllowedGroups,
 		SoraStorageQuotaBytes: input.SoraStorageQuotaBytes,
@@ -612,6 +622,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	oldConcurrency := user.Concurrency
+	oldUnlimitedConcurrency := user.UnlimitedConcurrency
 	oldStatus := user.Status
 	oldRole := user.Role
 
@@ -638,6 +649,9 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	if input.Concurrency != nil {
 		user.Concurrency = *input.Concurrency
 	}
+	if input.UnlimitedConcurrency != nil {
+		user.UnlimitedConcurrency = *input.UnlimitedConcurrency
+	}
 
 	if input.AllowedGroups != nil {
 		user.AllowedGroups = *input.AllowedGroups
@@ -645,6 +659,9 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 
 	if input.SoraStorageQuotaBytes != nil {
 		user.SoraStorageQuotaBytes = *input.SoraStorageQuotaBytes
+	}
+	if !user.UnlimitedConcurrency && user.Concurrency < 1 {
+		return nil, infraerrors.BadRequest("USER_INVALID_CONCURRENCY", "concurrency must be at least 1 unless unlimited concurrency is enabled")
 	}
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
@@ -659,7 +676,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	if s.authCacheInvalidator != nil {
-		if user.Concurrency != oldConcurrency || user.Status != oldStatus || user.Role != oldRole {
+		if user.Concurrency != oldConcurrency || user.UnlimitedConcurrency != oldUnlimitedConcurrency || user.Status != oldStatus || user.Role != oldRole {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
 		}
 	}

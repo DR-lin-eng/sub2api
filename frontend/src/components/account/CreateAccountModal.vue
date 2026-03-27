@@ -158,6 +158,19 @@
           </button>
           <button
             type="button"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <span class="text-sm font-semibold">K</span>
+            Kiro
+          </button>
+          <button
+            type="button"
             @click="form.platform = 'antigravity'"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
@@ -169,6 +182,76 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+        </div>
+      </div>
+
+      <div v-if="form.platform === 'kiro'" class="space-y-4 rounded-lg border border-cyan-200 bg-cyan-50/60 p-4 dark:border-cyan-900/40 dark:bg-cyan-950/20">
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label">Kiro OAuth</label>
+            <p class="input-hint">Refresh Token based Kiro reverse account. Stored as Kiro platform / OAuth type.</p>
+          </div>
+          <select v-model="kiroAuthMethod" class="input w-36">
+            <option value="social">social</option>
+            <option value="idc">idc</option>
+          </select>
+        </div>
+        <div>
+          <label class="input-label">Refresh Token</label>
+          <textarea
+            v-model="kiroRefreshToken"
+            rows="4"
+            class="input font-mono text-sm"
+            placeholder="Paste Kiro refreshToken"
+          />
+        </div>
+        <div v-if="kiroAuthMethod === 'idc'" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">Client ID</label>
+            <input v-model="kiroClientID" type="text" class="input font-mono text-sm" placeholder="Kiro clientId" />
+          </div>
+          <div>
+            <label class="input-label">Client Secret</label>
+            <input v-model="kiroClientSecret" type="password" class="input font-mono text-sm" placeholder="Kiro clientSecret" />
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div>
+            <label class="input-label">Region</label>
+            <input v-model="kiroRegion" type="text" class="input font-mono text-sm" placeholder="us-east-1" />
+          </div>
+          <div>
+            <label class="input-label">Auth Region</label>
+            <input v-model="kiroAuthRegion" type="text" class="input font-mono text-sm" placeholder="Optional" />
+          </div>
+          <div>
+            <label class="input-label">API Region</label>
+            <input v-model="kiroAPIRegion" type="text" class="input font-mono text-sm" placeholder="Optional" />
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <label class="input-label">Profile ARN</label>
+            <input v-model="kiroProfileARN" type="text" class="input font-mono text-sm" placeholder="Optional" />
+          </div>
+          <div>
+            <label class="input-label">Machine ID</label>
+            <input v-model="kiroMachineID" type="text" class="input font-mono text-sm" placeholder="Optional" />
+          </div>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div>
+            <label class="input-label">Kiro Version</label>
+            <input v-model="kiroVersion" type="text" class="input font-mono text-sm" placeholder="0.10.0" />
+          </div>
+          <div>
+            <label class="input-label">System Version</label>
+            <input v-model="kiroSystemVersion" type="text" class="input font-mono text-sm" placeholder="darwin#24.6.0" />
+          </div>
+          <div>
+            <label class="input-label">Node Version</label>
+            <input v-model="kiroNodeVersion" type="text" class="input font-mono text-sm" placeholder="22.21.1" />
+          </div>
         </div>
       </div>
 
@@ -3021,6 +3104,18 @@ const mixedScheduling = ref(false) // For antigravity accounts: enable mixed sch
 const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
 const soraAccountType = ref<'oauth' | 'apikey'>('oauth') // For sora: oauth or apikey (upstream)
+const kiroAuthMethod = ref<'social' | 'idc'>('social')
+const kiroRefreshToken = ref('')
+const kiroClientID = ref('')
+const kiroClientSecret = ref('')
+const kiroProfileARN = ref('')
+const kiroRegion = ref('us-east-1')
+const kiroAuthRegion = ref('')
+const kiroAPIRegion = ref('')
+const kiroMachineID = ref('')
+const kiroVersion = ref('0.10.0')
+const kiroSystemVersion = ref('darwin#24.6.0')
+const kiroNodeVersion = ref('22.21.1')
 const upstreamBaseUrl = ref('') // For upstream type: base URL
 const upstreamApiKey = ref('') // For upstream type: API key
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
@@ -3204,6 +3299,9 @@ const form = reactive({
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
+  if (form.platform === 'kiro') {
+    return false
+  }
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
@@ -3297,6 +3395,11 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (newPlatform === 'kiro') {
+      accountCategory.value = 'oauth-based'
+      addMethod.value = 'oauth'
+      form.type = 'oauth'
+    }
     // Reset base URL based on platform
     apiKeyBaseUrl.value =
       (newPlatform === 'openai' || newPlatform === 'sora')
@@ -3340,6 +3443,20 @@ watch(
       addMethod.value = 'oauth'
       form.type = 'oauth'
       soraAccountType.value = 'oauth'
+    }
+    if (newPlatform !== 'kiro') {
+      kiroAuthMethod.value = 'social'
+      kiroRefreshToken.value = ''
+      kiroClientID.value = ''
+      kiroClientSecret.value = ''
+      kiroProfileARN.value = ''
+      kiroRegion.value = 'us-east-1'
+      kiroAuthRegion.value = ''
+      kiroAPIRegion.value = ''
+      kiroMachineID.value = ''
+      kiroVersion.value = '0.10.0'
+      kiroSystemVersion.value = 'darwin#24.6.0'
+      kiroNodeVersion.value = '22.21.1'
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
@@ -3698,6 +3815,18 @@ const resetForm = () => {
   form.rate_multiplier = 1
   form.group_ids = []
   form.expires_at = null
+  kiroAuthMethod.value = 'social'
+  kiroRefreshToken.value = ''
+  kiroClientID.value = ''
+  kiroClientSecret.value = ''
+  kiroProfileARN.value = ''
+  kiroRegion.value = 'us-east-1'
+  kiroAuthRegion.value = ''
+  kiroAPIRegion.value = ''
+  kiroMachineID.value = ''
+  kiroVersion.value = '0.10.0'
+  kiroSystemVersion.value = 'darwin#24.6.0'
+  kiroNodeVersion.value = '22.21.1'
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
@@ -3890,6 +4019,45 @@ const normalizePoolModeRetryCount = (value: number) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'kiro') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!kiroRefreshToken.value.trim()) {
+      appStore.showError('Kiro refresh token is required')
+      return
+    }
+    if (
+      kiroAuthMethod.value === 'idc' &&
+      (!kiroClientID.value.trim() || !kiroClientSecret.value.trim())
+    ) {
+      appStore.showError('Kiro client_id and client_secret are required for idc auth')
+      return
+    }
+
+    const credentials: Record<string, unknown> = {
+      refresh_token: kiroRefreshToken.value.trim(),
+      auth_method: kiroAuthMethod.value,
+      region: kiroRegion.value.trim() || 'us-east-1'
+    }
+    if (kiroClientID.value.trim()) credentials.client_id = kiroClientID.value.trim()
+    if (kiroClientSecret.value.trim()) credentials.client_secret = kiroClientSecret.value.trim()
+    if (kiroProfileARN.value.trim()) credentials.profile_arn = kiroProfileARN.value.trim()
+    if (kiroAuthRegion.value.trim()) credentials.auth_region = kiroAuthRegion.value.trim()
+    if (kiroAPIRegion.value.trim()) credentials.api_region = kiroAPIRegion.value.trim()
+    if (kiroMachineID.value.trim()) credentials.machine_id = kiroMachineID.value.trim()
+
+    const extra: Record<string, unknown> = {
+      kiro_version: kiroVersion.value.trim() || '0.10.0',
+      system_version: kiroSystemVersion.value.trim() || 'darwin#24.6.0',
+      node_version: kiroNodeVersion.value.trim() || '22.21.1'
+    }
+
+    await createAccountAndFinish('kiro', 'oauth', credentials, extra)
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!form.name.trim()) {

@@ -145,6 +145,10 @@ func (a *Account) IsGemini() bool {
 	return a.Platform == PlatformGemini
 }
 
+func (a *Account) IsKiro() bool {
+	return a != nil && a.Platform == PlatformKiro
+}
+
 func (a *Account) GeminiOAuthType() string {
 	if a.Platform != PlatformGemini || a.Type != AccountTypeOAuth {
 		return ""
@@ -173,6 +177,9 @@ func (a *Account) IsGeminiCodeAssist() bool {
 }
 
 func (a *Account) CanGetUsage() bool {
+	if a.Platform == PlatformKiro {
+		return false
+	}
 	return a.Type == AccountTypeOAuth
 }
 

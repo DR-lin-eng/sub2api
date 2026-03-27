@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	defaultOpenAICompactResponseHeaderTimeout = 5 * time.Minute
-	openAICompactDisconnectCooldown           = 2 * time.Minute
+	defaultOpenAICompactResponseHeaderTimeout = 10 * time.Minute
+	minOpenAICompactResponseHeaderTimeout     = 3 * time.Minute
+	openAICompactDelayedFirstEventWarnAfter   = 30 * time.Second
 )
 
 type openAICompactBufferedResult struct {
@@ -56,7 +57,7 @@ func (e *openAICompactProtocolError) Message() string {
 
 func resolveOpenAICompactResponseHeaderTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.Gateway.ResponseHeaderTimeout > 0 {
-		return time.Duration(cfg.Gateway.ResponseHeaderTimeout) * time.Second
+		return maxDuration(time.Duration(cfg.Gateway.ResponseHeaderTimeout)*time.Second, minOpenAICompactResponseHeaderTimeout)
 	}
 	return defaultOpenAICompactResponseHeaderTimeout
 }
@@ -75,10 +76,8 @@ func buildOpenAICompactBufferedFailoverError(account *Account, cause error) *Ups
 	}
 	payload := []byte(`{"error":{"message":` + strconv.Quote(message) + `}}`)
 	return &UpstreamFailoverError{
-		StatusCode:           http.StatusBadGateway,
-		ResponseBody:         payload,
-		TempUnscheduleFor:    openAICompactDisconnectCooldown,
-		TempUnscheduleReason: "upstream compact response stream disconnected before completion (auto temp-unschedule 2m)",
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: payload,
 		RetryableOnSameAccount: account != nil &&
 			account.IsPoolMode(),
 	}
@@ -197,7 +196,11 @@ func (s *OpenAIGatewayService) readOpenAICompactBufferedResponse(
 			if meta.FirstEventMs != nil {
 				fields = append(fields, zap.Int("first_event_ms", *meta.FirstEventMs))
 			}
-			logCompactProgress(zapcoreLevelInfo, "codex.remote_compact.upstream_started", fields...)
+			if meta.FirstEventMs != nil && time.Duration(*meta.FirstEventMs)*time.Millisecond >= openAICompactDelayedFirstEventWarnAfter {
+				logCompactProgress(zapcoreLevelWarn, "codex.remote_compact.first_event_delayed", fields...)
+			} else {
+				logCompactProgress(zapcoreLevelInfo, "codex.remote_compact.upstream_started", fields...)
+			}
 		}
 
 		s.parseSSEUsageBytes([]byte(data), &usage)
@@ -286,6 +289,14 @@ func (s *OpenAIGatewayService) readOpenAICompactBufferedResponse(
 	if scanErr == nil {
 		scanErr = io.ErrUnexpectedEOF
 	}
+	fields := []zap.Field{
+		zap.Int("event_count", meta.EventCount),
+		zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	}
+	if meta.FirstEventMs != nil {
+		fields = append(fields, zap.Int("first_event_ms", *meta.FirstEventMs))
+	}
+	logCompactProgress(zapcoreLevelWarn, "codex.remote_compact.disconnected_before_output", fields...)
 	return nil, buildOpenAICompactBufferedFailoverError(account, scanErr)
 }
 

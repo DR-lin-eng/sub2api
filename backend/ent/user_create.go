@@ -126,6 +126,20 @@ func (_c *UserCreate) SetNillableConcurrency(v *int) *UserCreate {
 	return _c
 }
 
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (_c *UserCreate) SetUnlimitedConcurrency(v bool) *UserCreate {
+	_c.mutation.SetUnlimitedConcurrency(v)
+	return _c
+}
+
+// SetNillableUnlimitedConcurrency sets the "unlimited_concurrency" field if the given value is not nil.
+func (_c *UserCreate) SetNillableUnlimitedConcurrency(v *bool) *UserCreate {
+	if v != nil {
+		_c.SetUnlimitedConcurrency(*v)
+	}
+	return _c
+}
+
 // SetStatus sets the "status" field.
 func (_c *UserCreate) SetStatus(v string) *UserCreate {
 	_c.mutation.SetStatus(v)
@@ -436,6 +450,10 @@ func (_c *UserCreate) defaults() error {
 		v := user.DefaultConcurrency
 		_c.mutation.SetConcurrency(v)
 	}
+	if _, ok := _c.mutation.UnlimitedConcurrency(); !ok {
+		v := user.DefaultUnlimitedConcurrency
+		_c.mutation.SetUnlimitedConcurrency(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := user.DefaultStatus
 		_c.mutation.SetStatus(v)
@@ -500,6 +518,9 @@ func (_c *UserCreate) check() error {
 	}
 	if _, ok := _c.mutation.Concurrency(); !ok {
 		return &ValidationError{Name: "concurrency", err: errors.New(`ent: missing required field "User.concurrency"`)}
+	}
+	if _, ok := _c.mutation.UnlimitedConcurrency(); !ok {
+		return &ValidationError{Name: "unlimited_concurrency", err: errors.New(`ent: missing required field "User.unlimited_concurrency"`)}
 	}
 	if _, ok := _c.mutation.Status(); !ok {
 		return &ValidationError{Name: "status", err: errors.New(`ent: missing required field "User.status"`)}
@@ -587,6 +608,10 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Concurrency(); ok {
 		_spec.SetField(user.FieldConcurrency, field.TypeInt, value)
 		_node.Concurrency = value
+	}
+	if value, ok := _c.mutation.UnlimitedConcurrency(); ok {
+		_spec.SetField(user.FieldUnlimitedConcurrency, field.TypeBool, value)
+		_node.UnlimitedConcurrency = value
 	}
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)
@@ -922,6 +947,18 @@ func (u *UserUpsert) AddConcurrency(v int) *UserUpsert {
 	return u
 }
 
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (u *UserUpsert) SetUnlimitedConcurrency(v bool) *UserUpsert {
+	u.Set(user.FieldUnlimitedConcurrency, v)
+	return u
+}
+
+// UpdateUnlimitedConcurrency sets the "unlimited_concurrency" field to the value that was provided on create.
+func (u *UserUpsert) UpdateUnlimitedConcurrency() *UserUpsert {
+	u.SetExcluded(user.FieldUnlimitedConcurrency)
+	return u
+}
+
 // SetStatus sets the "status" field.
 func (u *UserUpsert) SetStatus(v string) *UserUpsert {
 	u.Set(user.FieldStatus, v)
@@ -1203,6 +1240,20 @@ func (u *UserUpsertOne) AddConcurrency(v int) *UserUpsertOne {
 func (u *UserUpsertOne) UpdateConcurrency() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateConcurrency()
+	})
+}
+
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (u *UserUpsertOne) SetUnlimitedConcurrency(v bool) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.SetUnlimitedConcurrency(v)
+	})
+}
+
+// UpdateUnlimitedConcurrency sets the "unlimited_concurrency" field to the value that was provided on create.
+func (u *UserUpsertOne) UpdateUnlimitedConcurrency() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateUnlimitedConcurrency()
 	})
 }
 
@@ -1673,6 +1724,20 @@ func (u *UserUpsertBulk) AddConcurrency(v int) *UserUpsertBulk {
 func (u *UserUpsertBulk) UpdateConcurrency() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateConcurrency()
+	})
+}
+
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (u *UserUpsertBulk) SetUnlimitedConcurrency(v bool) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.SetUnlimitedConcurrency(v)
+	})
+}
+
+// UpdateUnlimitedConcurrency sets the "unlimited_concurrency" field to the value that was provided on create.
+func (u *UserUpsertBulk) UpdateUnlimitedConcurrency() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateUnlimitedConcurrency()
 	})
 }
 

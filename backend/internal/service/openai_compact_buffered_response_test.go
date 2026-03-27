@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApplyOpenAICompactTransportOverride_UsesGatewayHeaderTimeout(t *testing.T) {
+func TestApplyOpenAICompactTransportOverride_UsesCompactTimeoutFloor(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{
 			Gateway: config.GatewayConfig{
@@ -29,7 +29,24 @@ func TestApplyOpenAICompactTransportOverride_UsesGatewayHeaderTimeout(t *testing
 	override, ok := GetUpstreamTransportOverride(req.Context())
 	require.True(t, ok)
 	require.Equal(t, defaultOpenAIStreamingConnectQuickFail, override.DialTimeout)
-	require.Equal(t, 90*time.Second, override.ResponseHeaderTimeout)
+	require.Equal(t, minOpenAICompactResponseHeaderTimeout, override.ResponseHeaderTimeout)
+}
+
+func TestApplyOpenAICompactTransportOverride_PreservesLongerGatewayHeaderTimeout(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				ResponseHeaderTimeout: 900,
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	req = svc.applyOpenAICompactTransportOverride(req)
+
+	override, ok := GetUpstreamTransportOverride(req.Context())
+	require.True(t, ok)
+	require.Equal(t, 900*time.Second, override.ResponseHeaderTimeout)
 }
 
 func TestHandleNonStreamingResponse_CompactSSEPartialFallback(t *testing.T) {
@@ -85,6 +102,7 @@ func TestHandleNonStreamingResponse_CompactSSEDisconnectWithoutOutputReturnsFail
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Contains(t, string(failoverErr.ResponseBody), "stream disconnected before completion")
+	require.Zero(t, failoverErr.TempUnscheduleFor)
 	require.Empty(t, rec.Body.String())
 }
 

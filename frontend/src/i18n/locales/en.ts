@@ -1362,6 +1362,8 @@ export default {
       failedToLoadApiKeys: 'Failed to load user API keys',
       emailRequired: 'Please enter email',
       concurrencyMin: 'Concurrency must be at least 1',
+      unlimitedConcurrency: 'Unlimited concurrency',
+      unlimitedConcurrencyHint: 'When enabled, user-level concurrency slot limits are skipped for this user.',
       soraStorageQuota: 'Sora Storage Quota',
       soraStorageQuotaHint: 'In GB, 0 means use group or system default quota',
       amountRequired: 'Please enter a valid amount',

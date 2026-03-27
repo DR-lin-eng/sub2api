@@ -146,6 +146,20 @@ func (_u *UserUpdate) AddConcurrency(v int) *UserUpdate {
 	return _u
 }
 
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (_u *UserUpdate) SetUnlimitedConcurrency(v bool) *UserUpdate {
+	_u.mutation.SetUnlimitedConcurrency(v)
+	return _u
+}
+
+// SetNillableUnlimitedConcurrency sets the "unlimited_concurrency" field if the given value is not nil.
+func (_u *UserUpdate) SetNillableUnlimitedConcurrency(v *bool) *UserUpdate {
+	if v != nil {
+		_u.SetUnlimitedConcurrency(*v)
+	}
+	return _u
+}
+
 // SetStatus sets the "status" field.
 func (_u *UserUpdate) SetStatus(v string) *UserUpdate {
 	_u.mutation.SetStatus(v)
@@ -727,6 +741,9 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedConcurrency(); ok {
 		_spec.AddField(user.FieldConcurrency, field.TypeInt, value)
 	}
+	if value, ok := _u.mutation.UnlimitedConcurrency(); ok {
+		_spec.SetField(user.FieldUnlimitedConcurrency, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)
 	}
@@ -1307,6 +1324,20 @@ func (_u *UserUpdateOne) SetNillableConcurrency(v *int) *UserUpdateOne {
 // AddConcurrency adds value to the "concurrency" field.
 func (_u *UserUpdateOne) AddConcurrency(v int) *UserUpdateOne {
 	_u.mutation.AddConcurrency(v)
+	return _u
+}
+
+// SetUnlimitedConcurrency sets the "unlimited_concurrency" field.
+func (_u *UserUpdateOne) SetUnlimitedConcurrency(v bool) *UserUpdateOne {
+	_u.mutation.SetUnlimitedConcurrency(v)
+	return _u
+}
+
+// SetNillableUnlimitedConcurrency sets the "unlimited_concurrency" field if the given value is not nil.
+func (_u *UserUpdateOne) SetNillableUnlimitedConcurrency(v *bool) *UserUpdateOne {
+	if v != nil {
+		_u.SetUnlimitedConcurrency(*v)
+	}
 	return _u
 }
 
@@ -1920,6 +1951,9 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 	}
 	if value, ok := _u.mutation.AddedConcurrency(); ok {
 		_spec.AddField(user.FieldConcurrency, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.UnlimitedConcurrency(); ok {
+		_spec.SetField(user.FieldUnlimitedConcurrency, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(user.FieldStatus, field.TypeString, value)

@@ -64,6 +64,7 @@ func NewTokenRefreshService(
 	claudeRefresher := NewClaudeTokenRefresher(oauthService)
 	geminiRefresher := NewGeminiTokenRefresher(geminiOAuthService)
 	agRefresher := NewAntigravityTokenRefresher(antigravityOAuthService)
+	kiroRefresher := NewKiroTokenRefresher()
 
 	// 注册平台特定的刷新器（TokenRefresher 接口）
 	s.refreshers = []TokenRefresher{
@@ -71,6 +72,7 @@ func NewTokenRefreshService(
 		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
+		kiroRefresher,
 	}
 
 	// 注册对应的 OAuthRefreshExecutor（带 CacheKey 方法）
@@ -79,6 +81,7 @@ func NewTokenRefreshService(
 		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
+		kiroRefresher,
 	}
 
 	return s
@@ -280,8 +283,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 			newCredentials, err = refresher.Refresh(ctx, account)
 			if newCredentials != nil {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
-				account.Credentials = newCredentials
-				if saveErr := s.accountRepo.Update(ctx, account); saveErr != nil {
+				if saveErr := persistAccountCredentials(ctx, s.accountRepo, account, newCredentials); saveErr != nil {
 					return fmt.Errorf("failed to save credentials: %w", saveErr)
 				}
 			}

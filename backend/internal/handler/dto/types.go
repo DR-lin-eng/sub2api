@@ -3,16 +3,17 @@ package dto
 import "time"
 
 type User struct {
-	ID            int64     `json:"id"`
-	Email         string    `json:"email"`
-	Username      string    `json:"username"`
-	Role          string    `json:"role"`
-	Balance       float64   `json:"balance"`
-	Concurrency   int       `json:"concurrency"`
-	Status        string    `json:"status"`
-	AllowedGroups []int64   `json:"allowed_groups"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                   int64     `json:"id"`
+	Email                string    `json:"email"`
+	Username             string    `json:"username"`
+	Role                 string    `json:"role"`
+	Balance              float64   `json:"balance"`
+	Concurrency          int       `json:"concurrency"`
+	UnlimitedConcurrency bool      `json:"unlimited_concurrency"`
+	Status               string    `json:"status"`
+	AllowedGroups        []int64   `json:"allowed_groups"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 
 	APIKeys       []APIKey           `json:"api_keys,omitempty"`
 	Subscriptions []UserSubscription `json:"subscriptions,omitempty"`

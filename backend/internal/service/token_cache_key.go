@@ -13,3 +13,9 @@ func OpenAITokenCacheKey(account *Account) string {
 func ClaudeTokenCacheKey(account *Account) string {
 	return "claude:account:" + strconv.FormatInt(account.ID, 10)
 }
+
+// KiroTokenCacheKey 生成 Kiro OAuth 账号的缓存键
+// 格式: "kiro:account:{account_id}"
+func KiroTokenCacheKey(account *Account) string {
+	return "kiro:account:" + strconv.FormatInt(account.ID, 10)
+}

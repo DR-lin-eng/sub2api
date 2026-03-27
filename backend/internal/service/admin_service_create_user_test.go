@@ -95,3 +95,34 @@ func TestAdminService_CreateUser_AssignsDefaultSubscriptions(t *testing.T) {
 	require.Equal(t, int64(5), assigner.calls[0].GroupID)
 	require.Equal(t, 30, assigner.calls[0].ValidityDays)
 }
+
+func TestAdminService_CreateUser_AllowsUnlimitedConcurrencyWithZeroLimit(t *testing.T) {
+	repo := &userRepoStub{nextID: 22}
+	svc := &adminServiceImpl{userRepo: repo}
+
+	user, err := svc.CreateUser(context.Background(), &CreateUserInput{
+		Email:                "unlimited@test.com",
+		Password:             "password",
+		Concurrency:          0,
+		UnlimitedConcurrency: true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	require.True(t, user.UnlimitedConcurrency)
+	require.Equal(t, 0, user.EffectiveConcurrency())
+}
+
+func TestAdminService_CreateUser_RejectsInvalidFiniteConcurrency(t *testing.T) {
+	repo := &userRepoStub{nextID: 23}
+	svc := &adminServiceImpl{userRepo: repo}
+
+	_, err := svc.CreateUser(context.Background(), &CreateUserInput{
+		Email:       "invalid@test.com",
+		Password:    "password",
+		Concurrency: -1,
+	})
+
+	require.Error(t, err)
+	require.Empty(t, repo.created)
+}

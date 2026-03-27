@@ -424,6 +424,7 @@
             <UserConcurrencyCell
               :current="row.current_concurrency ?? 0"
               :max="row.concurrency"
+              :unlimited="row.unlimited_concurrency === true"
             />
           </template>
 

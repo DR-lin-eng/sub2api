@@ -151,6 +151,9 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		providePrivacyClientFactory(),
 	)
 
+	kiroUsageService := service.NewKiroUsageService()
+	kiroTokenProvider := service.ProvideKiroTokenProvider(accountRepository, geminiTokenCache, kiroUsageService, oauthRefreshAPI)
+	kiroGatewayService := service.NewKiroGatewayService(httpUpstream, kiroTokenProvider, kiroUsageService)
 	gatewayService := service.ProvideGatewayService(
 		accountRepository,
 		groupRepository,
@@ -176,6 +179,8 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		settingService,
 		proxyRepository,
 		proxyLatencyCache,
+		kiroTokenProvider,
+		kiroGatewayService,
 	)
 
 	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oauthRefreshAPI)

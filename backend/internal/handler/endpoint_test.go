@@ -71,6 +71,9 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
 		// Sora.
 		{"sora completions", EndpointChatCompletions, "/sora/v1/chat/completions", service.PlatformSora, EndpointChatCompletions},
 
+		// Kiro.
+		{"kiro messages", EndpointMessages, "/v1/messages", service.PlatformKiro, EndpointMessages},
+
 		// OpenAI — always /v1/responses.
 		{"openai responses root", EndpointResponses, "/v1/responses", service.PlatformOpenAI, EndpointResponses},
 		{"openai responses compact", EndpointResponses, "/openai/v1/responses/compact", service.PlatformOpenAI, "/v1/responses/compact"},

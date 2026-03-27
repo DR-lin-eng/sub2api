@@ -315,8 +315,9 @@ func (s *OpsService) getUsersLoadMapBestEffort(ctx context.Context, users []User
 		if u.ID <= 0 {
 			continue
 		}
-		if prev, ok := unique[u.ID]; !ok || u.Concurrency > prev {
-			unique[u.ID] = u.Concurrency
+		effectiveConcurrency := u.EffectiveConcurrency()
+		if prev, ok := unique[u.ID]; !ok || effectiveConcurrency > prev {
+			unique[u.ID] = effectiveConcurrency
 		}
 	}
 

@@ -217,7 +217,7 @@ func (s *APIKeyService) snapshotFromAPIKey(apiKey *APIKey) *APIKeyAuthSnapshot {
 			Status:      apiKey.User.Status,
 			Role:        apiKey.User.Role,
 			Balance:     apiKey.User.Balance,
-			Concurrency: apiKey.User.Concurrency,
+			Concurrency: apiKey.User.EffectiveConcurrency(),
 		},
 	}
 	if apiKey.Group != nil {

@@ -14,7 +14,7 @@
             ${{ user?.balance?.toFixed(2) || '0.00' }}
           </p>
           <p class="mt-2 text-sm text-primary-100">
-            {{ t('redeem.concurrency') }}: {{ user?.concurrency || 0 }} {{ t('redeem.requests') }}
+            {{ t('redeem.concurrency') }}: {{ user?.unlimited_concurrency ? '∞' : (user?.concurrency || 0) }} {{ t('redeem.requests') }}
           </p>
         </div>
       </div>
