@@ -2340,7 +2340,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		upstreamStart := time.Now()
 		var cancelQuickFail context.CancelFunc
 		if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
-			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
+			if isOpenAIResponsesCompactPath(c) && !reqStream {
+				upstreamReq = s.applyOpenAICompactTransportOverride(upstreamReq)
+			} else {
+				upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
+			}
 		} else {
 			upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 		}
@@ -2562,7 +2566,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		upstreamStart := time.Now()
 		var cancelQuickFail context.CancelFunc
 		if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
-			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
+			if isOpenAIResponsesCompactPath(c) && !reqStream {
+				upstreamReq = s.applyOpenAICompactTransportOverride(upstreamReq)
+			} else {
+				upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
+			}
 		} else {
 			upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 		}
@@ -2661,7 +2669,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			usage = result.usage
 			firstTokenMs = result.firstTokenMs
 		} else {
-			usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c)
+			usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c, account)
 			if err != nil {
 				return nil, err
 			}
@@ -3282,7 +3290,29 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 ) (*OpenAIUsage, error) {
+	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPath(c) {
+		result, err := s.readOpenAICompactBufferedResponse(ctx, resp, c, account)
+		if err != nil {
+			var protocolErr *openAICompactProtocolError
+			if errors.As(err, &protocolErr) {
+				return nil, s.writeOpenAINonStreamingProtocolError(resp, c, protocolErr.Message())
+			}
+			return nil, err
+		}
+		if result == nil {
+			return nil, fmt.Errorf("compact response is empty")
+		}
+
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
+		c.Data(resp.StatusCode, "application/json; charset=utf-8", result.body)
+
+		usage := result.usage
+		return &usage, nil
+	}
+
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
@@ -4214,6 +4244,33 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
+	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPath(c) {
+		result, err := s.readOpenAICompactBufferedResponse(ctx, resp, c, account)
+		if err != nil {
+			var protocolErr *openAICompactProtocolError
+			if errors.As(err, &protocolErr) {
+				return nil, s.writeOpenAINonStreamingProtocolError(resp, c, protocolErr.Message())
+			}
+			return nil, err
+		}
+		if result == nil {
+			return nil, fmt.Errorf("compact response is empty")
+		}
+
+		body := result.body
+		if originalModel != mappedModel {
+			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+		}
+		body = s.correctToolCallsInResponseBody(body)
+
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
+		c.Data(resp.StatusCode, "application/json; charset=utf-8", body)
+
+		usage := result.usage
+		return &usage, nil
+	}
+
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {

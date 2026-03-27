@@ -362,6 +362,28 @@ func (s *OpenAIGatewayService) applyOpenAITransportOverride(req *http.Request, b
 	return req.WithContext(ctx)
 }
 
+func (s *OpenAIGatewayService) applyOpenAICompactTransportOverride(req *http.Request) *http.Request {
+	if req == nil {
+		return req
+	}
+
+	override := UpstreamTransportOverride{
+		DialTimeout:           s.openAIStreamingPhaseBudget().ConnectBudget,
+		ResponseHeaderTimeout: resolveOpenAICompactResponseHeaderTimeout(s.cfg),
+	}
+	if existing, ok := GetUpstreamTransportOverride(req.Context()); ok {
+		if existing.DialTimeout > 0 {
+			override.DialTimeout = existing.DialTimeout
+		}
+		if existing.ResponseHeaderTimeout > 0 {
+			override.ResponseHeaderTimeout = maxDuration(existing.ResponseHeaderTimeout, override.ResponseHeaderTimeout)
+		}
+	}
+
+	ctx := WithUpstreamTransportOverride(req.Context(), override)
+	return req.WithContext(ctx)
+}
+
 func withOpenAIReasoningEffort(ctx context.Context, reasoningEffort *string) context.Context {
 	if reasoningEffort == nil || strings.TrimSpace(*reasoningEffort) == "" {
 		return ctx
