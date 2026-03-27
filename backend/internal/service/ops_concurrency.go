@@ -13,7 +13,7 @@ const (
 	opsConcurrencyBatchChunkSize = 200
 )
 
-func (s *OpsService) listAllAccountsForOps(ctx context.Context, platformFilter string) ([]Account, error) {
+func (s *OpsService) loadAllAccountsForOps(ctx context.Context, platformFilter string) ([]Account, error) {
 	if s == nil || s.accountRepo == nil {
 		return []Account{}, nil
 	}
@@ -115,7 +115,7 @@ func (s *OpsService) GetConcurrencyStats(
 		return nil, nil, nil, nil, err
 	}
 
-	accounts, err := s.listAllAccountsForOps(ctx, platformFilter)
+	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -261,7 +261,7 @@ func (s *OpsService) GetConcurrencyStats(
 }
 
 // listAllActiveUsersForOps returns all active users with their concurrency settings.
-func (s *OpsService) listAllActiveUsersForOps(ctx context.Context) ([]User, error) {
+func (s *OpsService) loadAllActiveUsersForOps(ctx context.Context) ([]User, error) {
 	if s == nil || s.userRepo == nil {
 		return []User{}, nil
 	}
@@ -354,7 +354,7 @@ func (s *OpsService) GetUserConcurrencyStats(ctx context.Context) (map[int64]*Us
 		return nil, nil, err
 	}
 
-	users, err := s.listAllActiveUsersForOps(ctx)
+	users, err := s.listAllActiveUsersForOpsCached(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -20,15 +20,15 @@ const (
 )
 
 type proxyMaintenanceTaskState struct {
-	TaskID     string                    `json:"task_id"`
-	Status     proxyMaintenanceTaskStatus `json:"status"`
-	Stage      string                    `json:"stage,omitempty"`
-	Message    string                    `json:"message,omitempty"`
-	Progress   int                       `json:"progress"`
+	TaskID     string                          `json:"task_id"`
+	Status     proxyMaintenanceTaskStatus      `json:"status"`
+	Stage      string                          `json:"stage,omitempty"`
+	Message    string                          `json:"message,omitempty"`
+	Progress   int                             `json:"progress"`
 	Result     *service.ProxyMaintenanceResult `json:"result,omitempty"`
-	CreatedAt  time.Time                 `json:"created_at"`
-	StartedAt  *time.Time                `json:"started_at,omitempty"`
-	FinishedAt *time.Time                `json:"finished_at,omitempty"`
+	CreatedAt  time.Time                       `json:"created_at"`
+	StartedAt  *time.Time                      `json:"started_at,omitempty"`
+	FinishedAt *time.Time                      `json:"finished_at,omitempty"`
 }
 
 type proxyMaintenanceTask struct {
@@ -54,6 +54,12 @@ var defaultProxyMaintenanceTasks = &proxyMaintenanceTaskManager{
 func defaultProxyMaintenanceTaskManager() *proxyMaintenanceTaskManager {
 	return defaultProxyMaintenanceTasks
 }
+
+func proxyMaintenanceTaskCacheKey(taskID string) string {
+	return "task:progress:proxy_maintenance:" + taskID
+}
+
+const proxyMaintenanceTaskKind = "proxy_maintenance"
 
 func (m *proxyMaintenanceTaskManager) ensureStarted() {
 	if m == nil {
@@ -95,6 +101,7 @@ func (m *proxyMaintenanceTaskManager) createTask() *proxyMaintenanceTask {
 	m.mu.Lock()
 	m.tasks[taskID] = task
 	m.mu.Unlock()
+	storeTaskStateJSONWithRepo(context.Background(), proxyMaintenanceTaskCacheKey(taskID), proxyMaintenanceTaskKind, taskID, time.Hour, string(task.state.Status), task.state.FinishedAt, task.state)
 	return task
 }
 
@@ -119,6 +126,9 @@ func (m *proxyMaintenanceTaskManager) getTask(taskID string) (*proxyMaintenanceT
 	task := m.tasks[taskID]
 	m.mu.RUnlock()
 	if task == nil {
+		if cached, ok := loadTaskStateJSONWithRepo[proxyMaintenanceTaskState](context.Background(), proxyMaintenanceTaskCacheKey(taskID), proxyMaintenanceTaskKind, taskID); ok && cached != nil {
+			return cached, true
+		}
 		return nil, false
 	}
 	state := task.state
@@ -136,6 +146,7 @@ func (m *proxyMaintenanceTaskManager) updateTask(taskID string, mutate func(*pro
 		return
 	}
 	mutate(&task.state)
+	storeTaskStateJSONWithRepo(context.Background(), proxyMaintenanceTaskCacheKey(taskID), proxyMaintenanceTaskKind, taskID, time.Hour, string(task.state.Status), task.state.FinishedAt, task.state)
 }
 
 func (m *proxyMaintenanceTaskManager) runTaskNow(task *proxyMaintenanceTask) {

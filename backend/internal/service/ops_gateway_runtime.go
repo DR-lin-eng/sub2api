@@ -64,7 +64,7 @@ func (s *OpsService) GetGatewaySchedulerRuntime(
 		return nil, infraerrors.ServiceUnavailable("GATEWAY_SERVICE_UNAVAILABLE", "Gateway service not available")
 	}
 
-	accounts, err := s.listAllAccountsForOps(ctx, platformFilter)
+	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
 	if err != nil {
 		return nil, err
 	}

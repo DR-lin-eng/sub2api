@@ -58,20 +58,20 @@ type OpenAIStreamingPhaseBudget struct {
 }
 
 type OpenAIStreamRelayMetricsSnapshot struct {
-	IncompleteCloseTotal         int64 `json:"incomplete_close_total"`
-	ClientWriteBlockedTotal      int64 `json:"client_write_blocked_total"`
-	FinalFlushFailTotal          int64 `json:"final_flush_fail_total"`
-	FirstTokenAfterHeaderMsTotal int64 `json:"first_token_after_header_ms_total"`
-	FirstTokenAfterHeaderCount   int64 `json:"first_token_after_header_count"`
+	IncompleteCloseTotal          int64 `json:"incomplete_close_total"`
+	ClientWriteBlockedTotal       int64 `json:"client_write_blocked_total"`
+	FinalFlushFailTotal           int64 `json:"final_flush_fail_total"`
+	FirstTokenAfterHeaderMsTotal  int64 `json:"first_token_after_header_ms_total"`
+	FirstTokenAfterHeaderCount    int64 `json:"first_token_after_header_count"`
 	StreamClosedAfterContentTotal int64 `json:"stream_closed_after_content_total"`
 }
 
 type openAIStreamRelayMetrics struct {
-	incompleteClose         atomic.Int64
-	clientWriteBlocked      atomic.Int64
-	finalFlushFail          atomic.Int64
-	firstTokenAfterHeaderMs atomic.Int64
-	firstTokenAfterHeaderCt atomic.Int64
+	incompleteClose          atomic.Int64
+	clientWriteBlocked       atomic.Int64
+	finalFlushFail           atomic.Int64
+	firstTokenAfterHeaderMs  atomic.Int64
+	firstTokenAfterHeaderCt  atomic.Int64
 	streamClosedAfterContent atomic.Int64
 }
 
@@ -128,8 +128,8 @@ type ProxyCircuitState struct {
 }
 
 type OpenAICircuitRuntimeSnapshot struct {
-	OpenProxyCount   int                `json:"open_proxy_count"`
-	OpenAccountCount int                `json:"open_account_count"`
+	OpenProxyCount   int                 `json:"open_proxy_count"`
+	OpenAccountCount int                 `json:"open_account_count"`
 	Proxies          []ProxyCircuitState `json:"proxies,omitempty"`
 	Accounts         []ProxyCircuitState `json:"accounts,omitempty"`
 }
@@ -452,9 +452,13 @@ func (s *OpenAIGatewayService) flushQueuedOpenAIRuntimeStateSync(ctx context.Con
 	pending := s.runtimeSyncPending
 	s.runtimeSyncPending = make(map[int64]struct{}, len(pending))
 	s.runtimeSyncMu.Unlock()
+	accountIDs := make([]int64, 0, len(pending))
 	for accountID := range pending {
-		s.syncAccountRuntimeStateToSchedulerCache(ctx, accountID)
+		if accountID > 0 {
+			accountIDs = append(accountIDs, accountID)
+		}
 	}
+	s.syncAccountRuntimeStatesToSchedulerCache(ctx, accountIDs)
 }
 
 func (s *OpenAIGatewayService) startOpenAIRuntimeSyncWorker() {
@@ -671,7 +675,16 @@ func (s *OpenAIGatewayService) probeOpenAIAccountHealth(ctx context.Context, acc
 	if s == nil || s.accountRepo == nil || s.httpUpstream == nil || accountID <= 0 {
 		return
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	var (
+		account *Account
+		err     error
+	)
+	if s.schedulerSnapshot != nil {
+		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+	}
+	if account == nil && err == nil {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
+	}
 	if err != nil || account == nil || !account.IsOpenAI() || !account.IsSchedulable() {
 		return
 	}

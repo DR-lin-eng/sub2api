@@ -265,13 +265,21 @@ async function loadData() {
   try {
     if (showByUser.value) {
       // 用户视图模式只加载用户并发数据
-      const userData = await opsAPI.getUserConcurrencyStats()
+      const userData = await opsAPI.getUserConcurrencyStats(80)
       userConcurrency.value = userData
     } else {
       // 常规模式加载账号/平台/分组数据
+      const includeAccountDetail = displayDimension.value === 'account'
+      const accountLimit = includeAccountDetail ? 80 : 0
       const [concData, availData] = await Promise.all([
-        opsAPI.getConcurrencyStats(props.platformFilter, props.groupIdFilter),
-        opsAPI.getAccountAvailabilityStats(props.platformFilter, props.groupIdFilter)
+        opsAPI.getConcurrencyStats(props.platformFilter, props.groupIdFilter, {
+          includeAccount: includeAccountDetail,
+          accountLimit
+        }),
+        opsAPI.getAccountAvailabilityStats(props.platformFilter, props.groupIdFilter, {
+          includeAccount: includeAccountDetail,
+          accountLimit
+        })
       ])
       concurrency.value = concData
       availability.value = availData

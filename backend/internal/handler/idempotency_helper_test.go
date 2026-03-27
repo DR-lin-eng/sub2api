@@ -212,7 +212,7 @@ func TestExecuteUserIdempotentJSONFallbackWithoutCoordinator(t *testing.T) {
 
 func TestExecuteUserIdempotentJSONFailCloseOnStoreUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(userStoreUnavailableRepoStub{}, service.DefaultIdempotencyConfig()))
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(userStoreUnavailableRepoStub{}, nil, service.DefaultIdempotencyConfig()))
 	t.Cleanup(func() {
 		service.SetDefaultIdempotencyCoordinator(nil)
 	})
@@ -242,7 +242,7 @@ func TestExecuteUserIdempotentJSONConcurrentRetrySingleSideEffectAndReplay(t *te
 	repo := newUserMemoryIdempotencyRepoStub()
 	cfg := service.DefaultIdempotencyConfig()
 	cfg.ProcessingTimeout = 2 * time.Second
-	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, cfg))
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, nil, cfg))
 	t.Cleanup(func() {
 		service.SetDefaultIdempotencyCoordinator(nil)
 	})

@@ -111,6 +111,7 @@ func provideCleanup(
 	openaiOAuth *service.OpenAIOAuthService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
+	gateway *service.GatewayService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	proxyMaintenanceRunner *service.ProxyMaintenanceRunnerService,
@@ -248,6 +249,12 @@ func provideCleanup(
 			{"OpenAIWSPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.CloseOpenAIWSPool()
+				}
+				return nil
+			}},
+			{"GatewayBackgroundWorkers", func() error {
+				if gateway != nil {
+					gateway.CloseBackgroundWorkers()
 				}
 				return nil
 			}},

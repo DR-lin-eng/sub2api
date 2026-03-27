@@ -302,7 +302,7 @@ func TestAssignSubscriptionKeepsWorkingWhenIdempotencyStoreUnavailable(t *testin
 		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
 	}
 	subRepo := newSubscriptionUserSubRepoStub()
-	SetDefaultIdempotencyCoordinator(NewIdempotencyCoordinator(failingIdempotencyRepo{}, DefaultIdempotencyConfig()))
+	SetDefaultIdempotencyCoordinator(NewIdempotencyCoordinator(failingIdempotencyRepo{}, nil, DefaultIdempotencyConfig()))
 	t.Cleanup(func() {
 		SetDefaultIdempotencyCoordinator(nil)
 	})

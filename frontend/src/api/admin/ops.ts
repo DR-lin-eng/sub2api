@@ -485,7 +485,11 @@ export interface OpenAIWSRuntimeResponse {
   timestamp: string
 }
 
-export async function getConcurrencyStats(platform?: string, groupId?: number | null): Promise<OpsConcurrencyStatsResponse> {
+export async function getConcurrencyStats(
+  platform?: string,
+  groupId?: number | null,
+  options?: { includeAccount?: boolean; accountLimit?: number }
+): Promise<OpsConcurrencyStatsResponse> {
   const params: Record<string, any> = {}
   if (platform) {
     params.platform = platform
@@ -493,13 +497,23 @@ export async function getConcurrencyStats(platform?: string, groupId?: number | 
   if (typeof groupId === 'number' && groupId > 0) {
     params.group_id = groupId
   }
+  if (typeof options?.includeAccount === 'boolean') {
+    params.include_account = options.includeAccount
+  }
+  if (typeof options?.accountLimit === 'number' && options.accountLimit > 0) {
+    params.account_limit = options.accountLimit
+  }
 
   const { data } = await apiClient.get<OpsConcurrencyStatsResponse>('/admin/ops/concurrency', { params })
   return data
 }
 
-export async function getUserConcurrencyStats(): Promise<OpsUserConcurrencyStatsResponse> {
-  const { data } = await apiClient.get<OpsUserConcurrencyStatsResponse>('/admin/ops/user-concurrency')
+export async function getUserConcurrencyStats(limit?: number): Promise<OpsUserConcurrencyStatsResponse> {
+  const params: Record<string, any> = {}
+  if (typeof limit === 'number' && limit > 0) {
+    params.limit = limit
+  }
+  const { data } = await apiClient.get<OpsUserConcurrencyStatsResponse>('/admin/ops/user-concurrency', { params })
   return data
 }
 
@@ -563,13 +577,23 @@ export interface OpsAccountAvailabilityStatsResponse {
   timestamp?: string
 }
 
-export async function getAccountAvailabilityStats(platform?: string, groupId?: number | null): Promise<OpsAccountAvailabilityStatsResponse> {
+export async function getAccountAvailabilityStats(
+  platform?: string,
+  groupId?: number | null,
+  options?: { includeAccount?: boolean; accountLimit?: number }
+): Promise<OpsAccountAvailabilityStatsResponse> {
   const params: Record<string, any> = {}
   if (platform) {
     params.platform = platform
   }
   if (typeof groupId === 'number' && groupId > 0) {
     params.group_id = groupId
+  }
+  if (typeof options?.includeAccount === 'boolean') {
+    params.include_account = options.includeAccount
+  }
+  if (typeof options?.accountLimit === 'number' && options.accountLimit > 0) {
+    params.account_limit = options.accountLimit
   }
   const { data } = await apiClient.get<OpsAccountAvailabilityStatsResponse>('/admin/ops/account-availability', { params })
   return data

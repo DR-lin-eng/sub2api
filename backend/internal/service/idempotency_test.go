@@ -18,6 +18,83 @@ type inMemoryIdempotencyRepo struct {
 	data   map[string]*IdempotencyRecord
 }
 
+type inMemoryIdempotencyCache struct {
+	mu         sync.Mutex
+	processing map[string]*IdempotencyCacheState
+	replay     map[string]*IdempotencyCacheState
+}
+
+func newInMemoryIdempotencyCache() *inMemoryIdempotencyCache {
+	return &inMemoryIdempotencyCache{
+		processing: make(map[string]*IdempotencyCacheState),
+		replay:     make(map[string]*IdempotencyCacheState),
+	}
+}
+
+func (c *inMemoryIdempotencyCache) GetProcessing(_ context.Context, scope, keyHash string) (*IdempotencyCacheState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneIdempotencyCacheState(c.processing[scope+"|"+keyHash]), nil
+}
+
+func (c *inMemoryIdempotencyCache) GetReplay(_ context.Context, scope, keyHash string) (*IdempotencyCacheState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneIdempotencyCacheState(c.replay[scope+"|"+keyHash]), nil
+}
+
+func (c *inMemoryIdempotencyCache) SetProcessing(_ context.Context, scope, keyHash string, state *IdempotencyCacheState, _ time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.processing[scope+"|"+keyHash] = cloneIdempotencyCacheState(state)
+	return nil
+}
+
+func (c *inMemoryIdempotencyCache) SetReplay(_ context.Context, scope, keyHash string, state *IdempotencyCacheState, _ time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.replay[scope+"|"+keyHash] = cloneIdempotencyCacheState(state)
+	return nil
+}
+
+func (c *inMemoryIdempotencyCache) ClearProcessing(_ context.Context, scope, keyHash string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.processing, scope+"|"+keyHash)
+	return nil
+}
+
+func (c *inMemoryIdempotencyCache) ClearReplay(_ context.Context, scope, keyHash string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.replay, scope+"|"+keyHash)
+	return nil
+}
+
+func cloneIdempotencyCacheState(in *IdempotencyCacheState) *IdempotencyCacheState {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.ResponseStatus != nil {
+		v := *in.ResponseStatus
+		out.ResponseStatus = &v
+	}
+	if in.ResponseBody != nil {
+		v := *in.ResponseBody
+		out.ResponseBody = &v
+	}
+	if in.ErrorReason != nil {
+		v := *in.ErrorReason
+		out.ErrorReason = &v
+	}
+	if in.LockedUntil != nil {
+		v := *in.LockedUntil
+		out.LockedUntil = &v
+	}
+	return &out
+}
+
 func newInMemoryIdempotencyRepo() *inMemoryIdempotencyRepo {
 	return &inMemoryIdempotencyRepo{
 		nextID: 1,
@@ -174,7 +251,7 @@ func TestIdempotencyCoordinator_RequireKey(t *testing.T) {
 	repo := newInMemoryIdempotencyRepo()
 	cfg := DefaultIdempotencyConfig()
 	cfg.ObserveOnly = false
-	coordinator := NewIdempotencyCoordinator(repo, cfg)
+	coordinator := NewIdempotencyCoordinator(repo, nil, cfg)
 
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:      "test.scope",
@@ -194,7 +271,8 @@ func TestIdempotencyCoordinator_ReplaySucceededResult(t *testing.T) {
 	resetIdempotencyMetricsForTest()
 	repo := newInMemoryIdempotencyRepo()
 	cfg := DefaultIdempotencyConfig()
-	coordinator := NewIdempotencyCoordinator(repo, cfg)
+	cache := newInMemoryIdempotencyCache()
+	coordinator := NewIdempotencyCoordinator(repo, cache, cfg)
 
 	execCount := 0
 	exec := func(ctx context.Context) (any, error) {
@@ -226,10 +304,77 @@ func TestIdempotencyCoordinator_ReplaySucceededResult(t *testing.T) {
 	require.Equal(t, uint64(1), metrics.ReplayTotal)
 }
 
+func TestIdempotencyCoordinator_FastPathFromCache(t *testing.T) {
+	resetIdempotencyMetricsForTest()
+	cache := newInMemoryIdempotencyCache()
+	coordinator := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), cache, DefaultIdempotencyConfig())
+
+	fingerprint, err := BuildIdempotencyFingerprint("POST", "/test", "user:1", map[string]any{"a": 1})
+	require.NoError(t, err)
+	keyHash := HashIdempotencyKey("fast-cache")
+	body := `{"count":1}`
+	status := 200
+	require.NoError(t, cache.SetReplay(context.Background(), "test.scope", keyHash, &IdempotencyCacheState{
+		RequestFingerprint: fingerprint,
+		Status:             IdempotencyStatusSucceeded,
+		ResponseStatus:     &status,
+		ResponseBody:       &body,
+		ExpiresAt:          time.Now().Add(time.Hour),
+	}, time.Hour))
+
+	result, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
+		Scope:          "test.scope",
+		Method:         "POST",
+		Route:          "/test",
+		ActorScope:     "user:1",
+		RequireKey:     true,
+		IdempotencyKey: "fast-cache",
+		Payload:        map[string]any{"a": 1},
+	}, func(ctx context.Context) (any, error) {
+		t.Fatal("execute should not be called when replay cache is hit")
+		return nil, nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Replayed)
+}
+
+func TestIdempotencyCoordinator_FastPathProcessingConflict(t *testing.T) {
+	resetIdempotencyMetricsForTest()
+	cache := newInMemoryIdempotencyCache()
+	coordinator := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), cache, DefaultIdempotencyConfig())
+
+	fingerprint, err := BuildIdempotencyFingerprint("POST", "/test", "user:1", map[string]any{"a": 1})
+	require.NoError(t, err)
+	keyHash := HashIdempotencyKey("processing-cache")
+	lockedUntil := time.Now().Add(10 * time.Second)
+	require.NoError(t, cache.SetProcessing(context.Background(), "test.scope", keyHash, &IdempotencyCacheState{
+		RequestFingerprint: fingerprint,
+		Status:             IdempotencyStatusProcessing,
+		LockedUntil:        &lockedUntil,
+		ExpiresAt:          time.Now().Add(time.Hour),
+	}, time.Hour))
+
+	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
+		Scope:          "test.scope",
+		Method:         "POST",
+		Route:          "/test",
+		ActorScope:     "user:1",
+		RequireKey:     true,
+		IdempotencyKey: "processing-cache",
+		Payload:        map[string]any{"a": 1},
+	}, func(ctx context.Context) (any, error) {
+		t.Fatal("execute should not be called when processing cache is hit")
+		return nil, nil
+	})
+	require.Error(t, err)
+	require.Equal(t, infraerrors.Code(ErrIdempotencyInProgress), infraerrors.Code(err))
+}
+
 func TestIdempotencyCoordinator_ReclaimExpiredSucceededRecord(t *testing.T) {
 	resetIdempotencyMetricsForTest()
 	repo := newInMemoryIdempotencyRepo()
-	coordinator := NewIdempotencyCoordinator(repo, DefaultIdempotencyConfig())
+	coordinator := NewIdempotencyCoordinator(repo, nil, DefaultIdempotencyConfig())
 
 	opts := IdempotencyExecuteOptions{
 		Scope:          "test.scope.expired",
@@ -283,7 +428,7 @@ func TestIdempotencyCoordinator_SameKeyDifferentPayloadConflict(t *testing.T) {
 	resetIdempotencyMetricsForTest()
 	repo := newInMemoryIdempotencyRepo()
 	cfg := DefaultIdempotencyConfig()
-	coordinator := NewIdempotencyCoordinator(repo, cfg)
+	coordinator := NewIdempotencyCoordinator(repo, nil, cfg)
 
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "test.scope",
@@ -321,7 +466,7 @@ func TestIdempotencyCoordinator_BackoffAfterRetryableFailure(t *testing.T) {
 	repo := newInMemoryIdempotencyRepo()
 	cfg := DefaultIdempotencyConfig()
 	cfg.FailedRetryBackoff = 2 * time.Second
-	coordinator := NewIdempotencyCoordinator(repo, cfg)
+	coordinator := NewIdempotencyCoordinator(repo, nil, cfg)
 
 	opts := IdempotencyExecuteOptions{
 		Scope:          "test.scope",
@@ -356,7 +501,7 @@ func TestIdempotencyCoordinator_ConcurrentSameKeySingleSideEffect(t *testing.T) 
 	repo := newInMemoryIdempotencyRepo()
 	cfg := DefaultIdempotencyConfig()
 	cfg.ProcessingTimeout = 2 * time.Second
-	coordinator := NewIdempotencyCoordinator(repo, cfg)
+	coordinator := NewIdempotencyCoordinator(repo, nil, cfg)
 
 	opts := IdempotencyExecuteOptions{
 		Scope:          "test.scope.concurrent",
@@ -423,7 +568,7 @@ func (failingIdempotencyRepo) DeleteExpired(context.Context, time.Time, int) (in
 
 func TestIdempotencyCoordinator_StoreUnavailableMetrics(t *testing.T) {
 	resetIdempotencyMetricsForTest()
-	coordinator := NewIdempotencyCoordinator(failingIdempotencyRepo{}, DefaultIdempotencyConfig())
+	coordinator := NewIdempotencyCoordinator(failingIdempotencyRepo{}, nil, DefaultIdempotencyConfig())
 
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "test.scope.unavailable",
@@ -447,7 +592,7 @@ func TestDefaultIdempotencyCoordinatorAndTTLs(t *testing.T) {
 	require.Equal(t, DefaultIdempotencyConfig().DefaultTTL, DefaultWriteIdempotencyTTL())
 	require.Equal(t, DefaultIdempotencyConfig().SystemOperationTTL, DefaultSystemOperationIdempotencyTTL())
 
-	coordinator := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), IdempotencyConfig{
+	coordinator := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), nil, IdempotencyConfig{
 		DefaultTTL:         2 * time.Hour,
 		SystemOperationTTL: 15 * time.Minute,
 		ProcessingTimeout:  10 * time.Second,
@@ -504,7 +649,7 @@ func TestRetryAfterSecondsFromErrorBranches(t *testing.T) {
 
 func TestIdempotencyCoordinator_ExecuteNilExecutorAndNoKeyPassThrough(t *testing.T) {
 	repo := newInMemoryIdempotencyRepo()
-	coordinator := NewIdempotencyCoordinator(repo, DefaultIdempotencyConfig())
+	coordinator := NewIdempotencyCoordinator(repo, nil, DefaultIdempotencyConfig())
 
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "scope",
@@ -551,7 +696,7 @@ func (noIDOwnerRepo) DeleteExpired(context.Context, time.Time, int) (int64, erro
 
 func TestIdempotencyCoordinator_RepoNilScopeRequiredAndRecordIDMissing(t *testing.T) {
 	cfg := DefaultIdempotencyConfig()
-	coordinator := NewIdempotencyCoordinator(nil, cfg)
+	coordinator := NewIdempotencyCoordinator(nil, nil, cfg)
 
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "scope",
@@ -563,7 +708,7 @@ func TestIdempotencyCoordinator_RepoNilScopeRequiredAndRecordIDMissing(t *testin
 	require.Error(t, err)
 	require.Equal(t, infraerrors.Code(ErrIdempotencyStoreUnavail), infraerrors.Code(err))
 
-	coordinator = NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), cfg)
+	coordinator = NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), nil, cfg)
 	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		IdempotencyKey: "k2",
 		Payload:        map[string]any{"a": 1},
@@ -573,7 +718,7 @@ func TestIdempotencyCoordinator_RepoNilScopeRequiredAndRecordIDMissing(t *testin
 	require.Error(t, err)
 	require.Equal(t, "IDEMPOTENCY_SCOPE_REQUIRED", infraerrors.Reason(err))
 
-	coordinator = NewIdempotencyCoordinator(noIDOwnerRepo{}, cfg)
+	coordinator = NewIdempotencyCoordinator(noIDOwnerRepo{}, nil, cfg)
 	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "scope-no-id",
 		IdempotencyKey: "k3",
@@ -632,7 +777,7 @@ func TestIdempotencyCoordinator_ConflictBranchesAndDecodeError(t *testing.T) {
 			ExpiresAt:          now.Add(time.Hour),
 		},
 	}
-	coordinator := NewIdempotencyCoordinator(repo, DefaultIdempotencyConfig())
+	coordinator := NewIdempotencyCoordinator(repo, nil, DefaultIdempotencyConfig())
 	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "scope",
 		IdempotencyKey: "k",
@@ -726,9 +871,25 @@ func (r *markBehaviorRepo) MarkFailedRetryable(ctx context.Context, id int64, er
 	return r.inMemoryIdempotencyRepo.MarkFailedRetryable(ctx, id, errorReason, lockedUntil, expiresAt)
 }
 
+type detachedWriteCtxRepo struct {
+	inMemoryIdempotencyRepo
+	markSucceededCtxClean atomic.Bool
+	markFailedCtxClean    atomic.Bool
+}
+
+func (r *detachedWriteCtxRepo) MarkSucceeded(ctx context.Context, id int64, responseStatus int, responseBody string, expiresAt time.Time) error {
+	r.markSucceededCtxClean.Store(ctx.Err() == nil)
+	return r.inMemoryIdempotencyRepo.MarkSucceeded(ctx, id, responseStatus, responseBody, expiresAt)
+}
+
+func (r *detachedWriteCtxRepo) MarkFailedRetryable(ctx context.Context, id int64, errorReason string, lockedUntil, expiresAt time.Time) error {
+	r.markFailedCtxClean.Store(ctx.Err() == nil)
+	return r.inMemoryIdempotencyRepo.MarkFailedRetryable(ctx, id, errorReason, lockedUntil, expiresAt)
+}
+
 func TestIdempotencyCoordinator_MarkAndMarshalBranches(t *testing.T) {
 	repo := &markBehaviorRepo{inMemoryIdempotencyRepo: *newInMemoryIdempotencyRepo()}
-	coordinator := NewIdempotencyCoordinator(repo, DefaultIdempotencyConfig())
+	coordinator := NewIdempotencyCoordinator(repo, nil, DefaultIdempotencyConfig())
 
 	repo.failMarkSucceeded = true
 	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
@@ -773,8 +934,47 @@ func TestIdempotencyCoordinator_MarkAndMarshalBranches(t *testing.T) {
 	require.Equal(t, "plain failure", err.Error())
 }
 
+func TestIdempotencyCoordinator_UsesDetachedContextForStateWrites(t *testing.T) {
+	repo := &detachedWriteCtxRepo{inMemoryIdempotencyRepo: *newInMemoryIdempotencyRepo()}
+	coordinator := NewIdempotencyCoordinator(repo, nil, DefaultIdempotencyConfig())
+
+	t.Run("failed mark uses non-canceled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := coordinator.Execute(ctx, IdempotencyExecuteOptions{
+			Scope:          "scope-failed-detached",
+			IdempotencyKey: "k-failed",
+			Method:         "POST",
+			Route:          "/fail",
+			ActorScope:     "u:1",
+			Payload:        map[string]any{"a": 1},
+		}, func(execCtx context.Context) (any, error) {
+			cancel()
+			return nil, errors.New("plain failure")
+		})
+		require.Error(t, err)
+		require.True(t, repo.markFailedCtxClean.Load())
+	})
+
+	t.Run("success mark uses non-canceled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := coordinator.Execute(ctx, IdempotencyExecuteOptions{
+			Scope:          "scope-success-detached",
+			IdempotencyKey: "k-success",
+			Method:         "POST",
+			Route:          "/ok",
+			ActorScope:     "u:1",
+			Payload:        map[string]any{"a": 1},
+		}, func(execCtx context.Context) (any, error) {
+			cancel()
+			return map[string]any{"ok": true}, nil
+		})
+		require.NoError(t, err)
+		require.True(t, repo.markSucceededCtxClean.Load())
+	})
+}
+
 func TestIdempotencyCoordinator_HelperBranches(t *testing.T) {
-	c := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), IdempotencyConfig{
+	c := NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), nil, IdempotencyConfig{
 		DefaultTTL:           time.Hour,
 		SystemOperationTTL:   time.Hour,
 		ProcessingTimeout:    time.Second,

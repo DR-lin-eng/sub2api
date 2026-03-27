@@ -7,6 +7,8 @@ import (
 	"github.com/google/wire"
 )
 
+type adminTaskStateCacheSetup struct{}
+
 // ProvideAdminHandlers creates the AdminHandlers struct
 func ProvideAdminHandlers(
 	dashboardHandler *admin.DashboardHandler,
@@ -90,6 +92,7 @@ func ProvideHandlers(
 	totpHandler *TotpHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
+	_ *adminTaskStateCacheSetup,
 ) *Handlers {
 	return &Handlers{
 		Auth:          authHandler,
@@ -109,6 +112,12 @@ func ProvideHandlers(
 	}
 }
 
+func ProvideAdminTaskStateCacheSetup(cache service.TaskStateCache, repo service.AdminTaskStateRepository) *adminTaskStateCacheSetup {
+	admin.SetDefaultTaskStateCache(cache)
+	admin.SetDefaultTaskStateRepository(repo)
+	return &adminTaskStateCacheSetup{}
+}
+
 // ProviderSet is the Wire provider set for all handlers
 var ProviderSet = wire.NewSet(
 	// Top-level handlers
@@ -124,6 +133,7 @@ var ProviderSet = wire.NewSet(
 	NewSoraGatewayHandler,
 	NewTotpHandler,
 	ProvideSettingHandler,
+	ProvideAdminTaskStateCacheSetup,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

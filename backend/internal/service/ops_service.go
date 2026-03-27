@@ -7,11 +7,14 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/cespare/xxhash/v2"
+	"golang.org/x/sync/singleflight"
 )
 
 var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is disabled")
@@ -19,7 +22,26 @@ var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is dis
 const (
 	opsMaxStoredRequestBodyBytes = 10 * 1024
 	opsMaxStoredErrorBodyBytes   = 20 * 1024
+	opsRealtimeAccountListTTL    = 15 * time.Second
+	opsRealtimeUserListTTL       = 15 * time.Second
+	opsSettingCacheTTL           = 30 * time.Second
 )
+
+type opsCachedAccounts struct {
+	Accounts  []Account
+	ExpiresAt int64
+}
+
+type opsCachedUsers struct {
+	Users     []User
+	ExpiresAt int64
+}
+
+type opsCachedSetting struct {
+	Value     string
+	Found     bool
+	ExpiresAt int64
+}
 
 // OpsPreparedRequestBody is a compact, reusable representation of a request body
 // prepared for ops logging. It avoids keeping large raw payloads on hot request paths.
@@ -83,6 +105,11 @@ type OpsService struct {
 	geminiCompatService       *GeminiMessagesCompatService
 	antigravityGatewayService *AntigravityGatewayService
 	systemLogSink             *OpsSystemLogSink
+	accountListCache          sync.Map
+	accountListSF             singleflight.Group
+	userListCache             atomic.Value
+	opsSettingCache           sync.Map
+	opsSettingSF              singleflight.Group
 }
 
 func NewOpsService(
@@ -117,6 +144,104 @@ func NewOpsService(
 	return svc
 }
 
+func (s *OpsService) opsSettingValueCached(ctx context.Context, key string, defaultValue string) string {
+	if s == nil || s.settingRepo == nil || strings.TrimSpace(key) == "" {
+		return defaultValue
+	}
+	if cached, ok := s.opsSettingCache.Load(key); ok {
+		if entry, ok := cached.(*opsCachedSetting); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+			if entry.Found {
+				return entry.Value
+			}
+			return defaultValue
+		}
+	}
+
+	value, err, _ := s.opsSettingSF.Do(key, func() (any, error) {
+		if cached, ok := s.opsSettingCache.Load(key); ok {
+			if entry, ok := cached.(*opsCachedSetting); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+				return entry, nil
+			}
+		}
+		raw, loadErr := s.settingRepo.GetValue(ctx, key)
+		if loadErr != nil {
+			if errors.Is(loadErr, ErrSettingNotFound) {
+				entry := &opsCachedSetting{Found: false, ExpiresAt: time.Now().Add(opsSettingCacheTTL).UnixNano()}
+				s.opsSettingCache.Store(key, entry)
+				return entry, nil
+			}
+			return nil, loadErr
+		}
+		entry := &opsCachedSetting{Found: true, Value: raw, ExpiresAt: time.Now().Add(opsSettingCacheTTL).UnixNano()}
+		s.opsSettingCache.Store(key, entry)
+		return entry, nil
+	})
+	if err != nil {
+		return defaultValue
+	}
+	entry, _ := value.(*opsCachedSetting)
+	if entry == nil || !entry.Found {
+		return defaultValue
+	}
+	return entry.Value
+}
+
+func (s *OpsService) listAllAccountsForOpsCached(ctx context.Context, platformFilter string) ([]Account, error) {
+	if s == nil || s.accountRepo == nil {
+		return []Account{}, nil
+	}
+	cacheKey := strings.TrimSpace(strings.ToLower(platformFilter))
+	if cached, ok := s.accountListCache.Load(cacheKey); ok {
+		if entry, ok := cached.(*opsCachedAccounts); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+			return entry.Accounts, nil
+		}
+	}
+
+	value, err, _ := s.accountListSF.Do(cacheKey, func() (any, error) {
+		if cached, ok := s.accountListCache.Load(cacheKey); ok {
+			if entry, ok := cached.(*opsCachedAccounts); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+				return entry, nil
+			}
+		}
+		accounts, loadErr := s.loadAllAccountsForOps(ctx, platformFilter)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		entry := &opsCachedAccounts{
+			Accounts:  accounts,
+			ExpiresAt: time.Now().Add(opsRealtimeAccountListTTL).UnixNano(),
+		}
+		s.accountListCache.Store(cacheKey, entry)
+		return entry, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	entry, _ := value.(*opsCachedAccounts)
+	if entry == nil {
+		return []Account{}, nil
+	}
+	return entry.Accounts, nil
+}
+
+func (s *OpsService) listAllActiveUsersForOpsCached(ctx context.Context) ([]User, error) {
+	if s == nil || s.userRepo == nil {
+		return []User{}, nil
+	}
+	if cached, ok := s.userListCache.Load().(*opsCachedUsers); ok && cached != nil && time.Now().UnixNano() < cached.ExpiresAt {
+		return cached.Users, nil
+	}
+	users, err := s.loadAllActiveUsersForOps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.userListCache.Store(&opsCachedUsers{
+		Users:     users,
+		ExpiresAt: time.Now().Add(opsRealtimeUserListTTL).UnixNano(),
+	})
+	return users, nil
+}
+
 func (s *OpsService) RequireMonitoringEnabled(ctx context.Context) error {
 	if s.IsMonitoringEnabled(ctx) {
 		return nil
@@ -132,15 +257,7 @@ func (s *OpsService) IsMonitoringEnabled(ctx context.Context) bool {
 	if s.settingRepo == nil {
 		return true
 	}
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpsMonitoringEnabled)
-	if err != nil {
-		// Default enabled when key is missing, and fail-open on transient errors
-		// (ops should never block gateway traffic).
-		if errors.Is(err, ErrSettingNotFound) {
-			return true
-		}
-		return true
-	}
+	value := s.opsSettingValueCached(ctx, SettingKeyOpsMonitoringEnabled, "true")
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "0", "off", "disabled":
 		return false

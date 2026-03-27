@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -81,6 +82,9 @@ var backendModeSF singleflight.Group
 const backendModeCacheTTL = 60 * time.Second
 const backendModeErrorTTL = 5 * time.Second
 const backendModeDBTimeout = 5 * time.Second
+const settingHotCacheTTL = 60 * time.Second
+const settingHotErrorTTL = 5 * time.Second
+const settingHotDBTimeout = 5 * time.Second
 
 const adminAPIKeyRecordVersion = 2
 
@@ -104,6 +108,24 @@ type AdminAPIKeyBinding struct {
 	Legacy            bool
 }
 
+type settingHotCacheEntry struct {
+	Value     string
+	Found     bool
+	ExpiresAt int64
+}
+
+var settingHotKeys = map[string]struct{}{
+	SettingKeyOpsMonitoringEnabled:         {},
+	SettingKeyOpsRealtimeMonitoringEnabled: {},
+	SettingKeyStreamTimeoutSettings:        {},
+	SettingKeyAutoDelete401Accounts:        {},
+	SettingKeyAutoDelete429Accounts:        {},
+	SettingKeyAutoDeleteUselessProxies:     {},
+	SettingKeyAllowUngroupedKeyScheduling:  {},
+	SettingKeyFrontendURL:                  {},
+	SettingKeyAPIBaseURL:                   {},
+}
+
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
 	GetByID(ctx context.Context, id int64) (*Group, error)
@@ -117,6 +139,8 @@ type SettingService struct {
 	onUpdate              func() // Callback when settings are updated (for cache invalidation)
 	onS3Update            func() // Callback when Sora S3 settings are updated
 	version               string // Application version
+	hotSettings           sync.Map
+	hotSettingsSF         singleflight.Group
 }
 
 // NewSettingService 创建系统设置服务实例
@@ -125,6 +149,134 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
+}
+
+func (s *SettingService) isHotSettingKey(key string) bool {
+	_, ok := settingHotKeys[key]
+	return ok
+}
+
+func (s *SettingService) invalidateHotSettingKeys(keys ...string) {
+	if s == nil {
+		return
+	}
+	if len(keys) == 0 {
+		s.hotSettings.Range(func(key, _ any) bool {
+			s.hotSettings.Delete(key)
+			return true
+		})
+		return
+	}
+	for _, key := range keys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		s.hotSettings.Delete(key)
+	}
+}
+
+func (s *SettingService) getSettingValueCached(ctx context.Context, key string) (string, error) {
+	if s == nil || s.settingRepo == nil {
+		return "", ErrSettingNotFound
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !s.isHotSettingKey(key) {
+		return s.settingRepo.GetValue(ctx, key)
+	}
+	if cached, ok := s.hotSettings.Load(key); ok {
+		if entry, ok := cached.(*settingHotCacheEntry); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+			if entry.Found {
+				return entry.Value, nil
+			}
+			return "", ErrSettingNotFound
+		}
+	}
+
+	value, err, _ := s.hotSettingsSF.Do(key, func() (any, error) {
+		if cached, ok := s.hotSettings.Load(key); ok {
+			if entry, ok := cached.(*settingHotCacheEntry); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
+				return entry, nil
+			}
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settingHotDBTimeout)
+		defer cancel()
+
+		loaded, loadErr := s.settingRepo.GetValue(dbCtx, key)
+		if loadErr != nil {
+			if errors.Is(loadErr, ErrSettingNotFound) {
+				entry := &settingHotCacheEntry{
+					Found:     false,
+					ExpiresAt: time.Now().Add(settingHotCacheTTL).UnixNano(),
+				}
+				s.hotSettings.Store(key, entry)
+				return entry, nil
+			}
+			return nil, loadErr
+		}
+		entry := &settingHotCacheEntry{
+			Value:     loaded,
+			Found:     true,
+			ExpiresAt: time.Now().Add(settingHotCacheTTL).UnixNano(),
+		}
+		s.hotSettings.Store(key, entry)
+		return entry, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	entry, _ := value.(*settingHotCacheEntry)
+	if entry == nil || !entry.Found {
+		return "", ErrSettingNotFound
+	}
+	return entry.Value, nil
+}
+
+func (s *SettingService) setSettingValue(ctx context.Context, key, value string) error {
+	if s == nil || s.settingRepo == nil {
+		return ErrSettingNotFound
+	}
+	if err := s.settingRepo.Set(ctx, key, value); err != nil {
+		return err
+	}
+	s.invalidateHotSettingKeys(key)
+	if s.onUpdate != nil {
+		s.onUpdate()
+	}
+	return nil
+}
+
+func (s *SettingService) setMultipleSettingValues(ctx context.Context, updates map[string]string) error {
+	if s == nil || s.settingRepo == nil {
+		return ErrSettingNotFound
+	}
+	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		keys = append(keys, key)
+	}
+	s.invalidateHotSettingKeys(keys...)
+	if s.onUpdate != nil {
+		s.onUpdate()
+	}
+	return nil
+}
+
+func (s *SettingService) deleteSettingValue(ctx context.Context, key string) error {
+	if s == nil || s.settingRepo == nil {
+		return ErrSettingNotFound
+	}
+	if err := s.settingRepo.Delete(ctx, key); err != nil {
+		return err
+	}
+	s.invalidateHotSettingKeys(key)
+	if s.onUpdate != nil {
+		s.onUpdate()
+	}
+	return nil
 }
 
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
@@ -144,7 +296,7 @@ func (s *SettingService) GetAllSettings(ctx context.Context) (*SystemSettings, e
 
 // GetFrontendURL 获取前端基础URL（数据库优先，fallback 到配置文件）
 func (s *SettingService) GetFrontendURL(ctx context.Context) string {
-	val, err := s.settingRepo.GetValue(ctx, SettingKeyFrontendURL)
+	val, err := s.getSettingValueCached(ctx, SettingKeyFrontendURL)
 	if err == nil && strings.TrimSpace(val) != "" {
 		return strings.TrimSpace(val)
 	}
@@ -555,7 +707,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
 
-	err = s.settingRepo.SetMultiple(ctx, updates)
+	err = s.setMultipleSettingValues(ctx, updates)
 	if err == nil {
 		// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
 		versionBoundsSF.Forget("version_bounds")
@@ -569,9 +721,6 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 			value:     settings.BackendModeEnabled,
 			expiresAt: time.Now().Add(backendModeCacheTTL).UnixNano(),
 		})
-		if s.onUpdate != nil {
-			s.onUpdate() // Invalidate cache after settings update
-		}
 	}
 	return err
 }
@@ -834,7 +983,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAutoDeleteUselessProxies:    "false",
 	}
 
-	return s.settingRepo.SetMultiple(ctx, defaults)
+	return s.setMultipleSettingValues(ctx, defaults)
 }
 
 // parseSettings 解析设置到结构体
@@ -1019,7 +1168,7 @@ func (s *SettingService) getStringOrDefault(settings map[string]string, key, def
 
 // IsTurnstileEnabled 检查是否启用 Turnstile 验证
 func (s *SettingService) IsTurnstileEnabled(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyTurnstileEnabled)
+	value, err := s.getSettingValueCached(ctx, SettingKeyTurnstileEnabled)
 	if err != nil {
 		return false
 	}
@@ -1109,7 +1258,7 @@ func (s *SettingService) GenerateAdminAPIKey(ctx context.Context, adminUserID in
 	}
 
 	// 存储到 settings 表
-	if err := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, string(recordBytes)); err != nil {
+	if err := s.setSettingValue(ctx, SettingKeyAdminAPIKey, string(recordBytes)); err != nil {
 		return "", fmt.Errorf("save admin api key: %w", err)
 	}
 
@@ -1145,7 +1294,7 @@ func (s *SettingService) ValidateAdminAPIKey(ctx context.Context, presentedKey s
 		return nil, nil
 	}
 
-	storedKey, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
+	storedKey, err := s.getSettingValueCached(ctx, SettingKeyAdminAPIKey)
 	if err != nil {
 		if errors.Is(err, ErrSettingNotFound) {
 			return nil, nil
@@ -1169,7 +1318,7 @@ func (s *SettingService) ValidateAdminAPIKey(ctx context.Context, presentedKey s
 
 // DeleteAdminAPIKey 删除管理员 API Key
 func (s *SettingService) DeleteAdminAPIKey(ctx context.Context) error {
-	return s.settingRepo.Delete(ctx, SettingKeyAdminAPIKey)
+	return s.deleteSettingValue(ctx, SettingKeyAdminAPIKey)
 }
 
 // IsModelFallbackEnabled 检查是否启用模型兜底机制
@@ -1356,7 +1505,7 @@ func (s *SettingService) SetOverloadCooldownSettings(ctx context.Context, settin
 
 // GetStreamTimeoutSettings 获取流超时处理配置
 func (s *SettingService) GetStreamTimeoutSettings(ctx context.Context) (*StreamTimeoutSettings, error) {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyStreamTimeoutSettings)
+	value, err := s.getSettingValueCached(ctx, SettingKeyStreamTimeoutSettings)
 	if err != nil {
 		if errors.Is(err, ErrSettingNotFound) {
 			return DefaultStreamTimeoutSettings(), nil
@@ -1405,7 +1554,7 @@ func (s *SettingService) GetStreamTimeoutSettings(ctx context.Context) (*StreamT
 
 // IsUngroupedKeySchedulingAllowed 查询是否允许未分组 Key 调度
 func (s *SettingService) IsUngroupedKeySchedulingAllowed(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyAllowUngroupedKeyScheduling)
+	value, err := s.getSettingValueCached(ctx, SettingKeyAllowUngroupedKeyScheduling)
 	if err != nil {
 		return false // fail-closed: 查询失败时默认不允许
 	}
@@ -1413,7 +1562,7 @@ func (s *SettingService) IsUngroupedKeySchedulingAllowed(ctx context.Context) bo
 }
 
 func (s *SettingService) IsAutoDelete401AccountsEnabled(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDelete401Accounts)
+	value, err := s.getSettingValueCached(ctx, SettingKeyAutoDelete401Accounts)
 	if err != nil {
 		return false
 	}
@@ -1421,7 +1570,7 @@ func (s *SettingService) IsAutoDelete401AccountsEnabled(ctx context.Context) boo
 }
 
 func (s *SettingService) IsAutoDelete429AccountsEnabled(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDelete429Accounts)
+	value, err := s.getSettingValueCached(ctx, SettingKeyAutoDelete429Accounts)
 	if err != nil {
 		return false
 	}
@@ -1429,7 +1578,7 @@ func (s *SettingService) IsAutoDelete429AccountsEnabled(ctx context.Context) boo
 }
 
 func (s *SettingService) IsAutoDeleteUselessProxiesEnabled(ctx context.Context) bool {
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyAutoDeleteUselessProxies)
+	value, err := s.getSettingValueCached(ctx, SettingKeyAutoDeleteUselessProxies)
 	if err != nil {
 		return false
 	}
@@ -1629,7 +1778,7 @@ func (s *SettingService) SetStreamTimeoutSettings(ctx context.Context, settings 
 		return fmt.Errorf("marshal stream timeout settings: %w", err)
 	}
 
-	return s.settingRepo.Set(ctx, SettingKeyStreamTimeoutSettings, string(data))
+	return s.setSettingValue(ctx, SettingKeyStreamTimeoutSettings, string(data))
 }
 
 type soraS3ProfilesStore struct {
@@ -2021,13 +2170,10 @@ func (s *SettingService) persistSoraS3ProfilesStore(ctx context.Context, store *
 		updates[SettingKeySoraS3SecretAccessKey] = active.SecretAccessKey
 	}
 
-	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
+	if err := s.setMultipleSettingValues(ctx, updates); err != nil {
 		return err
 	}
 
-	if s.onUpdate != nil {
-		s.onUpdate()
-	}
 	if s.onS3Update != nil {
 		s.onS3Update()
 	}

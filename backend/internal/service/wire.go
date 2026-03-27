@@ -413,8 +413,8 @@ func buildIdempotencyConfig(cfg *config.Config) IdempotencyConfig {
 	return idempotencyCfg
 }
 
-func ProvideIdempotencyCoordinator(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCoordinator {
-	coordinator := NewIdempotencyCoordinator(repo, buildIdempotencyConfig(cfg))
+func ProvideIdempotencyCoordinator(repo IdempotencyRepository, cache IdempotencyCache, cfg *config.Config) *IdempotencyCoordinator {
+	coordinator := NewIdempotencyCoordinator(repo, cache, buildIdempotencyConfig(cfg))
 	SetDefaultIdempotencyCoordinator(coordinator)
 	return coordinator
 }

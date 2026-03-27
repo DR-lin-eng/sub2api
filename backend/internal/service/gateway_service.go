@@ -694,7 +694,16 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 		return false
 	}
 
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	var (
+		account *Account
+		err     error
+	)
+	if s.schedulerSnapshot != nil {
+		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+	}
+	if account == nil && err == nil {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
+	}
 	if err != nil {
 		logger.LegacyPrintf("service.gateway", "[handler] load_account_for_proxy_reassign_failed account=%d error=%v", accountID, err)
 		return false
@@ -720,11 +729,7 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 		if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
 			logger.LegacyPrintf("service.gateway", "[handler] clear_stale_temp_unschedule_failed account=%d error=%v", account.ID, err)
 		}
-		if s.schedulerSnapshot != nil {
-			if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
-				logger.LegacyPrintf("service.gateway", "[handler] sync_stale_proxy_reassign_cache_failed account=%d error=%v", account.ID, err)
-			}
-		}
+		s.queueGatewayRuntimeStateSync(account.ID)
 		return true
 	}
 
@@ -772,11 +777,7 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
 		logger.LegacyPrintf("service.gateway", "[handler] clear_temp_unschedule_after_proxy_reassign_failed account=%d error=%v", account.ID, err)
 	}
-	if s.schedulerSnapshot != nil {
-		if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
-			logger.LegacyPrintf("service.gateway", "[handler] sync_proxy_reassign_cache_failed account=%d error=%v", account.ID, err)
-		}
-	}
+	s.queueGatewayRuntimeStateSync(account.ID)
 
 	qualityStatus := ""
 	if info := latencies[newProxyID]; info != nil {
@@ -792,6 +793,85 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 		qualityStatus,
 	)
 	return true
+}
+
+func (s *GatewayService) queueGatewayRuntimeStateSync(accountID int64) {
+	if s == nil || s.schedulerSnapshot == nil || accountID <= 0 {
+		return
+	}
+	if s.runtimeSyncWake == nil {
+		s.syncGatewayRuntimeStatesToSchedulerCache(context.Background(), []int64{accountID})
+		return
+	}
+	s.runtimeSyncMu.Lock()
+	if s.runtimeSyncPending == nil {
+		s.runtimeSyncPending = make(map[int64]struct{})
+	}
+	s.runtimeSyncPending[accountID] = struct{}{}
+	s.runtimeSyncMu.Unlock()
+	select {
+	case s.runtimeSyncWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *GatewayService) flushQueuedGatewayRuntimeStateSync(ctx context.Context) {
+	if s == nil || s.schedulerSnapshot == nil {
+		return
+	}
+	s.runtimeSyncMu.Lock()
+	pending := s.runtimeSyncPending
+	s.runtimeSyncPending = make(map[int64]struct{}, len(pending))
+	s.runtimeSyncMu.Unlock()
+	accountIDs := make([]int64, 0, len(pending))
+	for accountID := range pending {
+		if accountID > 0 {
+			accountIDs = append(accountIDs, accountID)
+		}
+	}
+	s.syncGatewayRuntimeStatesToSchedulerCache(ctx, accountIDs)
+}
+
+func (s *GatewayService) syncGatewayRuntimeStatesToSchedulerCache(ctx context.Context, accountIDs []int64) {
+	if s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil || len(accountIDs) == 0 {
+		return
+	}
+	accounts, err := s.accountRepo.GetByIDs(ctx, accountIDs)
+	if err != nil || len(accounts) == 0 {
+		return
+	}
+	for _, account := range accounts {
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
+			logger.LegacyPrintf("service.gateway", "[handler] sync_gateway_runtime_cache_failed account=%d error=%v", account.ID, err)
+		}
+	}
+}
+
+func (s *GatewayService) startGatewayRuntimeSyncWorker() {
+	if s == nil || s.schedulerSnapshot == nil || s.runtimeSyncWake == nil {
+		return
+	}
+	interval := defaultOpenAIRuntimeSyncBatch
+	if s.cfg != nil && s.cfg.Gateway.Scheduling.RuntimeSyncBatchMS > 0 {
+		interval = time.Duration(s.cfg.Gateway.Scheduling.RuntimeSyncBatchMS) * time.Millisecond
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.runtimeSyncStop:
+				s.flushQueuedGatewayRuntimeStateSync(context.Background())
+				return
+			case <-s.runtimeSyncWake:
+			case <-ticker.C:
+			}
+			s.flushQueuedGatewayRuntimeStateSync(context.Background())
+		}
+	}()
 }
 
 // TempUnscheduleRetryableError 在需要切号时优先尝试代理自动迁移；
@@ -814,6 +894,7 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 		} else {
 			logger.LegacyPrintf("service.gateway", "[handler] temp_unscheduled account=%d until=%s reason=%q", accountID, until.Format(time.RFC3339), reason)
 		}
+		s.queueGatewayRuntimeStateSync(accountID)
 		return
 	}
 	if !failoverErr.RetryableOnSameAccount {
@@ -862,6 +943,11 @@ type GatewayService struct {
 	debugClaudeMimic      atomic.Bool
 	proxyRepo             ProxyRepository
 	proxyLatencyCache     ProxyLatencyCache
+	runtimeSyncWake       chan struct{}
+	runtimeSyncStop       chan struct{}
+	runtimeSyncStopOnce   sync.Once
+	runtimeSyncMu         sync.Mutex
+	runtimeSyncPending    map[int64]struct{}
 
 	gatewaySchedulerOnce sync.Once
 	gatewayScheduler     GatewayAccountScheduler
@@ -923,6 +1009,9 @@ func NewGatewayService(
 		modelsListCache:      gocache.New(modelsListTTL, time.Minute),
 		modelsListCacheTTL:   modelsListTTL,
 		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		runtimeSyncWake:      make(chan struct{}, 1),
+		runtimeSyncStop:      make(chan struct{}),
+		runtimeSyncPending:   make(map[int64]struct{}),
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -933,7 +1022,19 @@ func NewGatewayService(
 	)
 	svc.debugModelRouting.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
 	svc.debugClaudeMimic.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
+	svc.startGatewayRuntimeSyncWorker()
 	return svc
+}
+
+func (s *GatewayService) CloseBackgroundWorkers() {
+	if s == nil {
+		return
+	}
+	s.runtimeSyncStopOnce.Do(func() {
+		if s.runtimeSyncStop != nil {
+			close(s.runtimeSyncStop)
+		}
+	})
 }
 
 func (s *GatewayService) SetProxyFailoverDeps(proxyRepo ProxyRepository, proxyLatencyCache ProxyLatencyCache) {

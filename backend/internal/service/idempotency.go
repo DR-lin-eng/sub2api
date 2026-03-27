@@ -57,6 +57,25 @@ type IdempotencyRepository interface {
 	DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error)
 }
 
+type IdempotencyCacheState struct {
+	RequestFingerprint string     `json:"request_fingerprint"`
+	Status             string     `json:"status"`
+	ResponseStatus     *int       `json:"response_status,omitempty"`
+	ResponseBody       *string    `json:"response_body,omitempty"`
+	ErrorReason        *string    `json:"error_reason,omitempty"`
+	LockedUntil        *time.Time `json:"locked_until,omitempty"`
+	ExpiresAt          time.Time  `json:"expires_at"`
+}
+
+type IdempotencyCache interface {
+	GetProcessing(ctx context.Context, scope, keyHash string) (*IdempotencyCacheState, error)
+	GetReplay(ctx context.Context, scope, keyHash string) (*IdempotencyCacheState, error)
+	SetProcessing(ctx context.Context, scope, keyHash string, state *IdempotencyCacheState, ttl time.Duration) error
+	SetReplay(ctx context.Context, scope, keyHash string, state *IdempotencyCacheState, ttl time.Duration) error
+	ClearProcessing(ctx context.Context, scope, keyHash string) error
+	ClearReplay(ctx context.Context, scope, keyHash string) error
+}
+
 type IdempotencyConfig struct {
 	DefaultTTL           time.Duration
 	SystemOperationTTL   time.Duration
@@ -94,9 +113,12 @@ type IdempotencyExecuteResult struct {
 }
 
 type IdempotencyCoordinator struct {
-	repo IdempotencyRepository
-	cfg  IdempotencyConfig
+	repo  IdempotencyRepository
+	cache IdempotencyCache
+	cfg   IdempotencyConfig
 }
+
+const idempotencyStateWriteTimeout = 5 * time.Second
 
 var (
 	defaultIdempotencyMu  sync.RWMutex
@@ -131,10 +153,11 @@ func DefaultSystemOperationIdempotencyTTL() time.Duration {
 	return defaultTTL
 }
 
-func NewIdempotencyCoordinator(repo IdempotencyRepository, cfg IdempotencyConfig) *IdempotencyCoordinator {
+func NewIdempotencyCoordinator(repo IdempotencyRepository, cache IdempotencyCache, cfg IdempotencyConfig) *IdempotencyCoordinator {
 	return &IdempotencyCoordinator{
-		repo: repo,
-		cfg:  cfg,
+		repo:  repo,
+		cache: cache,
+		cfg:   cfg,
 	}
 }
 
@@ -219,11 +242,6 @@ func (c *IdempotencyCoordinator) Execute(
 		}
 		return &IdempotencyExecuteResult{Data: data}, nil
 	}
-	if c.repo == nil {
-		RecordIdempotencyStoreUnavailable(opts.Route, opts.Scope, "repo_nil")
-		return nil, ErrIdempotencyStoreUnavail
-	}
-
 	if opts.Scope == "" {
 		return nil, infraerrors.BadRequest("IDEMPOTENCY_SCOPE_REQUIRED", "idempotency scope is required")
 	}
@@ -241,6 +259,16 @@ func (c *IdempotencyCoordinator) Execute(
 	expiresAt := now.Add(ttl)
 	lockedUntil := now.Add(c.cfg.ProcessingTimeout)
 	keyHash := HashIdempotencyKey(key)
+
+	if cachedResult, cacheHandled, cacheErr := c.tryFastPath(ctx, opts, keyHash, fingerprint, now); cacheErr != nil {
+		return nil, cacheErr
+	} else if cacheHandled {
+		return cachedResult, nil
+	}
+	if c.repo == nil {
+		RecordIdempotencyStoreUnavailable(opts.Route, opts.Scope, "repo_nil")
+		return nil, ErrIdempotencyStoreUnavail
+	}
 
 	record := &IdempotencyRecord{
 		Scope:              opts.Scope,
@@ -260,6 +288,12 @@ func (c *IdempotencyCoordinator) Execute(
 		return nil, ErrIdempotencyStoreUnavail.WithCause(err)
 	}
 	if owner {
+		c.setProcessingCacheBestEffort(ctx, opts.Scope, keyHash, &IdempotencyCacheState{
+			RequestFingerprint: fingerprint,
+			Status:             IdempotencyStatusProcessing,
+			LockedUntil:        &lockedUntil,
+			ExpiresAt:          expiresAt,
+		}, c.cfg.ProcessingTimeout)
 		recordIdempotencyClaim(opts.Route, opts.Scope, map[string]string{"mode": "new_claim"})
 		logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "none->processing", false, map[string]string{
 			"claim_mode": "new",
@@ -281,6 +315,7 @@ func (c *IdempotencyCoordinator) Execute(
 			})
 			return nil, ErrIdempotencyStoreUnavail
 		}
+		c.syncCacheFromRecord(ctx, existing)
 		if existing.RequestFingerprint != fingerprint {
 			recordIdempotencyConflict(opts.Route, opts.Scope, map[string]string{"reason": "fingerprint_mismatch"})
 			logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "existing->fingerprint_mismatch", false, nil)
@@ -298,6 +333,12 @@ func (c *IdempotencyCoordinator) Execute(
 			}
 			if taken {
 				reclaimedByExpired = true
+				c.setProcessingCacheBestEffort(ctx, opts.Scope, keyHash, &IdempotencyCacheState{
+					RequestFingerprint: fingerprint,
+					Status:             IdempotencyStatusProcessing,
+					LockedUntil:        &lockedUntil,
+					ExpiresAt:          expiresAt,
+				}, c.cfg.ProcessingTimeout)
 				recordIdempotencyClaim(opts.Route, opts.Scope, map[string]string{"mode": "expired_reclaim"})
 				logIdempotencyAudit(opts.Route, opts.Scope, keyHash, existing.Status+"->processing", false, map[string]string{
 					"claim_mode": "expired_reclaim",
@@ -319,6 +360,7 @@ func (c *IdempotencyCoordinator) Execute(
 					})
 					return nil, ErrIdempotencyStoreUnavail
 				}
+				c.syncCacheFromRecord(ctx, latest)
 				if latest.RequestFingerprint != fingerprint {
 					recordIdempotencyConflict(opts.Route, opts.Scope, map[string]string{"reason": "fingerprint_mismatch"})
 					logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "existing->fingerprint_mismatch", false, nil)
@@ -368,6 +410,12 @@ func (c *IdempotencyCoordinator) Execute(
 					})
 					return nil, c.conflictWithRetryAfter(ErrIdempotencyInProgress, existing.LockedUntil, now)
 				}
+				c.setProcessingCacheBestEffort(ctx, opts.Scope, keyHash, &IdempotencyCacheState{
+					RequestFingerprint: fingerprint,
+					Status:             IdempotencyStatusProcessing,
+					LockedUntil:        &lockedUntil,
+					ExpiresAt:          expiresAt,
+				}, c.cfg.ProcessingTimeout)
 				recordIdempotencyClaim(opts.Route, opts.Scope, map[string]string{"mode": "reclaim"})
 				logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "failed_retryable->processing", false, map[string]string{
 					"claim_mode": "reclaim",
@@ -407,11 +455,22 @@ func (c *IdempotencyCoordinator) Execute(
 		logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->failed_retryable", false, map[string]string{
 			"reason": reason,
 		})
-		if markErr := c.repo.MarkFailedRetryable(ctx, record.ID, reason, backoffUntil, expiresAt); markErr != nil {
+		writeCtx, cancel := detachedIdempotencyWriteContext(ctx)
+		defer cancel()
+		if markErr := c.repo.MarkFailedRetryable(writeCtx, record.ID, reason, backoffUntil, expiresAt); markErr != nil {
 			RecordIdempotencyStoreUnavailable(opts.Route, opts.Scope, "mark_failed_retryable_error")
 			logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->store_unavailable", false, map[string]string{
 				"operation": "mark_failed_retryable",
 			})
+		} else {
+			c.setProcessingCacheBestEffort(ctx, opts.Scope, keyHash, &IdempotencyCacheState{
+				RequestFingerprint: fingerprint,
+				Status:             IdempotencyStatusFailedRetryable,
+				ErrorReason:        &reason,
+				LockedUntil:        &backoffUntil,
+				ExpiresAt:          expiresAt,
+			}, time.Until(backoffUntil))
+			c.clearReplayCacheBestEffort(ctx, opts.Scope, keyHash)
 		}
 		return nil, execErr
 	}
@@ -424,16 +483,69 @@ func (c *IdempotencyCoordinator) Execute(
 		})
 		return nil, ErrIdempotencyStoreUnavail.WithCause(marshalErr)
 	}
-	if markErr := c.repo.MarkSucceeded(ctx, record.ID, 200, storedBody, expiresAt); markErr != nil {
+	writeCtx, cancel := detachedIdempotencyWriteContext(ctx)
+	defer cancel()
+	if markErr := c.repo.MarkSucceeded(writeCtx, record.ID, 200, storedBody, expiresAt); markErr != nil {
 		RecordIdempotencyStoreUnavailable(opts.Route, opts.Scope, "mark_succeeded_error")
 		logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->store_unavailable", false, map[string]string{
 			"operation": "mark_succeeded",
 		})
 		return nil, ErrIdempotencyStoreUnavail.WithCause(markErr)
 	}
+	status := 200
+	c.setReplayCacheBestEffort(ctx, opts.Scope, keyHash, &IdempotencyCacheState{
+		RequestFingerprint: fingerprint,
+		Status:             IdempotencyStatusSucceeded,
+		ResponseStatus:     &status,
+		ResponseBody:       &storedBody,
+		ExpiresAt:          expiresAt,
+	}, time.Until(expiresAt))
+	c.clearProcessingCacheBestEffort(ctx, opts.Scope, keyHash)
 	logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->succeeded", false, nil)
 
 	return &IdempotencyExecuteResult{Data: data}, nil
+}
+
+func (c *IdempotencyCoordinator) tryFastPath(
+	ctx context.Context,
+	opts IdempotencyExecuteOptions,
+	keyHash string,
+	fingerprint string,
+	now time.Time,
+) (*IdempotencyExecuteResult, bool, error) {
+	if c == nil || c.cache == nil || strings.TrimSpace(opts.Scope) == "" || strings.TrimSpace(keyHash) == "" {
+		return nil, false, nil
+	}
+
+	if replay, err := c.cache.GetReplay(ctx, opts.Scope, keyHash); err == nil && replay != nil {
+		if replay.RequestFingerprint != "" && replay.RequestFingerprint != fingerprint {
+			recordIdempotencyConflict(opts.Route, opts.Scope, map[string]string{"reason": "fingerprint_mismatch_cache"})
+			return nil, true, ErrIdempotencyKeyConflict
+		}
+		data, parseErr := c.decodeStoredResponse(replay.ResponseBody)
+		if parseErr == nil {
+			recordIdempotencyReplay(opts.Route, opts.Scope, map[string]string{"mode": "cache"})
+			return &IdempotencyExecuteResult{Data: data, Replayed: true}, true, nil
+		}
+	}
+
+	if processing, err := c.cache.GetProcessing(ctx, opts.Scope, keyHash); err == nil && processing != nil {
+		if processing.RequestFingerprint != "" && processing.RequestFingerprint != fingerprint {
+			recordIdempotencyConflict(opts.Route, opts.Scope, map[string]string{"reason": "fingerprint_mismatch_cache"})
+			return nil, true, ErrIdempotencyKeyConflict
+		}
+		switch processing.Status {
+		case IdempotencyStatusProcessing:
+			return nil, true, c.conflictWithRetryAfter(ErrIdempotencyInProgress, processing.LockedUntil, now)
+		case IdempotencyStatusFailedRetryable:
+			if processing.LockedUntil != nil && processing.LockedUntil.After(now) {
+				recordIdempotencyRetryBackoff(opts.Route, opts.Scope, map[string]string{"mode": "cache"})
+				return nil, true, c.conflictWithRetryAfter(ErrIdempotencyRetryBackoff, processing.LockedUntil, now)
+			}
+		}
+	}
+
+	return nil, false, nil
 }
 
 func (c *IdempotencyCoordinator) conflictWithRetryAfter(base *infraerrors.ApplicationError, lockedUntil *time.Time, now time.Time) error {
@@ -457,6 +569,92 @@ func (c *IdempotencyCoordinator) marshalStoredResponse(data any) (string, error)
 		redacted = redacted[:c.cfg.MaxStoredResponseLen] + "...(truncated)"
 	}
 	return redacted, nil
+}
+
+func detachedIdempotencyWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		return context.WithTimeout(context.Background(), idempotencyStateWriteTimeout)
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), idempotencyStateWriteTimeout)
+}
+
+func (c *IdempotencyCoordinator) syncCacheFromRecord(ctx context.Context, record *IdempotencyRecord) {
+	if c == nil || c.cache == nil || record == nil || record.Scope == "" || record.IdempotencyKeyHash == "" {
+		return
+	}
+	switch record.Status {
+	case IdempotencyStatusSucceeded:
+		c.setReplayCacheBestEffort(ctx, record.Scope, record.IdempotencyKeyHash, &IdempotencyCacheState{
+			RequestFingerprint: record.RequestFingerprint,
+			Status:             record.Status,
+			ResponseStatus:     record.ResponseStatus,
+			ResponseBody:       record.ResponseBody,
+			ExpiresAt:          record.ExpiresAt,
+		}, time.Until(record.ExpiresAt))
+		c.clearProcessingCacheBestEffort(ctx, record.Scope, record.IdempotencyKeyHash)
+	case IdempotencyStatusProcessing, IdempotencyStatusFailedRetryable:
+		c.setProcessingCacheBestEffort(ctx, record.Scope, record.IdempotencyKeyHash, &IdempotencyCacheState{
+			RequestFingerprint: record.RequestFingerprint,
+			Status:             record.Status,
+			ErrorReason:        record.ErrorReason,
+			LockedUntil:        record.LockedUntil,
+			ExpiresAt:          record.ExpiresAt,
+		}, idempotencyCacheProcessingTTL(record))
+		if record.Status != IdempotencyStatusFailedRetryable {
+			c.clearReplayCacheBestEffort(ctx, record.Scope, record.IdempotencyKeyHash)
+		}
+	}
+}
+
+func idempotencyCacheProcessingTTL(record *IdempotencyRecord) time.Duration {
+	if record == nil {
+		return idempotencyStateWriteTimeout
+	}
+	if record.LockedUntil != nil {
+		if ttl := time.Until(*record.LockedUntil); ttl > 0 {
+			return ttl
+		}
+	}
+	if ttl := time.Until(record.ExpiresAt); ttl > 0 {
+		return ttl
+	}
+	return idempotencyStateWriteTimeout
+}
+
+func (c *IdempotencyCoordinator) setProcessingCacheBestEffort(ctx context.Context, scope, keyHash string, state *IdempotencyCacheState, ttl time.Duration) {
+	if c == nil || c.cache == nil || state == nil {
+		return
+	}
+	cacheCtx, cancel := detachedIdempotencyWriteContext(ctx)
+	defer cancel()
+	_ = c.cache.SetProcessing(cacheCtx, scope, keyHash, state, ttl)
+}
+
+func (c *IdempotencyCoordinator) setReplayCacheBestEffort(ctx context.Context, scope, keyHash string, state *IdempotencyCacheState, ttl time.Duration) {
+	if c == nil || c.cache == nil || state == nil {
+		return
+	}
+	cacheCtx, cancel := detachedIdempotencyWriteContext(ctx)
+	defer cancel()
+	_ = c.cache.SetReplay(cacheCtx, scope, keyHash, state, ttl)
+}
+
+func (c *IdempotencyCoordinator) clearProcessingCacheBestEffort(ctx context.Context, scope, keyHash string) {
+	if c == nil || c.cache == nil {
+		return
+	}
+	cacheCtx, cancel := detachedIdempotencyWriteContext(ctx)
+	defer cancel()
+	_ = c.cache.ClearProcessing(cacheCtx, scope, keyHash)
+}
+
+func (c *IdempotencyCoordinator) clearReplayCacheBestEffort(ctx context.Context, scope, keyHash string) {
+	if c == nil || c.cache == nil {
+		return
+	}
+	cacheCtx, cancel := detachedIdempotencyWriteContext(ctx)
+	defer cancel()
+	_ = c.cache.ClearReplay(cacheCtx, scope, keyHash)
 }
 
 func (c *IdempotencyCoordinator) decodeStoredResponse(stored *string) (any, error) {

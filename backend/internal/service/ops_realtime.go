@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"strings"
 )
 
@@ -17,15 +16,7 @@ func (s *OpsService) IsRealtimeMonitoringEnabled(ctx context.Context) bool {
 	if s.settingRepo == nil {
 		return true
 	}
-
-	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpsRealtimeMonitoringEnabled)
-	if err != nil {
-		// Default enabled when key is missing; fail-open on transient errors.
-		if errors.Is(err, ErrSettingNotFound) {
-			return true
-		}
-		return true
-	}
+	value := s.opsSettingValueCached(ctx, SettingKeyOpsRealtimeMonitoringEnabled, "true")
 
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "0", "off", "disabled":

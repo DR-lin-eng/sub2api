@@ -40,9 +40,9 @@ type DataExportTaskFilters struct {
 }
 
 type DataExportTaskRequest struct {
-	IDs            []int64                 `json:"ids,omitempty"`
-	Filters        *DataExportTaskFilters  `json:"filters,omitempty"`
-	IncludeProxies *bool                   `json:"include_proxies,omitempty"`
+	IDs            []int64                `json:"ids,omitempty"`
+	Filters        *DataExportTaskFilters `json:"filters,omitempty"`
+	IncludeProxies *bool                  `json:"include_proxies,omitempty"`
 }
 
 type DataExportTaskResult struct {
@@ -109,6 +109,12 @@ func defaultAccountExportTaskManager() *accountExportTaskManager {
 	return defaultAccountExportTasks
 }
 
+func accountExportTaskCacheKey(taskID string) string {
+	return "task:progress:account_export:" + taskID
+}
+
+const accountExportTaskKind = "account_export"
+
 func (m *accountExportTaskManager) ensureStarted() {
 	if m == nil {
 		return
@@ -156,6 +162,7 @@ func (m *accountExportTaskManager) createTask(payload accountExportTaskPayload) 
 	m.mu.Lock()
 	m.tasks[taskID] = task
 	m.mu.Unlock()
+	storeTaskStateJSONWithRepo(context.Background(), accountExportTaskCacheKey(taskID), accountExportTaskKind, taskID, accountExportFailedTaskTTL, string(task.state.Status), task.state.FinishedAt, task.state)
 	return task
 }
 
@@ -168,6 +175,9 @@ func (m *accountExportTaskManager) getTask(taskID string) (*accountExportTaskSta
 	task := m.tasks[taskID]
 	m.mu.RUnlock()
 	if task == nil {
+		if cached, ok := loadTaskStateJSONWithRepo[accountExportTaskState](context.Background(), accountExportTaskCacheKey(taskID), accountExportTaskKind, taskID); ok && cached != nil {
+			return cached, true
+		}
 		return nil, false
 	}
 	state := task.state
@@ -195,6 +205,7 @@ func (m *accountExportTaskManager) updateTask(taskID string, mutate func(*accoun
 		}
 		task.state.Progress = progress
 	}
+	storeTaskStateJSONWithRepo(context.Background(), accountExportTaskCacheKey(taskID), accountExportTaskKind, taskID, accountExportFailedTaskTTL, string(task.state.Status), task.state.FinishedAt, task.state)
 }
 
 func (m *accountExportTaskManager) submitTask(task *accountExportTask) error {
@@ -311,6 +322,7 @@ func (m *accountExportTaskManager) cleanupExpiredTasks(now time.Time) {
 		if !shouldCleanupExportTask(task, now) {
 			continue
 		}
+		deleteTaskStateJSON(context.Background(), accountExportTaskCacheKey(taskID))
 		if task != nil && task.downloadPath != "" {
 			_ = os.Remove(task.downloadPath)
 		}

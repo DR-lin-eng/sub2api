@@ -1774,12 +1774,24 @@ func (s *OpenAIGatewayService) syncAccountRuntimeStateToSchedulerCache(ctx conte
 	if s == nil || s.schedulerSnapshot == nil || accountID <= 0 {
 		return
 	}
-	latest, err := s.accountRepo.GetByID(ctx, accountID)
-	if err != nil || latest == nil {
+	s.syncAccountRuntimeStatesToSchedulerCache(ctx, []int64{accountID})
+}
+
+func (s *OpenAIGatewayService) syncAccountRuntimeStatesToSchedulerCache(ctx context.Context, accountIDs []int64) {
+	if s == nil || s.schedulerSnapshot == nil || s.accountRepo == nil || len(accountIDs) == 0 {
 		return
 	}
-	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, latest); err != nil {
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] sync scheduler cache failed: account=%d err=%v", accountID, err)
+	latestAccounts, err := s.accountRepo.GetByIDs(ctx, accountIDs)
+	if err != nil || len(latestAccounts) == 0 {
+		return
+	}
+	for _, latest := range latestAccounts {
+		if latest == nil || latest.ID <= 0 {
+			continue
+		}
+		if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, latest); err != nil {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] sync scheduler cache failed: account=%d err=%v", latest.ID, err)
+		}
 	}
 }
 

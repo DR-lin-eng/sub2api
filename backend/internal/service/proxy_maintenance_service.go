@@ -393,10 +393,6 @@ func (s *ProxyMaintenanceService) cleanupFailedUnusedProxies(ctx context.Context
 		if check.Success || check.Proxy.ID <= 0 {
 			continue
 		}
-		accounts, err := s.adminSvc.GetProxyAccounts(ctx, check.Proxy.ID)
-		if err != nil || len(accounts) > 0 {
-			continue
-		}
 		deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := s.adminSvc.DeleteProxy(deleteCtx, check.Proxy.ID); err == nil {
 			deleted = append(deleted, check.Proxy.ID)

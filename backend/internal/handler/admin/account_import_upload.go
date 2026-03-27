@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/google/uuid"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const (
@@ -26,10 +26,10 @@ const (
 type accountImportUploadStatus string
 
 const (
-	accountImportUploadStatusPending    accountImportUploadStatus = "pending"
-	accountImportUploadStatusUploading  accountImportUploadStatus = "uploading"
-	accountImportUploadStatusUploaded   accountImportUploadStatus = "uploaded"
-	accountImportUploadStatusFinalized  accountImportUploadStatus = "finalized"
+	accountImportUploadStatusPending   accountImportUploadStatus = "pending"
+	accountImportUploadStatusUploading accountImportUploadStatus = "uploading"
+	accountImportUploadStatusUploaded  accountImportUploadStatus = "uploaded"
+	accountImportUploadStatusFinalized accountImportUploadStatus = "finalized"
 )
 
 type createAccountImportUploadSessionRequest struct {
@@ -70,6 +70,10 @@ var defaultAccountImportUploadSessions = &accountImportUploadSessionManager{
 
 func defaultAccountImportUploadSessionManager() *accountImportUploadSessionManager {
 	return defaultAccountImportUploadSessions
+}
+
+func accountImportUploadSessionCacheKey(sessionID string) string {
+	return "upload:session:account_import:" + sessionID
 }
 
 func (m *accountImportUploadSessionManager) createSession(req createAccountImportUploadSessionRequest) (*accountImportUploadSessionState, string, error) {
@@ -117,6 +121,7 @@ func (m *accountImportUploadSessionManager) createSession(req createAccountImpor
 	m.mu.Lock()
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
+	storeTaskStateJSON(context.Background(), accountImportUploadSessionCacheKey(sessionID), accountImportUploadSessionTTL, session.state)
 
 	state := session.state
 	return &state, session.filepath, nil
@@ -147,6 +152,7 @@ func (m *accountImportUploadSessionManager) deleteSession(sessionID string) {
 	session := m.sessions[sessionID]
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
+	deleteTaskStateJSON(context.Background(), accountImportUploadSessionCacheKey(sessionID))
 	if session != nil && session.filepath != "" {
 		_ = os.Remove(session.filepath)
 	}
@@ -163,6 +169,7 @@ func (m *accountImportUploadSessionManager) updateSession(sessionID string, muta
 		return nil, errors.New("upload session not found")
 	}
 	mutate(session)
+	storeTaskStateJSON(context.Background(), accountImportUploadSessionCacheKey(sessionID), accountImportUploadSessionTTL, session.state)
 	state := session.state
 	return &state, nil
 }
@@ -193,6 +200,10 @@ func (h *AccountHandler) GetImportUploadSession(c *gin.Context) {
 	sessionID := strings.TrimSpace(c.Param("session_id"))
 	session, ok := h.uploadSessionManager.getSession(sessionID)
 	if !ok || session == nil {
+		if cached, hit := loadTaskStateJSON[accountImportUploadSessionState](c.Request.Context(), accountImportUploadSessionCacheKey(sessionID)); hit && cached != nil {
+			response.Success(c, cached)
+			return
+		}
 		response.NotFound(c, "Upload session not found")
 		return
 	}

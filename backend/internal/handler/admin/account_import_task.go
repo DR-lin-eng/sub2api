@@ -68,6 +68,12 @@ func defaultAccountImportTaskManager() *accountImportTaskManager {
 	return defaultAccountImportTasks
 }
 
+func accountImportTaskCacheKey(taskID string) string {
+	return "task:progress:account_import:" + taskID
+}
+
+const accountImportTaskKind = "account_import"
+
 var defaultAccountImportTasks = &accountImportTaskManager{
 	stopCh: make(chan struct{}),
 	queue:  make(chan *accountImportTask, 8),
@@ -120,6 +126,7 @@ func (m *accountImportTaskManager) createTask(filename string, payload accountIm
 	m.mu.Lock()
 	m.tasks[taskID] = task
 	m.mu.Unlock()
+	storeTaskStateJSONWithRepo(context.Background(), accountImportTaskCacheKey(taskID), accountImportTaskKind, taskID, accountImportTaskTTL, string(task.state.Status), task.state.FinishedAt, task.state)
 	return task
 }
 
@@ -132,6 +139,9 @@ func (m *accountImportTaskManager) getTask(taskID string) (*accountImportTaskSta
 	task := m.tasks[taskID]
 	m.mu.RUnlock()
 	if task == nil {
+		if cached, ok := loadTaskStateJSONWithRepo[accountImportTaskState](context.Background(), accountImportTaskCacheKey(taskID), accountImportTaskKind, taskID); ok && cached != nil {
+			return cached, true
+		}
 		return nil, false
 	}
 	state := task.state
@@ -159,6 +169,7 @@ func (m *accountImportTaskManager) updateTask(taskID string, mutate func(*accoun
 		}
 		task.state.Progress = progress
 	}
+	storeTaskStateJSONWithRepo(context.Background(), accountImportTaskCacheKey(taskID), accountImportTaskKind, taskID, accountImportTaskTTL, string(task.state.Status), task.state.FinishedAt, task.state)
 }
 
 func saveImportPayloadToTempFile(raw []byte) (string, error) {
@@ -267,6 +278,7 @@ func (m *accountImportTaskManager) cleanupExpiredTasks(now time.Time) {
 		if !shouldCleanupImportTask(task, now) {
 			continue
 		}
+		deleteTaskStateJSON(context.Background(), accountImportTaskCacheKey(taskID))
 		delete(m.tasks, taskID)
 	}
 }
