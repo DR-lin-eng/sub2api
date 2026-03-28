@@ -204,18 +204,47 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
-func TestApplyOpenAIRemoteCompactFailoverPolicy_DisablesSwitching(t *testing.T) {
+func TestApplyOpenAIRemoteCompactFailoverPolicy_DisablesSameAccountRetryOnly(t *testing.T) {
 	policy := openAIFailoverPolicy{
 		MaxSwitches:           3,
 		AllowSameAccountRetry: true,
 	}
 
 	got := applyOpenAIRemoteCompactFailoverPolicy(policy, true)
-	require.Equal(t, 0, got.MaxSwitches)
+	require.Equal(t, 3, got.MaxSwitches)
 	require.False(t, got.AllowSameAccountRetry)
 
 	unchanged := applyOpenAIRemoteCompactFailoverPolicy(policy, false)
 	require.Equal(t, policy, unchanged)
+}
+
+func TestShouldSwitchOpenAIRemoteCompactAccount(t *testing.T) {
+	t.Run("switches_for_401_429_502", func(t *testing.T) {
+		require.True(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusUnauthorized,
+		}, "", 0, 2))
+		require.True(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusTooManyRequests,
+		}, "", 0, 2))
+		require.True(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusBadGateway,
+		}, "", 0, 2))
+	})
+
+	t.Run("does_not_switch_when_previous_response_id_present", func(t *testing.T) {
+		require.False(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusUnauthorized,
+		}, "resp_123", 0, 2))
+	})
+
+	t.Run("does_not_switch_when_exhausted_or_semantic_error", func(t *testing.T) {
+		require.False(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusBadRequest,
+		}, "", 0, 2))
+		require.False(t, shouldSwitchOpenAIRemoteCompactAccount(&service.UpstreamFailoverError{
+			StatusCode: http.StatusUnauthorized,
+		}, "", 2, 2))
+	})
 }
 
 func TestHandleRemoteCompactFailure_PreservesUpstreamStatusAndMessage(t *testing.T) {

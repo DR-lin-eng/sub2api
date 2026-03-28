@@ -50,6 +50,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	settingRepository := repository.NewSettingRepository(client)
 	groupRepository := repository.NewGroupRepository(client, db)
 	settingService := service.ProvideSettingService(settingRepository, groupRepository, configConfig)
+	if err := settingService.RefreshTLSFingerprintRuntime(context.Background()); err != nil {
+		return nil, err
+	}
 	emailCache := repository.NewEmailCache(redisClient)
 	emailService := service.NewEmailService(settingRepository, emailCache)
 	turnstileVerifier := repository.NewTurnstileVerifier()

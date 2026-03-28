@@ -205,6 +205,25 @@ func TestProfileNames(t *testing.T) {
 	}
 }
 
+func TestReplaceProfiles(t *testing.T) {
+	r := NewRegistry()
+	r.ReplaceProfiles(map[string]*Profile{
+		"alpha": {Name: "Alpha"},
+		"beta":  {Name: "Beta"},
+	})
+
+	names := r.ProfileNames()
+	expected := []string{"alpha", "beta", DefaultProfileName}
+	if len(names) != len(expected) {
+		t.Fatalf("expected %d names, got %d", len(expected), len(names))
+	}
+	for i, name := range expected {
+		if names[i] != name {
+			t.Fatalf("expected name at index %d to be %s, got %s", i, name, names[i])
+		}
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	r := NewRegistry()
 

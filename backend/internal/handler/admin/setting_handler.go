@@ -1109,6 +1109,225 @@ func (h *SettingHandler) GetStreamTimeoutSettings(c *gin.Context) {
 	})
 }
 
+func toTLSFingerprintProfileDTO(profile service.TLSFingerprintProfile) dto.TLSFingerprintProfile {
+	return dto.TLSFingerprintProfile{
+		ProfileID:    profile.ProfileID,
+		Name:         profile.Name,
+		Enabled:      profile.Enabled,
+		EnableGREASE: profile.EnableGREASE,
+		CipherSuites: profile.CipherSuites,
+		Curves:       profile.Curves,
+		PointFormats: profile.PointFormats,
+		UpdatedAt:    profile.UpdatedAt,
+	}
+}
+
+func validateTLSFingerprintSlice(field string, values []uint64) error {
+	for _, value := range values {
+		if value == 0 {
+			return fmt.Errorf("%s contains invalid value 0", field)
+		}
+	}
+	return nil
+}
+
+type UpdateTLSFingerprintSettingsRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+type CreateTLSFingerprintProfileRequest struct {
+	ProfileID    string   `json:"profile_id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+}
+
+type UpdateTLSFingerprintProfileRequest struct {
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+}
+
+// GetTLSFingerprintSettings 获取 TLS 指纹全局设置与列表。
+// GET /api/v1/admin/settings/tls-fingerprint
+func (h *SettingHandler) GetTLSFingerprintSettings(c *gin.Context) {
+	result, err := h.settingService.ListTLSFingerprintProfiles(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	items := make([]dto.TLSFingerprintProfile, 0, len(result.Items))
+	for idx := range result.Items {
+		items = append(items, toTLSFingerprintProfileDTO(result.Items[idx]))
+	}
+	response.Success(c, dto.ListTLSFingerprintProfilesResponse{
+		Enabled: result.Enabled,
+		Items:   items,
+	})
+}
+
+// UpdateTLSFingerprintSettings 更新 TLS 指纹全局开关。
+// PUT /api/v1/admin/settings/tls-fingerprint
+func (h *SettingHandler) UpdateTLSFingerprintSettings(c *gin.Context) {
+	var req UpdateTLSFingerprintSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.settingService.SetTLSFingerprintSettings(c.Request.Context(), &service.TLSFingerprintSettings{
+		Enabled: req.Enabled,
+	}); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.TLSFingerprintSettings{Enabled: req.Enabled})
+}
+
+// ListTLSFingerprintProfiles 获取 TLS 指纹 Profile 列表。
+// GET /api/v1/admin/settings/tls-fingerprint/profiles
+func (h *SettingHandler) ListTLSFingerprintProfiles(c *gin.Context) {
+	result, err := h.settingService.ListTLSFingerprintProfiles(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	items := make([]dto.TLSFingerprintProfile, 0, len(result.Items))
+	for idx := range result.Items {
+		items = append(items, toTLSFingerprintProfileDTO(result.Items[idx]))
+	}
+	response.Success(c, dto.ListTLSFingerprintProfilesResponse{
+		Enabled: result.Enabled,
+		Items:   items,
+	})
+}
+
+// CreateTLSFingerprintProfile 创建 TLS 指纹 Profile。
+// POST /api/v1/admin/settings/tls-fingerprint/profiles
+func (h *SettingHandler) CreateTLSFingerprintProfile(c *gin.Context) {
+	var req CreateTLSFingerprintProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.ProfileID) == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.BadRequest(c, "Name is required")
+		return
+	}
+	if err := validateTLSFingerprintSlice("cipher_suites", uint16To64Slice(req.CipherSuites)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("curves", uint16To64Slice(req.Curves)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("point_formats", uint8To64Slice(req.PointFormats)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	created, err := h.settingService.CreateTLSFingerprintProfile(c.Request.Context(), &service.TLSFingerprintProfile{
+		ProfileID:    req.ProfileID,
+		Name:         req.Name,
+		Enabled:      req.Enabled,
+		EnableGREASE: req.EnableGREASE,
+		CipherSuites: req.CipherSuites,
+		Curves:       req.Curves,
+		PointFormats: req.PointFormats,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, toTLSFingerprintProfileDTO(*created))
+}
+
+// UpdateTLSFingerprintProfile 更新 TLS 指纹 Profile。
+// PUT /api/v1/admin/settings/tls-fingerprint/profiles/:profile_id
+func (h *SettingHandler) UpdateTLSFingerprintProfile(c *gin.Context) {
+	profileID := strings.TrimSpace(c.Param("profile_id"))
+	if profileID == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	var req UpdateTLSFingerprintProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.BadRequest(c, "Name is required")
+		return
+	}
+	if err := validateTLSFingerprintSlice("cipher_suites", uint16To64Slice(req.CipherSuites)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("curves", uint16To64Slice(req.Curves)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("point_formats", uint8To64Slice(req.PointFormats)); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updated, err := h.settingService.UpdateTLSFingerprintProfile(c.Request.Context(), profileID, &service.TLSFingerprintProfile{
+		Name:         req.Name,
+		Enabled:      req.Enabled,
+		EnableGREASE: req.EnableGREASE,
+		CipherSuites: req.CipherSuites,
+		Curves:       req.Curves,
+		PointFormats: req.PointFormats,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, toTLSFingerprintProfileDTO(*updated))
+}
+
+// DeleteTLSFingerprintProfile 删除 TLS 指纹 Profile。
+// DELETE /api/v1/admin/settings/tls-fingerprint/profiles/:profile_id
+func (h *SettingHandler) DeleteTLSFingerprintProfile(c *gin.Context) {
+	profileID := strings.TrimSpace(c.Param("profile_id"))
+	if profileID == "" {
+		response.BadRequest(c, "Profile ID is required")
+		return
+	}
+	if err := h.settingService.DeleteTLSFingerprintProfile(c.Request.Context(), profileID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+func uint16To64Slice(values []uint16) []uint64 {
+	result := make([]uint64, 0, len(values))
+	for _, value := range values {
+		result = append(result, uint64(value))
+	}
+	return result
+}
+
+func uint8To64Slice(values []uint8) []uint64 {
+	result := make([]uint64, 0, len(values))
+	for _, value := range values {
+		result = append(result, uint64(value))
+	}
+	return result
+}
+
 func toSoraS3SettingsDTO(settings *service.SoraS3Settings) dto.SoraS3Settings {
 	if settings == nil {
 		return dto.SoraS3Settings{}

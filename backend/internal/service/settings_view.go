@@ -154,6 +154,29 @@ type SoraS3ProfileList struct {
 	Items           []SoraS3Profile `json:"items"`
 }
 
+// TLSFingerprintSettings TLS 指纹全局设置。
+type TLSFingerprintSettings struct {
+	Enabled bool `json:"enabled"`
+}
+
+// TLSFingerprintProfile TLS 指纹 Profile（服务内部模型）。
+type TLSFingerprintProfile struct {
+	ProfileID    string   `json:"profile_id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+// TLSFingerprintProfileList TLS 指纹配置列表。
+type TLSFingerprintProfileList struct {
+	Enabled bool                    `json:"enabled"`
+	Items   []TLSFingerprintProfile `json:"items"`
+}
+
 // StreamTimeoutSettings 流超时处理配置（仅控制超时后的处理方式，超时判定由网关配置控制）
 type StreamTimeoutSettings struct {
 	// Enabled 是否启用流超时处理

@@ -55,9 +55,49 @@ func applyOpenAIRemoteCompactFailoverPolicy(policy openAIFailoverPolicy, remoteC
 	if !remoteCompact {
 		return policy
 	}
-	policy.MaxSwitches = 0
 	policy.AllowSameAccountRetry = false
 	return policy
+}
+
+func shouldSwitchOpenAIRemoteCompactAccount(
+	failoverErr *service.UpstreamFailoverError,
+	previousResponseID string,
+	switchCount int,
+	maxSwitches int,
+) bool {
+	if failoverErr == nil {
+		return false
+	}
+	if maxSwitches <= 0 || switchCount >= maxSwitches {
+		return false
+	}
+	// previous_response_id binds server-side history to one account/session;
+	// switching to another account is unlikely to be seamless.
+	if strings.TrimSpace(previousResponseID) != "" {
+		return false
+	}
+
+	statusCode := failoverErr.StatusCode
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+		return true
+	}
+	if statusCode >= 500 {
+		return true
+	}
+
+	reason := strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason))
+	bodyText := strings.ToLower(strings.TrimSpace(string(failoverErr.ResponseBody)))
+	return failoverErr.FailedProxyID > 0 ||
+		strings.Contains(reason, "proxy") ||
+		strings.Contains(reason, "network") ||
+		strings.Contains(reason, "timeout") ||
+		strings.Contains(bodyText, "context deadline exceeded") ||
+		strings.Contains(bodyText, "timeout") ||
+		strings.Contains(bodyText, "connection refused") ||
+		strings.Contains(bodyText, "connection reset") ||
+		strings.Contains(bodyText, "socks connect") ||
+		strings.Contains(bodyText, "eof")
 }
 
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
@@ -505,6 +545,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if remoteCompact {
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					if shouldSwitchOpenAIRemoteCompactAccount(failoverErr, previousResponseID, switchCount, maxAccountSwitches) {
+						_ = h.gatewayService.ClearStickySessionForAccount(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID)
+						h.gatewayService.RecordOpenAIAccountSwitch()
+						failedAccountIDs[account.ID] = struct{}{}
+						lastFailoverErr = failoverErr
+						switchCount++
+						reqLog.Warn("openai.remote_compact_switching_account",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("switch_count", switchCount),
+							zap.Int("max_switches", maxAccountSwitches),
+						)
+						continue
+					}
 					h.handleRemoteCompactFailure(c, failoverErr, streamStarted)
 					return
 				}

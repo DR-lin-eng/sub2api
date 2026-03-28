@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
@@ -56,6 +58,9 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	idempotencyRepository := repository.NewIdempotencyRepository(client, db)
 
 	settingService := service.ProvideSettingService(settingRepository, groupRepository, cfg)
+	if err := settingService.RefreshTLSFingerprintRuntime(context.Background()); err != nil {
+		return nil, err
+	}
 	emailService := service.NewEmailService(settingRepository, repository.NewEmailCache(redisClient))
 	emailQueueService := service.ProvideEmailQueueService(emailService)
 	billingCache := repository.NewBillingCache(redisClient)

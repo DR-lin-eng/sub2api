@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -28,6 +30,8 @@ var (
 	ErrSettingNotFound        = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
 	ErrSoraS3ProfileNotFound  = infraerrors.NotFound("SORA_S3_PROFILE_NOT_FOUND", "sora s3 profile not found")
 	ErrSoraS3ProfileExists    = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
+	ErrTLSFingerprintProfileNotFound = infraerrors.NotFound("TLS_FINGERPRINT_PROFILE_NOT_FOUND", "tls fingerprint profile not found")
+	ErrTLSFingerprintProfileExists   = infraerrors.Conflict("TLS_FINGERPRINT_PROFILE_EXISTS", "tls fingerprint profile already exists")
 	ErrDefaultSubGroupInvalid = infraerrors.BadRequest(
 		"DEFAULT_SUBSCRIPTION_GROUP_INVALID",
 		"default subscription group must exist and be subscription type",
@@ -138,6 +142,7 @@ type SettingService struct {
 	cfg                   *config.Config
 	onUpdate              func() // Callback when settings are updated (for cache invalidation)
 	onS3Update            func() // Callback when Sora S3 settings are updated
+	onTLSFingerprintUpdate func() // Callback when TLS fingerprint settings are updated
 	version               string // Application version
 	hotSettings           sync.Map
 	hotSettingsSF         singleflight.Group
@@ -419,6 +424,11 @@ func (s *SettingService) SetOnUpdateCallback(callback func()) {
 // SetOnS3UpdateCallback 设置 Sora S3 配置变更时的回调函数（用于刷新 S3 客户端缓存）。
 func (s *SettingService) SetOnS3UpdateCallback(callback func()) {
 	s.onS3Update = callback
+}
+
+// SetOnTLSFingerprintUpdateCallback 设置 TLS 指纹配置变更时的回调函数。
+func (s *SettingService) SetOnTLSFingerprintUpdateCallback(callback func()) {
+	s.onTLSFingerprintUpdate = callback
 }
 
 // SetVersion sets the application version for injection into public settings
@@ -1779,6 +1789,404 @@ func (s *SettingService) SetStreamTimeoutSettings(ctx context.Context, settings 
 	}
 
 	return s.setSettingValue(ctx, SettingKeyStreamTimeoutSettings, string(data))
+}
+
+type tlsFingerprintProfilesStore struct {
+	Enabled bool                             `json:"enabled"`
+	Items   []tlsFingerprintProfileStoreItem `json:"items"`
+}
+
+type tlsFingerprintProfileStoreItem struct {
+	ProfileID    string   `json:"profile_id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+// GetTLSFingerprintSettings 获取 TLS 指纹全局开关。
+func (s *SettingService) GetTLSFingerprintSettings(ctx context.Context) (*TLSFingerprintSettings, error) {
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &TLSFingerprintSettings{Enabled: store.Enabled}, nil
+}
+
+// SetTLSFingerprintSettings 更新 TLS 指纹全局开关。
+func (s *SettingService) SetTLSFingerprintSettings(ctx context.Context, settings *TLSFingerprintSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return err
+	}
+	store.Enabled = settings.Enabled
+	return s.persistTLSFingerprintProfilesStore(ctx, store)
+}
+
+// RefreshTLSFingerprintRuntime 初始化或刷新 TLS 指纹运行时 registry。
+func (s *SettingService) RefreshTLSFingerprintRuntime(ctx context.Context) error {
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return err
+	}
+	s.refreshTLSFingerprintRuntimeFromStore(store)
+	return nil
+}
+
+// ListTLSFingerprintProfiles 获取 TLS 指纹 Profile 列表。
+func (s *SettingService) ListTLSFingerprintProfiles(ctx context.Context) (*TLSFingerprintProfileList, error) {
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return convertTLSFingerprintProfilesStore(store), nil
+}
+
+// CreateTLSFingerprintProfile 创建 TLS 指纹 Profile。
+func (s *SettingService) CreateTLSFingerprintProfile(ctx context.Context, profile *TLSFingerprintProfile) (*TLSFingerprintProfile, error) {
+	if profile == nil {
+		return nil, fmt.Errorf("profile cannot be nil")
+	}
+	profileID := strings.TrimSpace(profile.ProfileID)
+	if profileID == "" {
+		return nil, infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_ID_REQUIRED", "profile_id is required")
+	}
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		return nil, infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_NAME_REQUIRED", "name is required")
+	}
+
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hasTLSFingerprintProfileID(store.Items, profileID) {
+		return nil, ErrTLSFingerprintProfileExists
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	store.Items = append(store.Items, tlsFingerprintProfileStoreItem{
+		ProfileID:    profileID,
+		Name:         name,
+		Enabled:      profile.Enabled,
+		EnableGREASE: profile.EnableGREASE,
+		CipherSuites: normalizeUint16Slice(profile.CipherSuites),
+		Curves:       normalizeUint16Slice(profile.Curves),
+		PointFormats: normalizeUint8Slice(profile.PointFormats),
+		UpdatedAt:    now,
+	})
+
+	if err := s.persistTLSFingerprintProfilesStore(ctx, store); err != nil {
+		return nil, err
+	}
+
+	profiles := convertTLSFingerprintProfilesStore(store)
+	created := findTLSFingerprintProfileByID(profiles.Items, profileID)
+	if created == nil {
+		return nil, ErrTLSFingerprintProfileNotFound
+	}
+	return created, nil
+}
+
+// UpdateTLSFingerprintProfile 更新 TLS 指纹 Profile。
+func (s *SettingService) UpdateTLSFingerprintProfile(ctx context.Context, profileID string, profile *TLSFingerprintProfile) (*TLSFingerprintProfile, error) {
+	if profile == nil {
+		return nil, fmt.Errorf("profile cannot be nil")
+	}
+	targetID := strings.TrimSpace(profileID)
+	if targetID == "" {
+		return nil, infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_ID_REQUIRED", "profile_id is required")
+	}
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		return nil, infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_NAME_REQUIRED", "name is required")
+	}
+
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	targetIndex := findTLSFingerprintProfileIndex(store.Items, targetID)
+	if targetIndex < 0 {
+		return nil, ErrTLSFingerprintProfileNotFound
+	}
+
+	store.Items[targetIndex] = tlsFingerprintProfileStoreItem{
+		ProfileID:    targetID,
+		Name:         name,
+		Enabled:      profile.Enabled,
+		EnableGREASE: profile.EnableGREASE,
+		CipherSuites: normalizeUint16Slice(profile.CipherSuites),
+		Curves:       normalizeUint16Slice(profile.Curves),
+		PointFormats: normalizeUint8Slice(profile.PointFormats),
+		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if err := s.persistTLSFingerprintProfilesStore(ctx, store); err != nil {
+		return nil, err
+	}
+
+	profiles := convertTLSFingerprintProfilesStore(store)
+	updated := findTLSFingerprintProfileByID(profiles.Items, targetID)
+	if updated == nil {
+		return nil, ErrTLSFingerprintProfileNotFound
+	}
+	return updated, nil
+}
+
+// DeleteTLSFingerprintProfile 删除 TLS 指纹 Profile。
+func (s *SettingService) DeleteTLSFingerprintProfile(ctx context.Context, profileID string) error {
+	targetID := strings.TrimSpace(profileID)
+	if targetID == "" {
+		return infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_ID_REQUIRED", "profile_id is required")
+	}
+
+	store, err := s.loadTLSFingerprintProfilesStore(ctx)
+	if err != nil {
+		return err
+	}
+	if len(store.Items) <= 1 {
+		return infraerrors.BadRequest("TLS_FINGERPRINT_PROFILE_LAST_DELETE_FORBIDDEN", "cannot delete the last tls fingerprint profile")
+	}
+
+	targetIndex := findTLSFingerprintProfileIndex(store.Items, targetID)
+	if targetIndex < 0 {
+		return ErrTLSFingerprintProfileNotFound
+	}
+
+	store.Items = append(store.Items[:targetIndex], store.Items[targetIndex+1:]...)
+	return s.persistTLSFingerprintProfilesStore(ctx, store)
+}
+
+func (s *SettingService) loadTLSFingerprintProfilesStore(ctx context.Context) (*tlsFingerprintProfilesStore, error) {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyTLSFingerprintProfiles)
+	if err == nil {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed != "" {
+			var store tlsFingerprintProfilesStore
+			if unmarshalErr := json.Unmarshal([]byte(trimmed), &store); unmarshalErr == nil {
+				normalized := normalizeTLSFingerprintProfilesStore(store)
+				return &normalized, nil
+			}
+		}
+		cfgStore := s.tlsFingerprintProfilesStoreFromConfig()
+		if cfgStore != nil {
+			normalized := normalizeTLSFingerprintProfilesStore(*cfgStore)
+			if persistErr := s.persistTLSFingerprintProfilesStore(ctx, &normalized); persistErr != nil {
+				return nil, persistErr
+			}
+			return &normalized, nil
+		}
+		empty := normalizeTLSFingerprintProfilesStore(tlsFingerprintProfilesStore{})
+		return &empty, nil
+	}
+	if !errors.Is(err, ErrSettingNotFound) {
+		return nil, fmt.Errorf("get tls fingerprint profiles: %w", err)
+	}
+
+	cfgStore := s.tlsFingerprintProfilesStoreFromConfig()
+	if cfgStore != nil {
+		normalized := normalizeTLSFingerprintProfilesStore(*cfgStore)
+		if persistErr := s.persistTLSFingerprintProfilesStore(ctx, &normalized); persistErr != nil {
+			return nil, persistErr
+		}
+		return &normalized, nil
+	}
+
+	empty := normalizeTLSFingerprintProfilesStore(tlsFingerprintProfilesStore{})
+	return &empty, nil
+}
+
+func (s *SettingService) tlsFingerprintProfilesStoreFromConfig() *tlsFingerprintProfilesStore {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	cfg := s.cfg.Gateway.TLSFingerprint
+	items := make([]tlsFingerprintProfileStoreItem, 0, len(cfg.Profiles))
+	for profileID, profile := range cfg.Profiles {
+		items = append(items, tlsFingerprintProfileStoreItem{
+			ProfileID:    strings.TrimSpace(profileID),
+			Name:         strings.TrimSpace(profile.Name),
+			Enabled:      true,
+			EnableGREASE: profile.EnableGREASE,
+			CipherSuites: normalizeUint16Slice(profile.CipherSuites),
+			Curves:       normalizeUint16Slice(profile.Curves),
+			PointFormats: normalizeUint8Slice(profile.PointFormats),
+		})
+	}
+	if len(items) == 0 && !cfg.Enabled {
+		return nil
+	}
+	return &tlsFingerprintProfilesStore{
+		Enabled: cfg.Enabled,
+		Items:   items,
+	}
+}
+
+func (s *SettingService) persistTLSFingerprintProfilesStore(ctx context.Context, store *tlsFingerprintProfilesStore) error {
+	if store == nil {
+		return fmt.Errorf("tls fingerprint profiles store cannot be nil")
+	}
+	normalized := normalizeTLSFingerprintProfilesStore(*store)
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return fmt.Errorf("marshal tls fingerprint profiles: %w", err)
+	}
+	if err := s.setSettingValue(ctx, SettingKeyTLSFingerprintProfiles, string(data)); err != nil {
+		return err
+	}
+	s.refreshTLSFingerprintRuntimeFromStore(&normalized)
+	return nil
+}
+
+func (s *SettingService) refreshTLSFingerprintRuntimeFromStore(store *tlsFingerprintProfilesStore) {
+	profiles := make(map[string]*tlsfingerprint.Profile)
+	if store != nil && store.Enabled {
+		for _, item := range store.Items {
+			if !item.Enabled || strings.TrimSpace(item.ProfileID) == "" {
+				continue
+			}
+			profiles[item.ProfileID] = &tlsfingerprint.Profile{
+				Name:         item.Name,
+				EnableGREASE: item.EnableGREASE,
+				CipherSuites: append([]uint16(nil), item.CipherSuites...),
+				Curves:       append([]uint16(nil), item.Curves...),
+				PointFormats: append([]uint8(nil), item.PointFormats...),
+			}
+		}
+	}
+	tlsfingerprint.ReplaceGlobalRegistryProfiles(profiles)
+	if s != nil && s.onTLSFingerprintUpdate != nil {
+		s.onTLSFingerprintUpdate()
+	}
+}
+
+func normalizeTLSFingerprintProfilesStore(store tlsFingerprintProfilesStore) tlsFingerprintProfilesStore {
+	normalized := tlsFingerprintProfilesStore{
+		Enabled: store.Enabled,
+		Items:   make([]tlsFingerprintProfileStoreItem, 0, len(store.Items)),
+	}
+	seen := make(map[string]struct{}, len(store.Items))
+	now := time.Now().UTC().Format(time.RFC3339)
+	for idx := range store.Items {
+		item := store.Items[idx]
+		item.ProfileID = strings.TrimSpace(item.ProfileID)
+		if item.ProfileID == "" {
+			item.ProfileID = fmt.Sprintf("profile-%d", idx+1)
+		}
+		if _, exists := seen[item.ProfileID]; exists {
+			continue
+		}
+		seen[item.ProfileID] = struct{}{}
+		item.Name = strings.TrimSpace(item.Name)
+		if item.Name == "" {
+			item.Name = item.ProfileID
+		}
+		item.CipherSuites = normalizeUint16Slice(item.CipherSuites)
+		item.Curves = normalizeUint16Slice(item.Curves)
+		item.PointFormats = normalizeUint8Slice(item.PointFormats)
+		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
+		if item.UpdatedAt == "" {
+			item.UpdatedAt = now
+		}
+		normalized.Items = append(normalized.Items, item)
+	}
+	sort.SliceStable(normalized.Items, func(i, j int) bool {
+		return normalized.Items[i].ProfileID < normalized.Items[j].ProfileID
+	})
+	return normalized
+}
+
+func convertTLSFingerprintProfilesStore(store *tlsFingerprintProfilesStore) *TLSFingerprintProfileList {
+	if store == nil {
+		return &TLSFingerprintProfileList{}
+	}
+	items := make([]TLSFingerprintProfile, 0, len(store.Items))
+	for _, item := range store.Items {
+		items = append(items, TLSFingerprintProfile{
+			ProfileID:    item.ProfileID,
+			Name:         item.Name,
+			Enabled:      item.Enabled,
+			EnableGREASE: item.EnableGREASE,
+			CipherSuites: append([]uint16(nil), item.CipherSuites...),
+			Curves:       append([]uint16(nil), item.Curves...),
+			PointFormats: append([]uint8(nil), item.PointFormats...),
+			UpdatedAt:    item.UpdatedAt,
+		})
+	}
+	return &TLSFingerprintProfileList{
+		Enabled: store.Enabled,
+		Items:   items,
+	}
+}
+
+func findTLSFingerprintProfileIndex(items []tlsFingerprintProfileStoreItem, profileID string) int {
+	for idx := range items {
+		if items[idx].ProfileID == profileID {
+			return idx
+		}
+	}
+	return -1
+}
+
+func hasTLSFingerprintProfileID(items []tlsFingerprintProfileStoreItem, profileID string) bool {
+	return findTLSFingerprintProfileIndex(items, profileID) >= 0
+}
+
+func findTLSFingerprintProfileByID(items []TLSFingerprintProfile, profileID string) *TLSFingerprintProfile {
+	for idx := range items {
+		if items[idx].ProfileID == profileID {
+			return &items[idx]
+		}
+	}
+	return nil
+}
+
+func normalizeUint16Slice(values []uint16) []uint16 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[uint16]struct{}, len(values))
+	normalized := make([]uint16, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func normalizeUint8Slice(values []uint8) []uint8 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[uint8]struct{}, len(values))
+	normalized := make([]uint8, 0, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 type soraS3ProfilesStore struct {

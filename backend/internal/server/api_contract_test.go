@@ -545,6 +545,68 @@ func TestAPIContracts(t *testing.T) {
 			}`,
 		},
 		{
+			name: "GET /api/v1/admin/settings/tls-fingerprint",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.settingRepo.SetAll(map[string]string{
+					service.SettingKeyTLSFingerprintProfiles: `{"enabled":true,"items":[{"profile_id":"alpha","name":"Alpha","enabled":true,"enable_grease":false,"cipher_suites":[4866,4867],"curves":[29,23],"point_formats":[1],"updated_at":"2026-03-28T08:00:00Z"}]}`,
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/admin/settings/tls-fingerprint",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"enabled": true,
+					"items": [
+						{
+							"profile_id": "alpha",
+							"name": "Alpha",
+							"enabled": true,
+							"enable_grease": false,
+							"cipher_suites": [4866, 4867],
+							"curves": [29, 23],
+							"point_formats": [1],
+							"updated_at": "2026-03-28T08:00:00Z"
+						}
+					]
+				}
+			}`,
+		},
+		{
+			name: "GET /api/v1/admin/settings/tls-fingerprint/profiles",
+			setup: func(t *testing.T, deps *contractDeps) {
+				t.Helper()
+				deps.settingRepo.SetAll(map[string]string{
+					service.SettingKeyTLSFingerprintProfiles: `{"enabled":false,"items":[{"profile_id":"alpha","name":"Alpha","enabled":false,"enable_grease":true,"cipher_suites":[],"curves":[],"point_formats":[],"updated_at":"2026-03-28T08:00:00Z"}]}`,
+				})
+			},
+			method:     http.MethodGet,
+			path:       "/api/v1/admin/settings/tls-fingerprint/profiles",
+			wantStatus: http.StatusOK,
+			wantJSON: `{
+				"code": 0,
+				"message": "success",
+				"data": {
+					"enabled": false,
+					"items": [
+						{
+							"profile_id": "alpha",
+							"name": "Alpha",
+							"enabled": false,
+							"enable_grease": true,
+							"cipher_suites": [],
+							"curves": [],
+							"point_formats": [],
+							"updated_at": "2026-03-28T08:00:00Z"
+						}
+					]
+				}
+			}`,
+		},
+		{
 			name:   "POST /api/v1/admin/accounts/bulk-update",
 			method: http.MethodPost,
 			path:   "/api/v1/admin/accounts/bulk-update",

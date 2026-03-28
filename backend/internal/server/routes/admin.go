@@ -430,6 +430,13 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)
+		// TLS 指纹 Profile 配置
+		adminSettings.GET("/tls-fingerprint", h.Admin.Setting.GetTLSFingerprintSettings)
+		adminSettings.PUT("/tls-fingerprint", h.Admin.Setting.UpdateTLSFingerprintSettings)
+		adminSettings.GET("/tls-fingerprint/profiles", h.Admin.Setting.ListTLSFingerprintProfiles)
+		adminSettings.POST("/tls-fingerprint/profiles", h.Admin.Setting.CreateTLSFingerprintProfile)
+		adminSettings.PUT("/tls-fingerprint/profiles/:profile_id", h.Admin.Setting.UpdateTLSFingerprintProfile)
+		adminSettings.DELETE("/tls-fingerprint/profiles/:profile_id", h.Admin.Setting.DeleteTLSFingerprintProfile)
 		// Sora S3 存储配置
 		adminSettings.GET("/sora-s3", h.Admin.Setting.GetSoraS3Settings)
 		adminSettings.PUT("/sora-s3", h.Admin.Setting.UpdateSoraS3Settings)

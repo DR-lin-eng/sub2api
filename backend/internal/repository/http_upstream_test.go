@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -117,6 +118,27 @@ func (s *HTTPUpstreamSuite) TestAcquireClient_OverLimitReturnsError() {
 	entry2, err := svc.acquireClient(nil, "http://proxy-b:8080", 2, 1)
 	require.Error(s.T(), err, "expected error when cache limit reached")
 	require.Nil(s.T(), entry2, "expected nil entry when cache limit reached")
+}
+
+func (s *HTTPUpstreamSuite) TestBuildTLSCacheKey_SeparatesProfiles() {
+	base := buildCacheKey(config.ConnectionPoolIsolationAccount, directProxyKey, 7)
+	keyA := buildTLSCacheKey(base, buildTLSProfileCacheToken("profile-a", &tlsfingerprint.Profile{Name: "A"}))
+	keyB := buildTLSCacheKey(base, buildTLSProfileCacheToken("profile-b", &tlsfingerprint.Profile{Name: "B"}))
+	require.NotEqual(s.T(), keyA, keyB)
+	require.Contains(s.T(), keyA, "profile:profile-a")
+	require.Contains(s.T(), keyB, "profile:profile-b")
+}
+
+func (s *HTTPUpstreamSuite) TestBuildTLSProfileCacheToken_ChangesWhenProfileChanges() {
+	tokenA := buildTLSProfileCacheToken("profile-a", &tlsfingerprint.Profile{
+		EnableGREASE: false,
+		CipherSuites: []uint16{4866, 4867},
+	})
+	tokenB := buildTLSProfileCacheToken("profile-a", &tlsfingerprint.Profile{
+		EnableGREASE: true,
+		CipherSuites: []uint16{4866, 4867},
+	})
+	require.NotEqual(s.T(), tokenA, tokenB)
 }
 
 // TestDo_WithoutProxy_GoesDirect 测试无代理时直连

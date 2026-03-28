@@ -200,6 +200,13 @@ const (
 	SettingKeyBetaPolicySettings = "beta_policy_settings"
 
 	// =========================
+	// TLS Fingerprint Profiles
+	// =========================
+
+	// SettingKeyTLSFingerprintProfiles stores JSON config for DB-backed TLS fingerprint settings.
+	SettingKeyTLSFingerprintProfiles = "tls_fingerprint_profiles"
+
+	// =========================
 	// Sora S3 存储配置
 	// =========================
 
