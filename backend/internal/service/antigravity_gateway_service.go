@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -132,7 +133,7 @@ type antigravityRetryLoopParams struct {
 	accessToken     string
 	action          string
 	body            []byte
-	c               *gin.Context
+	c               gatewayctx.GatewayContext
 	httpUpstream    HTTPUpstream
 	settingService  *SettingService
 	accountRepo     AccountRepository // 用于智能重试的模型级别限流
@@ -629,7 +630,7 @@ urlFallbackLoop:
 
 			// Capture upstream request body for ops retry of this attempt.
 			if p.c != nil && len(p.body) > 0 {
-				setOpsUpstreamRequestBody(p.c, p.body)
+				setOpsUpstreamRequestBodyContext(p.c, p.body)
 			}
 
 			resp, err = p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
@@ -638,7 +639,7 @@ urlFallbackLoop:
 			}
 			if err != nil {
 				safeErr := sanitizeUpstreamErrorMessage(err.Error())
-				appendOpsUpstreamError(p.c, OpsUpstreamErrorEvent{
+				appendOpsUpstreamErrorContext(p.c, OpsUpstreamErrorEvent{
 					Platform:           p.account.Platform,
 					AccountID:          p.account.ID,
 					AccountName:        p.account.Name,
@@ -659,7 +660,7 @@ urlFallbackLoop:
 					continue
 				}
 				logger.LegacyPrintf("service.antigravity_gateway", "%s status=request_failed retries_exhausted error=%v", p.prefix, err)
-				setOpsUpstreamError(p.c, 0, safeErr, "")
+				setOpsUpstreamErrorContext(p.c, 0, safeErr, "")
 				return nil, fmt.Errorf("upstream request failed after retries: %w", err)
 			}
 
@@ -714,7 +715,7 @@ urlFallbackLoop:
 					if attempt < antigravityMaxRetries {
 						upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 						upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-						appendOpsUpstreamError(p.c, OpsUpstreamErrorEvent{
+						appendOpsUpstreamErrorContext(p.c, OpsUpstreamErrorEvent{
 							Platform:           p.account.Platform,
 							AccountID:          p.account.ID,
 							AccountName:        p.account.Name,
@@ -748,7 +749,7 @@ urlFallbackLoop:
 					if attempt < antigravityMaxRetries {
 						upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 						upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-						appendOpsUpstreamError(p.c, OpsUpstreamErrorEvent{
+						appendOpsUpstreamErrorContext(p.c, OpsUpstreamErrorEvent{
 							Platform:           p.account.Platform,
 							AccountID:          p.account.ID,
 							AccountName:        p.account.Name,
@@ -836,10 +837,14 @@ func shouldAntigravityFallbackToNextURL(err error, statusCode int) bool {
 
 // getSessionID 从 gin.Context 获取 session_id（用于日志追踪）
 func getSessionID(c *gin.Context) string {
+	return getSessionIDContext(gatewayctx.FromGin(c))
+}
+
+func getSessionIDContext(c gatewayctx.GatewayContext) string {
 	if c == nil {
 		return ""
 	}
-	return c.GetHeader("session_id")
+	return strings.TrimSpace(c.HeaderValue("session_id"))
 }
 
 // logPrefix 生成统一的日志前缀
@@ -1051,7 +1056,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		accessToken:    accessToken,
 		action:         "streamGenerateContent",
 		body:           requestBody,
-		c:              nil, // 无 gin.Context → 跳过 ops 追踪
+		c:              nil, // 无 GatewayContext → 跳过 ops 追踪
 		httpUpstream:   s.httpUpstream,
 		settingService: s.settingService,
 		accountRepo:    s.accountRepo,
@@ -1398,7 +1403,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		accessToken:     accessToken,
 		action:          action,
 		body:            geminiBody,
-		c:               c,
+		c:               gatewayctx.FromGin(c),
 		httpUpstream:    s.httpUpstream,
 		settingService:  s.settingService,
 		accountRepo:     s.accountRepo,
@@ -1482,7 +1487,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					accessToken:     accessToken,
 					action:          action,
 					body:            retryGeminiBody,
-					c:               c,
+					c:               gatewayctx.FromGin(c),
 					httpUpstream:    s.httpUpstream,
 					settingService:  s.settingService,
 					accountRepo:     s.accountRepo,
@@ -1604,7 +1609,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 							accessToken:     accessToken,
 							action:          action,
 							body:            retryGeminiBody,
-							c:               c,
+							c:               gatewayctx.FromGin(c),
 							httpUpstream:    s.httpUpstream,
 							settingService:  s.settingService,
 							accountRepo:     s.accountRepo,
@@ -2057,19 +2062,26 @@ func stripSignatureSensitiveBlocksFromClaudeRequest(req *antigravity.ClaudeReque
 //	          ├─ 成功 → 正常返回
 //	          └─ 失败 → 设置模型限流 + 清除粘性绑定 → 切换账号
 func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte, isStickySession bool) (*ForwardResult, error) {
+	return s.ForwardGeminiContext(ctx, gatewayctx.FromGin(c), account, originalModel, action, stream, body, isStickySession)
+}
+
+func (s *AntigravityGatewayService) ForwardGeminiContext(ctx context.Context, transportCtx gatewayctx.GatewayContext, account *Account, originalModel string, action string, stream bool, body []byte, isStickySession bool) (*ForwardResult, error) {
+	if transportCtx == nil {
+		return nil, errors.New("gateway context is nil")
+	}
 	startTime := time.Now()
 
-	sessionID := getSessionID(c)
+	sessionID := getSessionIDContext(transportCtx)
 	prefix := logPrefix(sessionID, account.Name)
 
 	if strings.TrimSpace(originalModel) == "" {
-		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Missing model in URL")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadRequest, "Missing model in URL")
 	}
 	if strings.TrimSpace(action) == "" {
-		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Missing action in URL")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadRequest, "Missing action in URL")
 	}
 	if len(body) == 0 {
-		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Request body is empty")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadRequest, "Request body is empty")
 	}
 
 	// 解析请求以获取 image_size（用于图片计费）
@@ -2080,7 +2092,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		// ok
 	case "countTokens":
 		// 直接返回空值，不透传上游
-		c.JSON(http.StatusOK, map[string]any{"totalTokens": 0})
+		transportCtx.WriteJSON(http.StatusOK, map[string]any{"totalTokens": 0})
 		return &ForwardResult{
 			RequestID:    "",
 			Usage:        ClaudeUsage{},
@@ -2090,18 +2102,18 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			FirstTokenMs: nil,
 		}, nil
 	default:
-		return nil, s.writeGoogleError(c, http.StatusNotFound, "Unsupported action: "+action)
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusNotFound, "Unsupported action: "+action)
 	}
 
 	mappedModel := s.getMappedModel(account, originalModel)
 	if mappedModel == "" {
-		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
 	}
 	billingModel := mappedModel
 
 	// 获取 access_token
 	if s.tokenProvider == nil {
-		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Antigravity token provider not configured")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadGateway, "Antigravity token provider not configured")
 	}
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
@@ -2123,7 +2135,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	// Antigravity 上游要求必须包含身份提示词，注入到请求中
 	injectedBody, err := injectIdentityPatchToGeminiRequest(body)
 	if err != nil {
-		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Invalid request body")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadRequest, "Invalid request body")
 	}
 
 	// 清理 Schema
@@ -2137,7 +2149,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	// 包装请求
 	wrappedBody, err := s.wrapV1InternalRequest(projectID, mappedModel, injectedBody)
 	if err != nil {
-		return nil, s.writeGoogleError(c, http.StatusInternalServerError, "Failed to build upstream request")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusInternalServerError, "Failed to build upstream request")
 	}
 
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
@@ -2153,7 +2165,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		accessToken:     accessToken,
 		action:          upstreamAction,
 		body:            wrappedBody,
-		c:               c,
+		c:               transportCtx,
 		httpUpstream:    s.httpUpstream,
 		settingService:  s.settingService,
 		accountRepo:     s.accountRepo,
@@ -2172,10 +2184,10 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			}
 		}
 		// 区分客户端取消和真正的上游失败，返回更准确的错误消息
-		if c.Request.Context().Err() != nil {
-			return nil, s.writeGoogleError(c, http.StatusBadGateway, "Client disconnected before upstream response")
+		if transportCtx != nil && transportCtx.Context().Err() != nil {
+			return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadGateway, "Client disconnected before upstream response")
 		}
-		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed after retries")
+		return nil, s.writeGoogleErrorContext(transportCtx, http.StatusBadGateway, "Upstream request failed after retries")
 	}
 	resp := result.resp
 	defer func() {
@@ -2228,7 +2240,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			bytes.Contains(injectedBody, []byte(`"thoughtSignature"`)) {
 			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractAntigravityErrorMessage(signatureCheckBody)))
 			upstreamDetail := s.getUpstreamErrorDetail(signatureCheckBody)
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2252,7 +2264,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					accessToken:     accessToken,
 					action:          upstreamAction,
 					body:            retryWrappedBody,
-					c:               c,
+					c:               transportCtx,
 					httpUpstream:    s.httpUpstream,
 					settingService:  s.settingService,
 					accountRepo:     s.accountRepo,
@@ -2273,7 +2285,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 						if retryUnwrapped, unwrapErr := s.unwrapV1InternalResponse(retryRespBody); unwrapErr == nil && len(retryUnwrapped) > 0 {
 							retryOpsBody = retryUnwrapped
 						}
-						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 							Platform:           account.Platform,
 							AccountID:          account.ID,
 							AccountName:        account.Name,
@@ -2293,7 +2305,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					}
 				} else {
 					if switchErr, ok := IsAntigravityAccountSwitchError(retryErr); ok {
-						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 							Platform:           account.Platform,
 							AccountID:          account.ID,
 							AccountName:        account.Name,
@@ -2306,7 +2318,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 							ForceCacheBilling: switchErr.IsStickySession,
 						}
 					}
-					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
 						AccountID:          account.ID,
 						AccountName:        account.Name,
@@ -2328,7 +2340,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 		requestID := resp.Header.Get("x-request-id")
 		if requestID != "" {
-			c.Header("x-request-id", requestID)
+			transportCtx.SetHeader("x-request-id", requestID)
 		}
 
 		unwrapped, unwrapErr := s.unwrapV1InternalResponse(respBody)
@@ -2342,12 +2354,12 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		upstreamDetail := s.getUpstreamErrorDetail(unwrappedForOps)
 
 		// Always record upstream context for Ops error logs, even when we will failover.
-		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+		setOpsUpstreamErrorContext(transportCtx, resp.StatusCode, upstreamMsg, upstreamDetail)
 
 		// 精确匹配服务端配置类 400 错误，触发同账号重试 + failover
 		if resp.StatusCode == http.StatusBadRequest && isGoogleProjectConfigError(strings.ToLower(upstreamMsg)) {
 			log.Printf("%s status=400 google_config_error failover=true upstream_message=%q account=%d", prefix, upstreamMsg, account.ID)
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2361,7 +2373,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2376,7 +2388,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if contentType == "" {
 			contentType = "application/json"
 		}
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpsUpstreamErrorContext(transportCtx, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -2387,14 +2399,15 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			Detail:             upstreamDetail,
 		})
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] upstream error status=%d body=%s", resp.StatusCode, truncateForLog(unwrappedForOps, 500))
-		c.Data(resp.StatusCode, contentType, unwrappedForOps)
+		transportCtx.SetHeader("Content-Type", contentType)
+		_, _ = transportCtx.WriteBytes(resp.StatusCode, unwrappedForOps)
 		return nil, fmt.Errorf("antigravity upstream error: %d", resp.StatusCode)
 	}
 
 handleSuccess:
 	requestID := resp.Header.Get("x-request-id")
 	if requestID != "" {
-		c.Header("x-request-id", requestID)
+		transportCtx.SetHeader("x-request-id", requestID)
 	}
 
 	var usage *ClaudeUsage
@@ -2403,7 +2416,7 @@ handleSuccess:
 
 	if stream {
 		// 客户端要求流式，直接透传
-		streamRes, err := s.handleGeminiStreamingResponse(c, resp, startTime)
+		streamRes, err := s.handleGeminiStreamingResponseContext(transportCtx, resp, startTime)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
 			return nil, err
@@ -2413,7 +2426,7 @@ handleSuccess:
 		clientDisconnect = streamRes.clientDisconnect
 	} else {
 		// 客户端要求非流式，收集流式响应后返回
-		streamRes, err := s.handleGeminiStreamToNonStreaming(c, resp, startTime)
+		streamRes, err := s.handleGeminiStreamToNonStreamingContext(transportCtx, resp, startTime)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_collect_error error=%v", prefix, err)
 			return nil, err
@@ -2996,6 +3009,53 @@ func (cw *antigravityClientWriter) markDisconnected() {
 	logger.LegacyPrintf("service.antigravity_gateway", "Client disconnected during streaming (%s), continuing to drain upstream for billing", cw.prefix)
 }
 
+type antigravityGatewayWriter struct {
+	ctx          gatewayctx.GatewayContext
+	disconnected bool
+	prefix       string
+}
+
+func newAntigravityGatewayWriter(ctx gatewayctx.GatewayContext, prefix string) *antigravityGatewayWriter {
+	return &antigravityGatewayWriter{ctx: ctx, prefix: prefix}
+}
+
+func (cw *antigravityGatewayWriter) Write(p []byte) bool {
+	if cw == nil || cw.disconnected || cw.ctx == nil {
+		return false
+	}
+	if _, err := cw.ctx.WriteBytes(0, p); err != nil {
+		cw.markDisconnected()
+		return false
+	}
+	if err := cw.ctx.Flush(); err != nil {
+		cw.markDisconnected()
+		return false
+	}
+	return true
+}
+
+func (cw *antigravityGatewayWriter) Fprintf(format string, args ...any) bool {
+	if cw == nil || cw.disconnected {
+		return false
+	}
+	return cw.Write([]byte(fmt.Sprintf(format, args...)))
+}
+
+func (cw *antigravityGatewayWriter) Disconnected() bool {
+	if cw == nil {
+		return false
+	}
+	return cw.disconnected
+}
+
+func (cw *antigravityGatewayWriter) markDisconnected() {
+	if cw == nil {
+		return
+	}
+	cw.disconnected = true
+	logger.LegacyPrintf("service.antigravity_gateway", "Client disconnected during streaming (%s), continuing to drain upstream for billing", cw.prefix)
+}
+
 // handleStreamReadError 处理上游读取错误的通用逻辑。
 // 返回 (clientDisconnect, handled)：handled=true 表示错误已处理，调用方应返回已收集的 usage。
 func handleStreamReadError(err error, clientDisconnected bool, prefix string) (disconnect bool, handled bool) {
@@ -3011,24 +3071,22 @@ func handleStreamReadError(err error, clientDisconnected bool, prefix string) (d
 }
 
 func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
-	c.Status(resp.StatusCode)
-	c.Header("Cache-Control", "no-cache, no-transform")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Writer.Header().Del("Content-Encoding")
-	c.Writer.Header().Del("Content-Length")
-	c.Writer.Header().Del("Transfer-Encoding")
+	return s.handleGeminiStreamingResponseContext(gatewayctx.FromGin(c), resp, startTime)
+}
 
+func (s *AntigravityGatewayService) handleGeminiStreamingResponseContext(c gatewayctx.GatewayContext, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
+	if c == nil {
+		return nil, errors.New("gateway context is nil")
+	}
+	c.SetStatus(resp.StatusCode)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "text/event-stream; charset=utf-8"
 	}
-	c.Header("Content-Type", contentType)
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		return nil, errors.New("streaming not supported")
-	}
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  contentType,
+		CacheControl: "no-cache, no-transform",
+	})
 
 	// 使用 Scanner 并限制单行大小，避免 ReadString 无上限导致 OOM
 	scanner := bufio.NewScanner(resp.Body)
@@ -3104,7 +3162,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	}
 	lastDataAt := time.Now()
 
-	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity gemini")
+	cw := newAntigravityGatewayWriter(c, "antigravity gemini")
 
 	// 仅发送一次错误事件，避免多次写入导致协议混乱
 	errorEventSent := false
@@ -3113,8 +3171,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			return
 		}
 		errorEventSent = true
-		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: {\"error\":\"%s\"}\n\n", reason)
-		flusher.Flush()
+		_ = gatewayctx.WriteSSEEvent(c, "error", map[string]string{"error": reason})
 	}
 
 	for {
@@ -3217,6 +3274,13 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 // handleGeminiStreamToNonStreaming 读取上游流式响应，合并为非流式响应返回给客户端
 // Gemini 流式响应是增量的，需要累积所有 chunk 的内容
 func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Context, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
+	return s.handleGeminiStreamToNonStreamingContext(gatewayctx.FromGin(c), resp, startTime)
+}
+
+func (s *AntigravityGatewayService) handleGeminiStreamToNonStreamingContext(c gatewayctx.GatewayContext, resp *http.Response, startTime time.Time) (*antigravityStreamResult, error) {
+	if c == nil {
+		return nil, errors.New("gateway context is nil")
+	}
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.settingService.cfg != nil && s.settingService.cfg.Gateway.MaxLineSize > 0 {
@@ -3398,7 +3462,8 @@ returnResponse:
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal response: %w", err)
 	}
-	c.Data(http.StatusOK, "application/json", respBody)
+	c.SetHeader("Content-Type", "application/json")
+	_, _ = c.WriteBytes(http.StatusOK, respBody)
 
 	return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
 }
@@ -3655,6 +3720,10 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 }
 
 func (s *AntigravityGatewayService) writeGoogleError(c *gin.Context, status int, message string) error {
+	return s.writeGoogleErrorContext(gatewayctx.FromGin(c), status, message)
+}
+
+func (s *AntigravityGatewayService) writeGoogleErrorContext(c gatewayctx.GatewayContext, status int, message string) error {
 	statusStr := "UNKNOWN"
 	switch status {
 	case 400:
@@ -3669,13 +3738,15 @@ func (s *AntigravityGatewayService) writeGoogleError(c *gin.Context, status int,
 		statusStr = "UNAVAILABLE"
 	}
 
-	c.JSON(status, gin.H{
-		"error": gin.H{
-			"code":    status,
-			"message": message,
-			"status":  statusStr,
-		},
-	})
+	if c != nil {
+		c.WriteJSON(status, gin.H{
+			"error": gin.H{
+				"code":    status,
+				"message": message,
+				"status":  statusStr,
+			},
+		})
+	}
 	return fmt.Errorf("%s", message)
 }
 

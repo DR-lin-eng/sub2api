@@ -118,6 +118,10 @@ func runWorkerProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 		return fmt.Errorf("initialize worker application: %w", err)
 	}
 	defer app.Cleanup()
+	runtime := resolveApplicationRuntime(cfg, app)
+	if runtime == nil {
+		return errors.New("application ingress runtime is nil")
+	}
 
 	listener, err := inheritedListener()
 	if err != nil {
@@ -127,12 +131,7 @@ func runWorkerProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 
 	serveErrCh := make(chan error, 1)
 	go func() {
-		err := app.Server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErrCh <- err
-			return
-		}
-		serveErrCh <- nil
+		serveErrCh <- runtime.Serve(listener)
 	}()
 
 	if err := signalChildReady(); err != nil {
@@ -144,7 +143,7 @@ func runWorkerProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 		os.Getpid(),
 		workerGeneration,
 		workerIndex,
-		app.Server.Addr,
+		runtime.Addr(),
 		processRoleWorker,
 	)
 
@@ -165,10 +164,13 @@ func runWorkerProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 				}
 			case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
 				ctx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout(cfg))
-				err := app.Server.Shutdown(ctx)
+				err := runtime.Shutdown(ctx)
 				cancel()
 				if err != nil {
 					_ = listener.Close()
+					if closeErr := runtime.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+						log.Printf("Worker %d force close failed: %v", workerIndex, closeErr)
+					}
 					return fmt.Errorf("worker graceful shutdown failed: %w", err)
 				}
 			}

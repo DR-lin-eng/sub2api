@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -24,6 +25,9 @@ func newAuthRoutesTestRouter(redisClient *redis.Client) *gin.Engine {
 		&handler.Handlers{
 			Auth:    &handler.AuthHandler{},
 			Setting: &handler.SettingHandler{},
+			Admin: &handler.AdminHandlers{
+				Account: &adminhandler.AccountHandler{},
+			},
 		},
 		servermiddleware.JWTAuthMiddleware(func(c *gin.Context) {
 			c.Next()

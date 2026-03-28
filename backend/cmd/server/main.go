@@ -4,24 +4,21 @@ package main
 
 import (
 	_ "embed"
-	"errors"
 	"flag"
 	"log"
-	"net/http"
+	"net"
 	"strings"
-	"time"
 
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	serverruntime "github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 //go:embed VERSION
@@ -32,7 +29,7 @@ var (
 	Version     = ""
 	Commit      = "unknown"
 	Date        = "unknown"
-	BuildType   = "source"            // "source" for manual builds, "release" for CI builds (set by ldflags)
+	BuildType   = "source"             // "source" for manual builds, "release" for CI builds (set by ldflags)
 	ReleaseRepo = "dr-lin-eng/sub2api" // GitHub owner/repo used by online update checks
 )
 
@@ -94,6 +91,11 @@ func main() {
 }
 
 func runSetupServer() {
+	cfg, err := config.LoadForBootstrap()
+	if err != nil {
+		log.Fatalf("Failed to load setup config: %v", err)
+	}
+
 	r := gin.New()
 	r.Use(middleware.Recovery())
 	r.Use(middleware.CORS(config.CORSConfig{}))
@@ -107,20 +109,17 @@ func runSetupServer() {
 		r.Use(web.ServeEmbeddedFrontend())
 	}
 
-	// Get server address from config.yaml or environment variables (SERVER_HOST, SERVER_PORT)
-	// This allows users to run setup on a different address if needed
-	addr := config.GetServerAddress()
+	addr := cfg.Server.Address()
 	log.Printf("Setup wizard available at http://%s", addr)
 	log.Println("Complete the setup wizard to configure Sub2API")
 
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           h2c.NewHandler(r, &http2.Server{}),
-		ReadHeaderTimeout: 30 * time.Second,
-		IdleTimeout:       120 * time.Second,
+	httpServer := serverruntime.NewHTTPServer(cfg, serverruntime.BuildHTTPHandler(cfg, r))
+	runtime := serverruntime.ResolveIngressRuntime(cfg, httpServer)
+	listener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		log.Fatalf("Failed to start setup listener: %v", err)
 	}
-
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serveApplicationWithGracefulShutdown(runtime, listener, gracefulShutdownTimeout(cfg)); err != nil {
 		log.Fatalf("Failed to start setup server: %v", err)
 	}
 }

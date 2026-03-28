@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,9 +34,13 @@ type soraStreamingResult struct {
 }
 
 func (s *SoraGatewayService) setUpstreamRequestError(c *gin.Context, account *Account, err error) {
+	s.setUpstreamRequestErrorContext(gatewayctx.FromGin(c), account, err)
+}
+
+func (s *SoraGatewayService) setUpstreamRequestErrorContext(c gatewayctx.GatewayContext, account *Account, err error) {
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
-	setOpsUpstreamError(c, 0, safeErr, "")
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	setOpsUpstreamErrorContext(c, 0, safeErr, "")
+	appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -44,7 +49,7 @@ func (s *SoraGatewayService) setUpstreamRequestError(c *gin.Context, account *Ac
 		Message:            safeErr,
 	})
 	if c != nil {
-		c.JSON(http.StatusBadGateway, gin.H{
+		c.WriteJSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
 				"message": "Upstream request failed",
@@ -62,6 +67,10 @@ func (s *SoraGatewayService) handleFailoverSideEffects(ctx context.Context, resp
 }
 
 func (s *SoraGatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, reqModel string) (*ForwardResult, error) {
+	return s.handleErrorResponseContext(ctx, resp, gatewayctx.FromGin(c), account, reqModel)
+}
+
+func (s *SoraGatewayService) handleErrorResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, reqModel string) (*ForwardResult, error) {
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -80,8 +89,8 @@ func (s *SoraGatewayService) handleErrorResponse(ctx context.Context, resp *http
 		}
 		upstreamDetail = truncateString(string(respBody), maxBytes)
 	}
-	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	setOpsUpstreamErrorContext(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -94,7 +103,7 @@ func (s *SoraGatewayService) handleErrorResponse(ctx context.Context, resp *http
 
 	if c != nil {
 		responsePayload := s.buildErrorPayload(respBody, upstreamMsg)
-		c.JSON(resp.StatusCode, responsePayload)
+		c.WriteJSON(resp.StatusCode, responsePayload)
 	}
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -124,22 +133,23 @@ func (s *SoraGatewayService) buildErrorPayload(respBody []byte, overrideMessage 
 }
 
 func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel string, clientStream bool) (*soraStreamingResult, error) {
+	return s.handleStreamingResponseContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, originalModel, clientStream)
+}
+
+func (s *SoraGatewayService) handleStreamingResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, startTime time.Time, originalModel string, clientStream bool) (*soraStreamingResult, error) {
 	if resp == nil {
 		return nil, errors.New("empty response")
 	}
 
 	if clientStream {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("X-Accel-Buffering", "no")
+		gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+			ContentType:  "text/event-stream",
+			CacheControl: "no-cache",
+		})
 		if v := resp.Header.Get("x-request-id"); v != "" {
-			c.Header("x-request-id", v)
+			c.SetHeader("x-request-id", v)
 		}
 	}
-
-	w := c.Writer
-	flusher, _ := w.(http.Flusher)
 
 	contentBuilder := strings.Builder{}
 	var firstTokenMs *int
@@ -157,13 +167,10 @@ func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *
 		if !clientStream {
 			return nil
 		}
-		if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+		if _, err := c.WriteBytes(0, []byte(line+"\n")); err != nil {
 			return err
 		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return nil
+		return c.Flush()
 	}
 
 	for scanner.Scan() {
@@ -219,10 +226,7 @@ func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
 			if clientStream {
-				_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"response_too_large\"}\n\n")
-				if flusher != nil {
-					flusher.Flush()
-				}
+				_ = gatewayctx.WriteSSEEvent(c, "error", map[string]any{"error": "response_too_large"})
 			}
 			return nil, err
 		}
@@ -230,10 +234,7 @@ func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
 		if clientStream {
-			_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"stream_read_error\"}\n\n")
-			if flusher != nil {
-				flusher.Flush()
-			}
+			_ = gatewayctx.WriteSSEEvent(c, "error", map[string]any{"error": "stream_read_error"})
 		}
 		return nil, err
 	}
@@ -252,7 +253,7 @@ func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *
 
 	if upstreamError != nil && !clientStream {
 		if c != nil {
-			c.JSON(http.StatusBadGateway, map[string]any{
+			c.WriteJSON(http.StatusBadGateway, map[string]any{
 				"error": map[string]any{
 					"type":    "upstream_error",
 					"message": upstreamError.Error(),
@@ -270,7 +271,7 @@ func (s *SoraGatewayService) handleStreamingResponse(ctx context.Context, resp *
 				response["media_urls"] = mediaURLs
 			}
 		}
-		c.JSON(http.StatusOK, response)
+		c.WriteJSON(http.StatusOK, response)
 	}
 
 	return &soraStreamingResult{

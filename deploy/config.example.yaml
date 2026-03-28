@@ -20,6 +20,9 @@ server:
   # Mode: "debug" for development, "release" for production
   # 运行模式："debug" 用于开发，"release" 用于生产环境
   mode: "release"
+  # Ingress runtime mode: "nethttp", "hybrid", or "gnet"
+  # 入口运行时模式："nethttp"、"hybrid" 或 "gnet"
+  runtime_mode: "nethttp"
   # Frontend base URL used to generate external links in emails (e.g. password reset)
   # 用于生成邮件中的外部链接（例如：重置密码链接）的前端基础地址
   # Example: "https://example.com"

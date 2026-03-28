@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,11 +23,18 @@ func SetOpenAIClientTransport(c *gin.Context, transport OpenAIClientTransport) {
 	if c == nil {
 		return
 	}
+	SetOpenAIClientTransportContext(gatewayctx.FromGin(c), transport)
+}
+
+func SetOpenAIClientTransportContext(c gatewayctx.GatewayContext, transport OpenAIClientTransport) {
+	if c == nil {
+		return
+	}
 	normalized := normalizeOpenAIClientTransport(transport)
 	if normalized == OpenAIClientTransportUnknown {
 		return
 	}
-	c.Set(openAIClientTransportContextKey, string(normalized))
+	c.SetValue(openAIClientTransportContextKey, string(normalized))
 }
 
 // GetOpenAIClientTransport 读取当前请求的客户端入站协议。
@@ -34,7 +42,14 @@ func GetOpenAIClientTransport(c *gin.Context) OpenAIClientTransport {
 	if c == nil {
 		return OpenAIClientTransportUnknown
 	}
-	raw, ok := c.Get(openAIClientTransportContextKey)
+	return GetOpenAIClientTransportContext(gatewayctx.FromGin(c))
+}
+
+func GetOpenAIClientTransportContext(c gatewayctx.GatewayContext) OpenAIClientTransport {
+	if c == nil {
+		return OpenAIClientTransportUnknown
+	}
+	raw, ok := c.Value(openAIClientTransportContextKey)
 	if !ok || raw == nil {
 		return OpenAIClientTransportUnknown
 	}

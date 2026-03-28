@@ -11,9 +11,9 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
-	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -56,7 +56,7 @@ func (c *openAIWSClientFrameConn) Close() error {
 
 func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	ctx context.Context,
-	c *gin.Context,
+	transportCtx gatewayctx.GatewayContext,
 	clientConn *coderws.Conn,
 	account *Account,
 	token string,
@@ -66,6 +66,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 ) error {
 	if s == nil {
 		return errors.New("service is nil")
+	}
+	if transportCtx == nil {
+		return errors.New("gateway context is nil")
 	}
 	if clientConn == nil {
 		return errors.New("client websocket is nil")
@@ -107,13 +110,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	)
 
 	isCodexCLI := false
-	if c != nil {
-		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	if transportCtx != nil {
+		isCodexCLI = openai.IsCodexOfficialClientByHeaders(transportCtx.HeaderValue("User-Agent"), transportCtx.HeaderValue("originator"))
 	}
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		isCodexCLI = true
 	}
-	headers, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", "")
+	headers, _ := s.buildOpenAIWSHeaders(transportCtx, account, token, wsDecision, isCodexCLI, "", "", "")
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,8 +16,8 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/soraerror"
@@ -88,19 +87,20 @@ func NewSoraGatewayHandler(
 
 // ChatCompletions handles Sora /v1/chat/completions endpoint
 func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
-	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	transportCtx := gatewayctx.FromGin(c)
+	apiKey, ok := middleware2.GetAPIKeyFromGatewayContext(transportCtx)
 	if !ok {
-		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		h.errorResponseGateway(transportCtx, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
 
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(transportCtx)
 	if !ok {
-		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		h.errorResponseGateway(transportCtx, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
-	reqLog := requestLogger(
-		c,
+	reqLog := requestLoggerContext(
+		transportCtx,
 		"handler.sora_gateway.chat_completions",
 		zap.Int64("user_id", subject.UserID),
 		zap.Int64("api_key_id", apiKey.ID),
@@ -108,39 +108,39 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	)
 	requestStart := time.Now()
 
-	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(transportCtx.Request())
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			h.errorResponseGateway(transportCtx, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
 		return
 	}
 	if len(body) == 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
 
-	setOpsRequestContext(c, "", false, body)
+	setOpsRequestContextGateway(transportCtx, "", false, body)
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
 
 	// 使用 gjson 只读提取字段做校验，避免完整 Unmarshal
 	modelResult := gjson.GetBytes(body, "model")
 	if !modelResult.Exists() || modelResult.Type != gjson.String || modelResult.String() == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 	reqModel := modelResult.String()
 
 	msgsResult := gjson.GetBytes(body, "messages")
 	if !msgsResult.IsArray() || len(msgsResult.Array()) == 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "messages is required")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
 	}
 
@@ -148,43 +148,43 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", clientStream))
 	if !clientStream {
 		if h.streamMode == "error" {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Sora requires stream=true")
+			h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Sora requires stream=true")
 			return
 		}
 		var err error
 		body, err = sjson.SetBytes(body, "stream", true)
 		if err != nil {
-			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to process request")
+			h.errorResponseGateway(transportCtx, http.StatusInternalServerError, "api_error", "Failed to process request")
 			return
 		}
 	}
 
-	setOpsRequestContext(c, reqModel, clientStream, body)
+	setOpsRequestContextGateway(transportCtx, reqModel, clientStream, body)
 
 	platform := ""
-	if forced, ok := middleware2.GetForcePlatformFromContext(c); ok {
+	if forced, ok := middleware2.GetForcePlatformFromGatewayContext(transportCtx); ok {
 		platform = forced
 	} else if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
 	}
 	if platform != service.PlatformSora {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "This endpoint only supports Sora platform")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "This endpoint only supports Sora platform")
 		return
 	}
 
 	streamStarted := false
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+	subscription, _ := middleware2.GetSubscriptionFromGatewayContext(transportCtx)
+	service.SetOpsLatencyMsContext(transportCtx, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
 	maxWait := service.CalculateMaxWait(subject.Concurrency)
-	canWait, err := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
+	canWait, err := h.concurrencyHelper.IncrementWaitCount(transportCtx.Context(), subject.UserID, maxWait)
 	waitCounted := false
 	if err != nil {
 		reqLog.Warn("sora.user_wait_counter_increment_failed", zap.Error(err))
 	} else if !canWait {
 		reqLog.Info("sora.user_wait_queue_full", zap.Int("max_wait", maxWait))
-		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+		h.errorResponseGateway(transportCtx, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
 		return
 	}
 	if err == nil && canWait {
@@ -192,33 +192,33 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 	defer func() {
 		if waitCounted {
-			h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
+			h.concurrencyHelper.DecrementWaitCount(transportCtx.Context(), subject.UserID)
 		}
 	}()
 
-	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, clientStream, &streamStarted)
+	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWaitContext(transportCtx, subject.UserID, subject.Concurrency, clientStream, &streamStarted)
 	if err != nil {
 		reqLog.Warn("sora.user_slot_acquire_failed", zap.Error(err))
-		h.handleConcurrencyError(c, err, "user", streamStarted)
+		h.handleConcurrencyErrorContext(transportCtx, err, "user", streamStarted)
 		return
 	}
 	if waitCounted {
-		h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
+		h.concurrencyHelper.DecrementWaitCount(transportCtx.Context(), subject.UserID)
 		waitCounted = false
 	}
-	userReleaseFunc = wrapReleaseOnDone(c.Request.Context(), userReleaseFunc)
+	userReleaseFunc = wrapReleaseOnDone(transportCtx.Context(), userReleaseFunc)
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
 
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(transportCtx.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
 		reqLog.Info("sora.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message := billingErrorDetails(err)
-		h.handleStreamingAwareError(c, status, code, message, streamStarted)
+		h.handleStreamingAwareErrorContext(transportCtx, status, code, message, streamStarted)
 		return
 	}
 
-	sessionHash := generateOpenAISessionHash(c, body)
+	sessionHash := generateOpenAISessionHashContext(transportCtx, body)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -228,14 +228,14 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	var lastFailoverHeaders http.Header
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs, "")
+		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs, "")
 		if err != nil {
 			reqLog.Warn("sora.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+				h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 				return
 			}
 			rayID, mitigated, contentType := extractSoraFailoverHeaderInsights(lastFailoverHeaders, lastFailoverBody)
@@ -252,11 +252,11 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 				fields = append(fields, zap.String("last_upstream_content_type", contentType))
 			}
 			reqLog.Warn("sora.failover_exhausted_no_available_accounts", fields...)
-			h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverHeaders, lastFailoverBody, streamStarted)
+			h.handleFailoverExhaustedContext(transportCtx, lastFailoverStatus, lastFailoverHeaders, lastFailoverBody, streamStarted)
 			return
 		}
 		account := selection.Account
-		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 		proxyBound := account.ProxyID != nil
 		proxyID := int64(0)
 		if account.ProxyID != nil {
@@ -267,11 +267,11 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 		accountReleaseFunc := selection.ReleaseFunc
 		if !selection.Acquired {
 			if selection.WaitPlan == nil {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+				h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 				return
 			}
 			accountWaitCounted := false
-			canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(c.Request.Context(), account.ID, selection.WaitPlan.MaxWaiting)
+			canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(transportCtx.Context(), account.ID, selection.WaitPlan.MaxWaiting)
 			if err != nil {
 				reqLog.Warn("sora.account_wait_counter_increment_failed",
 					zap.Int64("account_id", account.ID),
@@ -288,7 +288,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 					zap.Bool("tls_fingerprint_enabled", tlsFingerprintEnabled),
 					zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 				)
-				h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
+				h.handleStreamingAwareErrorContext(transportCtx, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
 				return
 			}
 			if err == nil && canWait {
@@ -296,12 +296,12 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			defer func() {
 				if accountWaitCounted {
-					h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+					h.concurrencyHelper.DecrementAccountWaitCount(transportCtx.Context(), account.ID)
 				}
 			}()
 
-			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
-				c,
+			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeoutContext(
+				transportCtx,
 				account.ID,
 				selection.WaitPlan.MaxConcurrency,
 				selection.WaitPlan.Timeout,
@@ -316,26 +316,26 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 					zap.Bool("tls_fingerprint_enabled", tlsFingerprintEnabled),
 					zap.Error(err),
 				)
-				h.handleConcurrencyError(c, err, "account", streamStarted)
+				h.handleConcurrencyErrorContext(transportCtx, err, "account", streamStarted)
 				return
 			}
 			if accountWaitCounted {
-				h.concurrencyHelper.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+				h.concurrencyHelper.DecrementAccountWaitCount(transportCtx.Context(), account.ID)
 				accountWaitCounted = false
 			}
 		}
-		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+		accountReleaseFunc = wrapReleaseOnDone(transportCtx.Context(), accountReleaseFunc)
 
-		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		service.SetOpsLatencyMsContext(transportCtx, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.soraGatewayService.Forward(c.Request.Context(), c, account, body, clientStream)
+		result, err := h.soraGatewayService.ForwardContext(transportCtx.Context(), transportCtx, account, body, clientStream)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
-		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, forwardDurationMs)
+		service.SetOpsLatencyMsContext(transportCtx, service.OpsResponseLatencyMsKey, forwardDurationMs)
 		if err == nil && result != nil && result.FirstTokenMs != nil {
-			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+			service.SetOpsLatencyMsContext(transportCtx, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
@@ -367,7 +367,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 						fields = append(fields, zap.String("upstream_content_type", contentType))
 					}
 					reqLog.Warn("sora.upstream_failover_exhausted", fields...)
-					h.handleFailoverExhausted(c, lastFailoverStatus, lastFailoverHeaders, lastFailoverBody, streamStarted)
+					h.handleFailoverExhaustedContext(transportCtx, lastFailoverStatus, lastFailoverHeaders, lastFailoverBody, streamStarted)
 					return
 				}
 				lastFailoverStatus = failoverErr.StatusCode
@@ -415,11 +415,11 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, nil)
 		}
 
-		userAgent := c.GetHeader("User-Agent")
-		clientIP := ip.GetClientIP(c)
+		userAgent := strings.TrimSpace(transportCtx.HeaderValue("User-Agent"))
+		clientIP := strings.TrimSpace(transportCtx.ClientIP())
 		requestPayloadHash := service.HashUsageRequestPayload(body)
-		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+		inboundEndpoint := GetInboundEndpointContext(transportCtx)
+		upstreamEndpoint := GetUpstreamEndpointContext(transportCtx, account.Platform)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		h.submitUsageRecordTask(func(ctx context.Context) {
@@ -457,12 +457,16 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 }
 
 func generateOpenAISessionHash(c *gin.Context, body []byte) string {
+	return generateOpenAISessionHashContext(gatewayctx.FromGin(c), body)
+}
+
+func generateOpenAISessionHashContext(c gatewayctx.GatewayContext, body []byte) string {
 	if c == nil {
 		return ""
 	}
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	sessionID := strings.TrimSpace(c.HeaderValue("session_id"))
 	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+		sessionID = strings.TrimSpace(c.HeaderValue("conversation_id"))
 	}
 	if sessionID == "" && len(body) > 0 {
 		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
@@ -497,16 +501,24 @@ func (h *SoraGatewayHandler) submitUsageRecordTask(task service.UsageRecordTask)
 }
 
 func (h *SoraGatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
-	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error",
+	h.handleConcurrencyErrorContext(gatewayctx.FromGin(c), err, slotType, streamStarted)
+}
+
+func (h *SoraGatewayHandler) handleConcurrencyErrorContext(c gatewayctx.GatewayContext, err error, slotType string, streamStarted bool) {
+	h.handleStreamingAwareErrorContext(c, http.StatusTooManyRequests, "rate_limit_error",
 		fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType), streamStarted)
 }
 
 func (h *SoraGatewayHandler) handleFailoverExhausted(c *gin.Context, statusCode int, responseHeaders http.Header, responseBody []byte, streamStarted bool) {
+	h.handleFailoverExhaustedContext(gatewayctx.FromGin(c), statusCode, responseHeaders, responseBody, streamStarted)
+}
+
+func (h *SoraGatewayHandler) handleFailoverExhaustedContext(c gatewayctx.GatewayContext, statusCode int, responseHeaders http.Header, responseBody []byte, streamStarted bool) {
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+	service.SetOpsUpstreamErrorContext(c, statusCode, upstreamMsg, "")
 
 	status, errType, errMsg := h.mapUpstreamError(statusCode, responseHeaders, responseBody)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleStreamingAwareErrorContext(c, status, errType, errMsg, streamStarted)
 }
 
 func (h *SoraGatewayHandler) mapUpstreamError(statusCode int, responseHeaders http.Header, responseBody []byte) (int, string, string) {
@@ -596,33 +608,34 @@ func extractUpstreamErrorCodeAndMessage(body []byte) (string, string) {
 }
 
 func (h *SoraGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
-		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
-			errorData := map[string]any{
-				"error": map[string]string{
-					"type":    errType,
-					"message": message,
-				},
-			}
-			jsonBytes, err := json.Marshal(errorData)
-			if err != nil {
-				_ = c.Error(err)
-				return
-			}
-			errorEvent := fmt.Sprintf("event: error\ndata: %s\n\n", string(jsonBytes))
-			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
-				_ = c.Error(err)
-			}
-			flusher.Flush()
-		}
+	h.handleStreamingAwareErrorContext(gatewayctx.FromGin(c), status, errType, message, streamStarted)
+}
+
+func (h *SoraGatewayHandler) handleStreamingAwareErrorContext(c gatewayctx.GatewayContext, status int, errType, message string, streamStarted bool) {
+	if c == nil {
 		return
 	}
-	h.errorResponse(c, status, errType, message)
+	if streamStarted {
+		_ = gatewayctx.WriteSSEEvent(c, "error", map[string]any{
+			"error": map[string]string{
+				"type":    errType,
+				"message": message,
+			},
+		})
+		return
+	}
+	h.errorResponseGateway(c, status, errType, message)
 }
 
 func (h *SoraGatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
-	c.JSON(status, gin.H{
+	h.errorResponseGateway(gatewayctx.FromGin(c), status, errType, message)
+}
+
+func (h *SoraGatewayHandler) errorResponseGateway(c gatewayctx.GatewayContext, status int, errType, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(status, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": message,

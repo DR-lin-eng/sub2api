@@ -598,6 +598,36 @@ func TestConfigAddressHelpers(t *testing.T) {
 	}
 }
 
+func TestNormalizeServerRuntimeMode(t *testing.T) {
+	if got := NormalizeServerRuntimeMode(""); got != ServerRuntimeModeNetHTTP {
+		t.Fatalf("NormalizeServerRuntimeMode(empty) = %q", got)
+	}
+	if got := NormalizeServerRuntimeMode("  HYBRID "); got != ServerRuntimeModeHybrid {
+		t.Fatalf("NormalizeServerRuntimeMode(hybrid) = %q", got)
+	}
+	if got := NormalizeServerRuntimeMode("GNET"); got != ServerRuntimeModeGnet {
+		t.Fatalf("NormalizeServerRuntimeMode(gnet) = %q", got)
+	}
+}
+
+func TestValidateRejectsUnknownServerRuntimeMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.Server.RuntimeMode = "mystery"
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected runtime_mode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "server.runtime_mode") {
+		t.Fatalf("Validate() expected runtime_mode error, got: %v", err)
+	}
+}
+
 func TestLoadProcessDefaults(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

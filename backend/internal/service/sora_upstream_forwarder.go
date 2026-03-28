@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,20 +27,31 @@ func (s *SoraGatewayService) forwardToUpstream(
 	clientStream bool,
 	startTime time.Time,
 ) (*ForwardResult, error) {
+	return s.forwardToUpstreamContext(ctx, gatewayctx.FromGin(c), account, body, clientStream, startTime)
+}
+
+func (s *SoraGatewayService) forwardToUpstreamContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	body []byte,
+	clientStream bool,
+	startTime time.Time,
+) (*ForwardResult, error) {
 	apiKey := account.GetCredential("api_key")
 	if apiKey == "" {
-		s.writeSoraError(c, http.StatusBadGateway, "upstream_error", "Sora apikey account missing api_key credential", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Sora apikey account missing api_key credential", clientStream)
 		return nil, fmt.Errorf("sora apikey account %d missing api_key", account.ID)
 	}
 
 	baseURL := account.GetBaseURL()
 	if baseURL == "" {
-		s.writeSoraError(c, http.StatusBadGateway, "upstream_error", "Sora apikey account missing base_url", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Sora apikey account missing base_url", clientStream)
 		return nil, fmt.Errorf("sora apikey account %d missing base_url", account.ID)
 	}
 	// 校验 scheme 合法性（仅允许 http/https）
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		s.writeSoraError(c, http.StatusBadGateway, "upstream_error", "Sora apikey base_url must start with http:// or https://", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Sora apikey base_url must start with http:// or https://", clientStream)
 		return nil, fmt.Errorf("sora apikey account %d invalid base_url scheme: %s", account.ID, baseURL)
 	}
 	upstreamURL := strings.TrimRight(baseURL, "/") + "/sora/v1/chat/completions"
@@ -46,7 +59,7 @@ func (s *SoraGatewayService) forwardToUpstream(
 	// 构建上游请求
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		s.writeSoraError(c, http.StatusInternalServerError, "api_error", "Failed to create upstream request", clientStream)
+		s.writeSoraErrorContext(c, http.StatusInternalServerError, "api_error", "Failed to create upstream request", clientStream)
 		return nil, fmt.Errorf("create upstream request: %w", err)
 	}
 
@@ -55,7 +68,7 @@ func (s *SoraGatewayService) forwardToUpstream(
 
 	// 透传客户端的部分请求头
 	for _, header := range []string{"Accept", "Accept-Encoding"} {
-		if v := c.GetHeader(header); v != "" {
+		if v := strings.TrimSpace(c.HeaderValue(header)); v != "" {
 			upstreamReq.Header.Set(header, v)
 		}
 	}
@@ -71,7 +84,7 @@ func (s *SoraGatewayService) forwardToUpstream(
 	// 发送请求
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
-		s.writeSoraError(c, http.StatusBadGateway, "upstream_error", "Failed to connect to upstream Sora service", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Failed to connect to upstream Sora service", clientStream)
 		return nil, &UpstreamFailoverError{
 			StatusCode: http.StatusBadGateway,
 		}
@@ -93,49 +106,66 @@ func (s *SoraGatewayService) forwardToUpstream(
 		}
 
 		// 非转移错误，直接透传给客户端
-		c.Status(resp.StatusCode)
+		c.SetStatus(resp.StatusCode)
 		for key, values := range resp.Header {
 			for _, v := range values {
-				c.Writer.Header().Add(key, v)
+				c.Header().Add(key, v)
 			}
 		}
-		if _, err := c.Writer.Write(respBody); err != nil {
+		if _, err := c.WriteBytes(0, respBody); err != nil {
 			return nil, fmt.Errorf("write upstream error response: %w", err)
 		}
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
 
 	// 成功响应 — 直接透传
-	c.Status(resp.StatusCode)
+	c.SetStatus(resp.StatusCode)
 	for key, values := range resp.Header {
 		lower := strings.ToLower(key)
 		// 透传内容相关头部
 		if lower == "content-type" || lower == "transfer-encoding" ||
 			lower == "cache-control" || lower == "x-request-id" {
 			for _, v := range values {
-				c.Writer.Header().Add(key, v)
+				c.Header().Add(key, v)
 			}
 		}
 	}
 
 	// 流式复制响应体
-	if flusher, ok := c.Writer.(http.Flusher); ok && clientStream {
+	if clientStream {
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
-				if _, err := c.Writer.Write(buf[:n]); err != nil {
+				if _, err := c.WriteBytes(0, buf[:n]); err != nil {
 					return nil, fmt.Errorf("stream upstream response write: %w", err)
 				}
-				flusher.Flush()
+				if err := c.Flush(); err != nil {
+					return nil, fmt.Errorf("stream upstream response flush: %w", err)
+				}
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
 			}
 			if readErr != nil {
-				break
+				return nil, fmt.Errorf("stream upstream response read: %w", readErr)
 			}
 		}
 	} else {
-		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
-			return nil, fmt.Errorf("copy upstream response: %w", err)
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, err := c.WriteBytes(0, buf[:n]); err != nil {
+					return nil, fmt.Errorf("copy upstream response: %w", err)
+				}
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				return nil, fmt.Errorf("copy upstream response: %w", readErr)
+			}
 		}
 	}
 

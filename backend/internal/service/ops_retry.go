@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
@@ -592,15 +593,16 @@ func (s *OpsService) executeWithAccount(ctx context.Context, reqType opsRetryReq
 		if s.geminiCompatService == nil || s.antigravityGatewayService == nil {
 			return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "gemini services not available"}
 		}
+		transportCtx := gatewayctx.FromGin(c)
 		modelName := strings.TrimSpace(errorLog.Model)
 		action := "generateContent"
 		if errorLog.Stream {
 			action = "streamGenerateContent"
 		}
 		if account.Platform == PlatformAntigravity {
-			_, err = s.antigravityGatewayService.ForwardGemini(ctx, c, account, modelName, action, errorLog.Stream, body, false)
+			_, err = s.antigravityGatewayService.ForwardGeminiContext(ctx, transportCtx, account, modelName, action, errorLog.Stream, body, false)
 		} else {
-			_, err = s.geminiCompatService.ForwardNative(ctx, c, account, modelName, action, errorLog.Stream, body)
+			_, err = s.geminiCompatService.ForwardNativeContext(ctx, transportCtx, account, modelName, action, errorLog.Stream, body)
 		}
 	case opsRetryTypeMessages:
 		switch account.Platform {
@@ -613,7 +615,7 @@ func (s *OpsService) executeWithAccount(ctx context.Context, reqType opsRetryReq
 			if s.geminiCompatService == nil {
 				return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "gemini gateway service not available"}
 			}
-			_, err = s.geminiCompatService.Forward(ctx, c, account, body)
+			_, err = s.geminiCompatService.ForwardContext(ctx, gatewayctx.FromGin(c), account, body)
 		default:
 			if s.gatewayService == nil {
 				return &opsRetryExecution{status: opsRetryStatusFailed, errorMessage: "gateway service not available"}

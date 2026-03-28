@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -24,39 +24,43 @@ const claudeCodeParsedRequestContextKey = "claude_code_parsed_request"
 // SetClaudeCodeClientContext 检查请求是否来自 Claude Code 客户端，并设置到 context 中
 // 返回更新后的 context
 func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.ParsedRequest) {
-	if c == nil || c.Request == nil {
+	SetClaudeCodeClientContextContext(gatewayctx.FromGin(c), body, parsedReq)
+}
+
+func SetClaudeCodeClientContextContext(c gatewayctx.GatewayContext, body []byte, parsedReq *service.ParsedRequest) {
+	if c == nil || c.Request() == nil {
 		return
 	}
 	if parsedReq != nil {
-		c.Set(claudeCodeParsedRequestContextKey, parsedReq)
+		c.SetValue(claudeCodeParsedRequestContextKey, parsedReq)
 	}
 
-	ua := c.GetHeader("User-Agent")
+	ua := c.HeaderValue("User-Agent")
 	// Fast path：非 Claude CLI UA 直接判定 false，避免热路径二次 JSON 反序列化。
 	if !claudeCodeValidator.ValidateUserAgent(ua) {
-		ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
-		c.Request = c.Request.WithContext(ctx)
+		ctx := service.SetClaudeCodeClient(c.Request().Context(), false)
+		c.SetRequest(c.Request().WithContext(ctx))
 		return
 	}
 
 	isClaudeCode := false
-	if !strings.Contains(c.Request.URL.Path, "messages") {
+	if !strings.Contains(c.Path(), "messages") {
 		// 与 Validate 行为一致：非 messages 路径 UA 命中即可视为 Claude Code 客户端。
 		isClaudeCode = true
 	} else {
 		// 仅在确认为 Claude CLI 且 messages 路径时再做 body 解析。
 		bodyMap := claudeCodeBodyMapFromParsedRequest(parsedReq)
 		if bodyMap == nil {
-			bodyMap = claudeCodeBodyMapFromContextCache(c)
+			bodyMap = claudeCodeBodyMapFromGatewayContextCache(c)
 		}
 		if bodyMap == nil && len(body) > 0 {
 			_ = json.Unmarshal(body, &bodyMap)
 		}
-		isClaudeCode = claudeCodeValidator.Validate(c.Request, bodyMap)
+		isClaudeCode = claudeCodeValidator.Validate(c.Request(), bodyMap)
 	}
 
 	// 更新 request context
-	ctx := service.SetClaudeCodeClient(c.Request.Context(), isClaudeCode)
+	ctx := service.SetClaudeCodeClient(c.Request().Context(), isClaudeCode)
 
 	// 仅在确认为 Claude Code 客户端时提取版本号写入 context
 	if isClaudeCode {
@@ -65,7 +69,7 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.
 		}
 	}
 
-	c.Request = c.Request.WithContext(ctx)
+	c.SetRequest(c.Request().WithContext(ctx))
 }
 
 func claudeCodeBodyMapFromParsedRequest(parsedReq *service.ParsedRequest) map[string]any {
@@ -85,15 +89,19 @@ func claudeCodeBodyMapFromParsedRequest(parsedReq *service.ParsedRequest) map[st
 }
 
 func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
+	return claudeCodeBodyMapFromGatewayContextCache(gatewayctx.FromGin(c))
+}
+
+func claudeCodeBodyMapFromGatewayContextCache(c gatewayctx.GatewayContext) map[string]any {
 	if c == nil {
 		return nil
 	}
-	if cached, ok := c.Get(service.OpenAIParsedRequestBodyKey); ok {
+	if cached, ok := c.Value(service.OpenAIParsedRequestBodyKey); ok {
 		if bodyMap, ok := cached.(map[string]any); ok {
 			return bodyMap
 		}
 	}
-	if cached, ok := c.Get(claudeCodeParsedRequestContextKey); ok {
+	if cached, ok := c.Value(claudeCodeParsedRequestContextKey); ok {
 		switch v := cached.(type) {
 		case *service.ParsedRequest:
 			return claudeCodeBodyMapFromParsedRequest(v)
@@ -105,15 +113,19 @@ func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
 }
 
 func buildGatewaySessionContext(c *gin.Context, apiKeyID int64) *service.SessionContext {
+	return buildGatewaySessionContextContext(gatewayctx.FromGin(c), apiKeyID)
+}
+
+func buildGatewaySessionContextContext(c gatewayctx.GatewayContext, apiKeyID int64) *service.SessionContext {
 	if c == nil {
 		return &service.SessionContext{APIKeyID: apiKeyID}
 	}
 	return &service.SessionContext{
-		ClientIP:             ip.GetClientIP(c),
-		UserAgent:            c.GetHeader("User-Agent"),
+		ClientIP:             strings.TrimSpace(c.ClientIP()),
+		UserAgent:            c.HeaderValue("User-Agent"),
 		APIKeyID:             apiKeyID,
-		StableSessionID:      strings.TrimSpace(c.GetHeader("session_id")),
-		StableConversationID: strings.TrimSpace(c.GetHeader("conversation_id")),
+		StableSessionID:      strings.TrimSpace(c.HeaderValue("session_id")),
+		StableConversationID: strings.TrimSpace(c.HeaderValue("conversation_id")),
 	}
 }
 
@@ -185,6 +197,37 @@ func NewConcurrencyHelper(concurrencyService *service.ConcurrencyService, pingFo
 		pingFormat:         pingFormat,
 		pingInterval:       pingInterval,
 	}
+}
+
+func writeConcurrencyPing(ctx gatewayctx.GatewayContext, pingFormat SSEPingFormat, streamStarted *bool) error {
+	if ctx == nil {
+		return fmt.Errorf("gateway context is nil")
+	}
+	if streamStarted == nil {
+		return fmt.Errorf("streamStarted is nil")
+	}
+	if pingFormat == "" {
+		return nil
+	}
+
+	if !*streamStarted {
+		ctx.SetHeader("Content-Type", "text/event-stream")
+		ctx.SetHeader("Cache-Control", "no-cache, no-transform")
+		ctx.SetHeader("Connection", "keep-alive")
+		ctx.SetHeader("X-Accel-Buffering", "no")
+		ctx.Header().Del("Content-Encoding")
+		ctx.Header().Del("Content-Length")
+		ctx.Header().Del("Transfer-Encoding")
+		*streamStarted = true
+	}
+
+	if pingFormat == SSEPingFormatComment {
+		return ctx.WriteSSEComment("")
+	}
+	if _, err := ctx.WriteBytes(http.StatusOK, []byte(string(pingFormat))); err != nil {
+		return err
+	}
+	return ctx.Flush()
 }
 
 // wrapReleaseOnDone ensures release runs at most once and still triggers on context cancellation.
@@ -261,51 +304,66 @@ func (h *ConcurrencyHelper) TryAcquireAccountSlot(ctx context.Context, accountID
 // For streaming requests, sends ping events during the wait.
 // streamStarted is updated if streaming response has begun.
 func (h *ConcurrencyHelper) AcquireUserSlotWithWait(c *gin.Context, userID int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
-	ctx := c.Request.Context()
-
-	// Try to acquire immediately
-	releaseFunc, acquired, err := h.TryAcquireUserSlot(ctx, userID, maxConcurrency)
-	if err != nil {
-		return nil, err
-	}
-
-	if acquired {
-		return releaseFunc, nil
-	}
-
-	// Need to wait - handle streaming ping if needed
-	return h.waitForSlotWithPing(c, "user", userID, maxConcurrency, isStream, streamStarted)
+	return h.AcquireUserSlotWithWaitContext(gatewayctx.FromGin(c), userID, maxConcurrency, isStream, streamStarted)
 }
 
 // AcquireAccountSlotWithWait acquires an account concurrency slot, waiting if necessary.
 // For streaming requests, sends ping events during the wait.
 // streamStarted is updated if streaming response has begun.
 func (h *ConcurrencyHelper) AcquireAccountSlotWithWait(c *gin.Context, accountID int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
-	ctx := c.Request.Context()
-
-	// Try to acquire immediately
-	releaseFunc, acquired, err := h.TryAcquireAccountSlot(ctx, accountID, maxConcurrency)
-	if err != nil {
-		return nil, err
-	}
-
-	if acquired {
-		return releaseFunc, nil
-	}
-
-	// Need to wait - handle streaming ping if needed
-	return h.waitForSlotWithPing(c, "account", accountID, maxConcurrency, isStream, streamStarted)
+	return h.AcquireAccountSlotWithWaitContext(gatewayctx.FromGin(c), accountID, maxConcurrency, isStream, streamStarted)
 }
 
 // waitForSlotWithPing waits for a concurrency slot, sending ping events for streaming requests.
 // streamStarted pointer is updated when streaming begins (for proper error handling by caller).
 func (h *ConcurrencyHelper) waitForSlotWithPing(c *gin.Context, slotType string, id int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
-	return h.waitForSlotWithPingTimeout(c, slotType, id, maxConcurrency, maxConcurrencyWait, isStream, streamStarted, false)
+	return h.waitForSlotWithPingTimeoutContext(gatewayctx.FromGin(c), slotType, id, maxConcurrency, maxConcurrencyWait, isStream, streamStarted, false)
 }
 
 // waitForSlotWithPingTimeout waits for a concurrency slot with a custom timeout.
 func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	return h.waitForSlotWithPingTimeoutContext(gatewayctx.FromGin(c), slotType, id, maxConcurrency, timeout, isStream, streamStarted, tryImmediate)
+}
+
+func (h *ConcurrencyHelper) AcquireUserSlotWithWaitContext(ctx gatewayctx.GatewayContext, userID int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("gateway context is nil")
+	}
+
+	releaseFunc, acquired, err := h.TryAcquireUserSlot(ctx.Context(), userID, maxConcurrency)
+	if err != nil {
+		return nil, err
+	}
+	if acquired {
+		return releaseFunc, nil
+	}
+	return h.waitForSlotWithPingContext(ctx, "user", userID, maxConcurrency, isStream, streamStarted)
+}
+
+func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitContext(ctx gatewayctx.GatewayContext, accountID int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("gateway context is nil")
+	}
+
+	releaseFunc, acquired, err := h.TryAcquireAccountSlot(ctx.Context(), accountID, maxConcurrency)
+	if err != nil {
+		return nil, err
+	}
+	if acquired {
+		return releaseFunc, nil
+	}
+	return h.waitForSlotWithPingContext(ctx, "account", accountID, maxConcurrency, isStream, streamStarted)
+}
+
+func (h *ConcurrencyHelper) waitForSlotWithPingContext(ctx gatewayctx.GatewayContext, slotType string, id int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
+	return h.waitForSlotWithPingTimeoutContext(ctx, slotType, id, maxConcurrency, maxConcurrencyWait, isStream, streamStarted, false)
+}
+
+func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.GatewayContext, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
+	if gctx == nil {
+		return nil, fmt.Errorf("gateway context is nil")
+	}
+	ctx, cancel := context.WithTimeout(gctx.Context(), timeout)
 	defer cancel()
 
 	acquireSlot := func() (*service.AcquireResult, error) {
@@ -353,15 +411,6 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 	// Determine if ping is needed (streaming + ping format defined)
 	needPing := isStream && h.pingFormat != ""
 
-	var flusher http.Flusher
-	if needPing {
-		var ok bool
-		flusher, ok = c.Writer.(http.Flusher)
-		if !ok {
-			return nil, fmt.Errorf("streaming not supported")
-		}
-	}
-
 	// Only create ping ticker if ping is needed
 	var pingCh <-chan time.Time
 	if needPing {
@@ -384,20 +433,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 
 		case <-pingCh:
 			// Send ping to keep connection alive
-			if !*streamStarted {
-				c.Header("Content-Type", "text/event-stream")
-				c.Header("Cache-Control", "no-cache, no-transform")
-				c.Header("Connection", "keep-alive")
-				c.Header("X-Accel-Buffering", "no")
-				c.Writer.Header().Del("Content-Encoding")
-				c.Writer.Header().Del("Content-Length")
-				c.Writer.Header().Del("Transfer-Encoding")
-				*streamStarted = true
-			}
-			if _, err := fmt.Fprint(c.Writer, string(h.pingFormat)); err != nil {
+			if err := writeConcurrencyPing(gctx, h.pingFormat, streamStarted); err != nil {
 				return nil, err
 			}
-			flusher.Flush()
 
 		case <-timer.C:
 			if ticketID != "" {
@@ -452,7 +490,11 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 
 // AcquireAccountSlotWithWaitTimeout acquires an account slot with a custom timeout (keeps SSE ping).
 func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeout(c *gin.Context, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
-	return h.waitForSlotWithPingTimeout(c, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true)
+	return h.AcquireAccountSlotWithWaitTimeoutContext(gatewayctx.FromGin(c), accountID, maxConcurrency, timeout, isStream, streamStarted)
+}
+
+func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeoutContext(ctx gatewayctx.GatewayContext, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+	return h.waitForSlotWithPingTimeoutContext(ctx, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true)
 }
 
 // nextBackoff 计算下一次退避时间

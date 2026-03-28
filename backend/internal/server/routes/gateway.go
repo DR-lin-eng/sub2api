@@ -5,11 +5,14 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+const nativeRouteFallbackToHTTPHandlerKey = "_native_route_fallback_http_handler"
 
 // RegisterGatewayRoutes 注册 API 网关路由（Claude/OpenAI/Gemini 兼容）
 func RegisterGatewayRoutes(
@@ -154,6 +157,294 @@ func RegisterGatewayRoutes(
 	}
 	// Sora 媒体代理（签名 URL，无需 API Key）
 	r.GET("/sora/media-signed/*filepath", h.SoraGateway.MediaProxySigned)
+}
+
+func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
+	if h == nil || h.Gateway == nil {
+		return nil
+	}
+	return []gatewayctx.RouteDef{
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/messages",
+			Handler: openAIMessagesDispatchGateway(h),
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/messages/count_tokens",
+			Handler: openAICountTokensDispatchGateway(h),
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/v1/models",
+			Handler: h.Gateway.ModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/chat/completions",
+			Handler: h.OpenAIGateway.ChatCompletionsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/responses",
+			Handler: h.OpenAIGateway.ResponsesGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/responses/*subpath",
+			Handler: h.OpenAIGateway.ResponsesGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/chat/completions",
+			Handler: h.OpenAIGateway.ChatCompletionsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/responses",
+			Handler: h.OpenAIGateway.ResponsesGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/responses/*subpath",
+			Handler: h.OpenAIGateway.ResponsesGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/v1beta/models",
+			Handler: h.Gateway.GeminiV1BetaListModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"inbound_endpoint",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/v1beta/models/:model",
+			Handler: h.Gateway.GeminiV1BetaGetModelGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"inbound_endpoint",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1beta/models/*modelAction",
+			Handler: h.Gateway.GeminiV1BetaModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/antigravity/models",
+			Handler: h.Gateway.AntigravityModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/antigravity/v1beta/models",
+			Handler: h.Gateway.GeminiV1BetaListModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"inbound_endpoint",
+				"force_platform_antigravity",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/antigravity/v1beta/models/:model",
+			Handler: h.Gateway.GeminiV1BetaGetModelGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"inbound_endpoint",
+				"force_platform_antigravity",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/antigravity/v1beta/models/*modelAction",
+			Handler: h.Gateway.GeminiV1BetaModelsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"force_platform_antigravity",
+				"google_api_key_auth",
+				"require_group_google",
+			},
+		},
+	}
+}
+
+func openAIMessagesDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
+	return func(c gatewayctx.GatewayContext) {
+		if c == nil || h == nil {
+			return
+		}
+		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
+		if !ok || apiKey == nil {
+			if h.OpenAIGateway != nil {
+				h.OpenAIGateway.MessagesGateway(c)
+			}
+			return
+		}
+		if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
+			if h.OpenAIGateway != nil {
+				h.OpenAIGateway.MessagesGateway(c)
+			}
+			return
+		}
+		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+	}
+}
+
+func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
+	return func(c gatewayctx.GatewayContext) {
+		if c == nil || h == nil {
+			return
+		}
+		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
+		if !ok || apiKey == nil {
+			c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+			return
+		}
+		if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
+			c.WriteJSON(http.StatusNotFound, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Token counting is not supported for this platform",
+				},
+			})
+			return
+		}
+		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+	}
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -32,7 +33,14 @@ func GenerateNonce() (string, error) {
 
 // GetNonceFromContext retrieves the CSP nonce from gin context
 func GetNonceFromContext(c *gin.Context) string {
-	if nonce, exists := c.Get(CSPNonceKey); exists {
+	return GetNonceFromGatewayContext(gatewayctx.FromGin(c))
+}
+
+func GetNonceFromGatewayContext(c gatewayctx.GatewayContext) string {
+	if c == nil {
+		return ""
+	}
+	if nonce, exists := c.Value(CSPNonceKey); exists {
 		if s, ok := nonce.(string); ok {
 			return s
 		}
@@ -44,58 +52,71 @@ func GetNonceFromContext(c *gin.Context) string {
 // getFrameSrcOrigins is an optional function that returns extra origins to inject into frame-src;
 // pass nil to disable dynamic frame-src injection.
 func SecurityHeaders(cfg config.CSPConfig, getFrameSrcOrigins func() []string) gin.HandlerFunc {
-	policy := strings.TrimSpace(cfg.Policy)
-	if policy == "" {
-		policy = config.DefaultCSPPolicy
-	}
-
-	// Enhance policy with required directives (nonce placeholder and Cloudflare Insights)
-	policy = enhanceCSPPolicy(policy)
+	policy := prepareSecurityHeadersPolicy(cfg)
 
 	return func(c *gin.Context) {
-		finalPolicy := policy
-		if getFrameSrcOrigins != nil {
-			for _, origin := range getFrameSrcOrigins() {
-				if origin != "" {
-					finalPolicy = addToDirective(finalPolicy, "frame-src", origin)
-				}
-			}
-		}
-
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
-		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		if isAPIRoutePath(c) {
-			c.Next()
-			return
-		}
-
-		if cfg.Enabled {
-			// Generate nonce for this request
-			nonce, err := GenerateNonce()
-			if err != nil {
-				// crypto/rand 失败时降级为无 nonce 的 CSP 策略
-				log.Printf("[SecurityHeaders] %v — 降级为无 nonce 的 CSP", err)
-				c.Header("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'unsafe-inline'"))
-			} else {
-				c.Set(CSPNonceKey, nonce)
-				c.Header("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'nonce-"+nonce+"'"))
-			}
-		}
+		ApplySecurityHeadersContext(gatewayctx.FromGin(c), cfg, policy, getFrameSrcOrigins)
 		c.Next()
 	}
 }
 
-func isAPIRoutePath(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
+func prepareSecurityHeadersPolicy(cfg config.CSPConfig) string {
+	policy := strings.TrimSpace(cfg.Policy)
+	if policy == "" {
+		policy = config.DefaultCSPPolicy
+	}
+	return enhanceCSPPolicy(policy)
+}
+
+func ApplySecurityHeadersContext(c gatewayctx.GatewayContext, cfg config.CSPConfig, preparedPolicy string, getFrameSrcOrigins func() []string) {
+	if c == nil {
+		return
+	}
+	finalPolicy := preparedPolicy
+	if strings.TrimSpace(finalPolicy) == "" {
+		finalPolicy = prepareSecurityHeadersPolicy(cfg)
+	}
+	if getFrameSrcOrigins != nil {
+		for _, origin := range getFrameSrcOrigins() {
+			if origin != "" {
+				finalPolicy = addToDirective(finalPolicy, "frame-src", origin)
+			}
+		}
+	}
+
+	c.SetHeader("X-Content-Type-Options", "nosniff")
+	c.SetHeader("X-Frame-Options", "DENY")
+	c.SetHeader("Referrer-Policy", "strict-origin-when-cross-origin")
+	if isAPIRoutePathContext(c) {
+		return
+	}
+
+	if cfg.Enabled {
+		nonce, err := GenerateNonce()
+		if err != nil {
+			log.Printf("[SecurityHeaders] %v — 降级为无 nonce 的 CSP", err)
+			c.SetHeader("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'unsafe-inline'"))
+			return
+		}
+		c.SetValue(CSPNonceKey, nonce)
+		c.SetHeader("Content-Security-Policy", strings.ReplaceAll(finalPolicy, NonceTemplate, "'nonce-"+nonce+"'"))
+	}
+}
+
+func isAPIRoutePathContext(c gatewayctx.GatewayContext) bool {
+	if c == nil {
 		return false
 	}
-	path := c.Request.URL.Path
+	path := c.Path()
 	return strings.HasPrefix(path, "/v1/") ||
 		strings.HasPrefix(path, "/v1beta/") ||
 		strings.HasPrefix(path, "/antigravity/") ||
 		strings.HasPrefix(path, "/sora/") ||
 		strings.HasPrefix(path, "/responses")
+}
+
+func isAPIRoutePath(c *gin.Context) bool {
+	return isAPIRoutePathContext(gatewayctx.FromGin(c))
 }
 
 // enhanceCSPPolicy ensures the CSP policy includes nonce support and Cloudflare Insights domain.

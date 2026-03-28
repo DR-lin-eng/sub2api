@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -27,6 +28,17 @@ import (
 func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	ctx context.Context,
 	c *gin.Context,
+	account *Account,
+	body []byte,
+	promptCacheKey string,
+	defaultMappedModel string,
+) (*OpenAIForwardResult, error) {
+	return s.ForwardAsAnthropicContext(ctx, gatewayctx.FromGin(c), account, body, promptCacheKey, defaultMappedModel)
+}
+
+func (s *OpenAIGatewayService) ForwardAsAnthropicContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
 	account *Account,
 	body []byte,
 	promptCacheKey string,
@@ -54,7 +66,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	isStream := true
 
 	// 2b. Handle BetaFastMode → service_tier: "priority"
-	if containsBetaToken(c.GetHeader("anthropic-beta"), claude.BetaFastMode) {
+	if containsBetaToken(c.HeaderValue("anthropic-beta"), claude.BetaFastMode) {
 		responsesReq.ServiceTier = "priority"
 	}
 
@@ -102,7 +114,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 6. Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, isStream, promptCacheKey, false)
+	upstreamReq, err := s.buildUpstreamRequestContext(ctx, c, account, responsesBody, token, isStream, promptCacheKey, false)
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
@@ -110,7 +122,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
 	if promptCacheKey != "" {
-		apiKeyID := getAPIKeyIDFromContext(c)
+		apiKeyID := getAPIKeyIDFromGatewayContext(c)
 		upstreamReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey)))
 	}
 
@@ -131,8 +143,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			cancelQuickFail()
 		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		setOpsUpstreamErrorContext(c, 0, safeErr, "")
+		appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -164,7 +176,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				}
 				upstreamDetail = truncateString(string(respBody), maxBytes)
 			}
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -181,7 +193,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 		}
 		// Non-failover error: return Anthropic-formatted error to client
-		return s.handleAnthropicErrorResponse(resp, c, account)
+		return s.handleAnthropicErrorResponseContext(resp, c, account)
 	}
 
 	// 9. Handle normal response
@@ -189,10 +201,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponseContext(resp, c, originalModel, mappedModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponseContext(resp, c, originalModel, mappedModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -224,7 +236,15 @@ func (s *OpenAIGatewayService) handleAnthropicErrorResponse(
 	c *gin.Context,
 	account *Account,
 ) (*OpenAIForwardResult, error) {
-	return s.handleCompatErrorResponse(resp, c, account, writeAnthropicError)
+	return s.handleAnthropicErrorResponseContext(resp, gatewayctx.FromGin(c), account)
+}
+
+func (s *OpenAIGatewayService) handleAnthropicErrorResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+) (*OpenAIForwardResult, error) {
+	return s.handleCompatErrorResponseContext(resp, c, account, writeAnthropicErrorContext)
 }
 
 // handleAnthropicBufferedStreamingResponse reads all Responses SSE events from
@@ -236,6 +256,16 @@ func (s *OpenAIGatewayService) handleAnthropicErrorResponse(
 func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
+	originalModel string,
+	mappedModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	return s.handleAnthropicBufferedStreamingResponseContext(resp, gatewayctx.FromGin(c), originalModel, mappedModel, startTime)
+}
+
+func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
 	originalModel string,
 	mappedModel string,
 	startTime time.Time,
@@ -303,7 +333,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			)
 			finalResponse = partial.responseSnapshot()
 		} else {
-			writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
+			writeAnthropicErrorContext(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
 			return nil, fmt.Errorf("upstream stream ended without terminal event")
 		}
 	}
@@ -311,9 +341,9 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	c.WriteJSON(http.StatusOK, anthropicResp)
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
@@ -338,16 +368,26 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	mappedModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	return s.handleAnthropicStreamingResponseContext(resp, gatewayctx.FromGin(c), originalModel, mappedModel, startTime)
+}
+
+func (s *OpenAIGatewayService) handleAnthropicStreamingResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	originalModel string,
+	mappedModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  "text/event-stream",
+		CacheControl: "no-cache",
+		RequestID:    requestID,
+	})
 
 	state := apicompat.NewResponsesEventToAnthropicState()
 	state.Model = originalModel
@@ -355,10 +395,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	var firstTokenMs *int
 	firstChunk := true
 	flushController := s.newOpenAIHTTPStreamFlushController()
-	flusher, _ := c.Writer.(http.Flusher)
+	bufferedWriter := bufio.NewWriterSize(gatewayContextWriter{ctx: c}, 4*1024)
 	flushClient := func() {
-		if flusher != nil {
-			flusher.Flush()
+		if err := bufferedWriter.Flush(); err == nil {
+			_ = c.Flush()
 			flushController.markFlushed()
 		}
 	}
@@ -426,7 +466,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				)
 				continue
 			}
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+			if _, err := bufferedWriter.WriteString(sse); err != nil {
 				logger.L().Info("openai messages stream: client disconnected",
 					zap.String("request_id", requestID),
 				)
@@ -447,7 +487,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				if err != nil {
 					continue
 				}
-				fmt.Fprint(c.Writer, sse) //nolint:errcheck
+				_, _ = bufferedWriter.WriteString(sse)
 			}
 			flushClient()
 		}
@@ -542,7 +582,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				continue
 			}
 			// Send Anthropic-format ping event
-			if _, err := fmt.Fprint(c.Writer, "event: ping\ndata: {\"type\":\"ping\"}\n\n"); err != nil {
+			if _, err := bufferedWriter.WriteString("event: ping\ndata: {\"type\":\"ping\"}\n\n"); err != nil {
 				// Client disconnected
 				logger.L().Info("openai messages stream: client disconnected during keepalive",
 					zap.String("request_id", requestID),
@@ -556,7 +596,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 // writeAnthropicError writes an error response in Anthropic Messages API format.
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
-	c.JSON(statusCode, gin.H{
+	writeAnthropicErrorContext(gatewayctx.FromGin(c), statusCode, errType, message)
+}
+
+func writeAnthropicErrorContext(c gatewayctx.GatewayContext, statusCode int, errType, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    errType,

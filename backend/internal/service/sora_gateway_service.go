@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -114,20 +115,24 @@ func NewSoraGatewayService(
 }
 
 func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, clientStream bool) (*ForwardResult, error) {
+	return s.ForwardContext(ctx, gatewayctx.FromGin(c), account, body, clientStream)
+}
+
+func (s *SoraGatewayService) ForwardContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte, clientStream bool) (*ForwardResult, error) {
 	startTime := time.Now()
 
 	// apikey 类型账号：HTTP 透传到上游，不走 SoraSDKClient
 	if account.Type == AccountTypeAPIKey && account.GetBaseURL() != "" {
 		if s.httpUpstream == nil {
-			s.writeSoraError(c, http.StatusInternalServerError, "api_error", "HTTP upstream client not configured", clientStream)
+			s.writeSoraErrorContext(c, http.StatusInternalServerError, "api_error", "HTTP upstream client not configured", clientStream)
 			return nil, errors.New("httpUpstream not configured for sora apikey forwarding")
 		}
-		return s.forwardToUpstream(ctx, c, account, body, clientStream, startTime)
+		return s.forwardToUpstreamContext(ctx, c, account, body, clientStream, startTime)
 	}
 
 	if s.soraClient == nil || !s.soraClient.Enabled() {
 		if c != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
+			c.WriteJSON(http.StatusServiceUnavailable, gin.H{
 				"error": gin.H{
 					"type":    "api_error",
 					"message": "Sora 上游未配置",
@@ -139,13 +144,13 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	var reqBody map[string]any
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body", clientStream)
 		return nil, fmt.Errorf("parse request: %w", err)
 	}
 	reqModel, _ := reqBody["model"].(string)
 	reqStream, _ := reqBody["stream"].(bool)
 	if strings.TrimSpace(reqModel) == "" {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "model is required", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "model is required", clientStream)
 		return nil, errors.New("model is required")
 	}
 	originalModel := reqModel
@@ -159,7 +164,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 
 	modelCfg, ok := GetSoraModelConfig(reqModel)
 	if !ok {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "Unsupported Sora model", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "Unsupported Sora model", clientStream)
 		return nil, fmt.Errorf("unsupported model: %s", reqModel)
 	}
 	prompt, imageInput, videoInput, remixTargetID := extractSoraInput(reqBody)
@@ -169,20 +174,20 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	remixTargetID = strings.TrimSpace(remixTargetID)
 
 	if videoInput != "" && modelCfg.Type != "video" {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "video input only supports video models", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "video input only supports video models", clientStream)
 		return nil, errors.New("video input only supports video models")
 	}
 	if videoInput != "" && imageInput != "" {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "image input and video input cannot be used together", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "image input and video input cannot be used together", clientStream)
 		return nil, errors.New("image input and video input cannot be used together")
 	}
 	characterOnly := videoInput != "" && prompt == ""
 	if modelCfg.Type == "prompt_enhance" && prompt == "" {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "prompt is required", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "prompt is required", clientStream)
 		return nil, errors.New("prompt is required")
 	}
 	if modelCfg.Type != "prompt_enhance" && prompt == "" && !characterOnly {
-		s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", "prompt is required", clientStream)
+		s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", "prompt is required", clientStream)
 		return nil, errors.New("prompt is required")
 	}
 
@@ -192,14 +197,14 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	}
 	if checker, ok := s.soraClient.(soraPreflightChecker); ok && !characterOnly {
 		if err := checker.PreflightCheck(reqCtx, account, reqModel, modelCfg); err != nil {
-			return nil, s.handleSoraRequestError(ctx, account, err, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, err, reqModel, c, clientStream)
 		}
 	}
 
 	if modelCfg.Type == "prompt_enhance" {
 		enhancedPrompt, err := s.soraClient.EnhancePrompt(reqCtx, account, prompt, modelCfg.ExpansionLevel, modelCfg.DurationS)
 		if err != nil {
-			return nil, s.handleSoraRequestError(ctx, account, err, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, err, reqModel, c, clientStream)
 		}
 		content := strings.TrimSpace(enhancedPrompt)
 		if content == "" {
@@ -207,13 +212,13 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		}
 		var firstTokenMs *int
 		if clientStream {
-			ms, streamErr := s.writeSoraStream(c, reqModel, content, startTime)
+			ms, streamErr := s.writeSoraStreamContext(c, reqModel, content, startTime)
 			if streamErr != nil {
 				return nil, streamErr
 			}
 			firstTokenMs = ms
 		} else if c != nil {
-			c.JSON(http.StatusOK, buildSoraNonStreamResponse(content, reqModel))
+			c.WriteJSON(http.StatusOK, buildSoraNonStreamResponse(content, reqModel))
 		}
 		return &ForwardResult{
 			RequestID:     "",
@@ -233,12 +238,12 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if videoInput != "" {
 		videoData, videoErr := decodeSoraVideoInput(reqCtx, videoInput)
 		if videoErr != nil {
-			s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", videoErr.Error(), clientStream)
+			s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", videoErr.Error(), clientStream)
 			return nil, videoErr
 		}
 		characterResult, videoErr = s.createCharacterFromVideo(reqCtx, account, videoData, characterOpts)
 		if videoErr != nil {
-			return nil, s.handleSoraRequestError(ctx, account, videoErr, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, videoErr, reqModel, c, clientStream)
 		}
 		if characterResult != nil && characterOpts.DeleteAfterGenerate && strings.TrimSpace(characterResult.CharacterID) != "" && !characterOnly {
 			characterID := strings.TrimSpace(characterResult.CharacterID)
@@ -257,7 +262,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 			}
 			var firstTokenMs *int
 			if clientStream {
-				ms, streamErr := s.writeSoraStream(c, reqModel, content, startTime)
+				ms, streamErr := s.writeSoraStreamContext(c, reqModel, content, startTime)
 				if streamErr != nil {
 					return nil, streamErr
 				}
@@ -270,7 +275,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 					resp["character_username"] = characterResult.Username
 					resp["character_display_name"] = characterResult.DisplayName
 				}
-				c.JSON(http.StatusOK, resp)
+				c.WriteJSON(http.StatusOK, resp)
 			}
 			return &ForwardResult{
 				RequestID:     "",
@@ -293,7 +298,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if imageInput != "" {
 		decoded, filename, err := decodeSoraImageInput(reqCtx, imageInput)
 		if err != nil {
-			s.writeSoraError(c, http.StatusBadRequest, "invalid_request_error", err.Error(), clientStream)
+			s.writeSoraErrorContext(c, http.StatusBadRequest, "invalid_request_error", err.Error(), clientStream)
 			return nil, err
 		}
 		imageData = decoded
@@ -304,7 +309,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	if len(imageData) > 0 {
 		uploadID, err := s.soraClient.UploadImage(reqCtx, account, imageData, imageFilename)
 		if err != nil {
-			return nil, s.handleSoraRequestError(ctx, account, err, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, err, reqModel, c, clientStream)
 		}
 		mediaID = uploadID
 	}
@@ -347,11 +352,11 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		err = fmt.Errorf("unsupported model type: %s", modelCfg.Type)
 	}
 	if err != nil {
-		return nil, s.handleSoraRequestError(ctx, account, err, reqModel, c, clientStream)
+		return nil, s.handleSoraRequestErrorContext(ctx, account, err, reqModel, c, clientStream)
 	}
 
 	if clientStream && c != nil {
-		s.prepareSoraStream(c, taskID)
+		s.prepareSoraStreamContext(c, taskID)
 	}
 
 	var mediaURLs []string
@@ -361,17 +366,17 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	imageSize := ""
 	switch modelCfg.Type {
 	case "image":
-		urls, pollErr := s.pollImageTask(reqCtx, c, account, taskID, clientStream)
+		urls, pollErr := s.pollImageTaskContext(reqCtx, c, account, taskID, clientStream)
 		if pollErr != nil {
-			return nil, s.handleSoraRequestError(ctx, account, pollErr, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, pollErr, reqModel, c, clientStream)
 		}
 		mediaURLs = urls
 		imageCount = len(urls)
 		imageSize = soraImageSizeFromModel(reqModel)
 	case "video":
-		videoStatus, pollErr := s.pollVideoTaskDetailed(reqCtx, c, account, taskID, clientStream)
+		videoStatus, pollErr := s.pollVideoTaskDetailedContext(reqCtx, c, account, taskID, clientStream)
 		if pollErr != nil {
-			return nil, s.handleSoraRequestError(ctx, account, pollErr, reqModel, c, clientStream)
+			return nil, s.handleSoraRequestErrorContext(ctx, account, pollErr, reqModel, c, clientStream)
 		}
 		if videoStatus != nil {
 			mediaURLs = videoStatus.URLs
@@ -386,7 +391,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		watermarkURL, postID, watermarkErr := s.resolveWatermarkFreeURL(reqCtx, account, videoGenerationID, watermarkOpts)
 		if watermarkErr != nil {
 			if !watermarkOpts.FallbackOnFailure {
-				return nil, s.handleSoraRequestError(ctx, account, watermarkErr, reqModel, c, clientStream)
+				return nil, s.handleSoraRequestErrorContext(ctx, account, watermarkErr, reqModel, c, clientStream)
 			}
 			log.Printf("[Sora] watermark-free fallback to original URL, task_id=%s err=%v", taskID, watermarkErr)
 		} else if strings.TrimSpace(watermarkURL) != "" {
@@ -407,7 +412,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 	content := buildSoraContent(mediaType, finalURLs)
 	var firstTokenMs *int
 	if clientStream {
-		ms, streamErr := s.writeSoraStream(c, reqModel, content, startTime)
+		ms, streamErr := s.writeSoraStreamContext(c, reqModel, content, startTime)
 		if streamErr != nil {
 			return nil, streamErr
 		}
@@ -420,7 +425,7 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 				response["media_urls"] = finalURLs
 			}
 		}
-		c.JSON(http.StatusOK, response)
+		c.WriteJSON(http.StatusOK, response)
 	}
 
 	return &ForwardResult{
@@ -859,25 +864,25 @@ func (s *SoraGatewayService) buildSoraMediaURL(path string, rawQuery string) str
 }
 
 func (s *SoraGatewayService) prepareSoraStream(c *gin.Context, requestID string) {
-	if c == nil {
-		return
-	}
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	if strings.TrimSpace(requestID) != "" {
-		c.Header("x-request-id", requestID)
-	}
+	s.prepareSoraStreamContext(gatewayctx.FromGin(c), requestID)
+}
+
+func (s *SoraGatewayService) prepareSoraStreamContext(c gatewayctx.GatewayContext, requestID string) {
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  "text/event-stream",
+		CacheControl: "no-cache",
+		RequestID:    requestID,
+	})
 }
 
 func (s *SoraGatewayService) writeSoraStream(c *gin.Context, model, content string, startTime time.Time) (*int, error) {
+	return s.writeSoraStreamContext(gatewayctx.FromGin(c), model, content, startTime)
+}
+
+func (s *SoraGatewayService) writeSoraStreamContext(c gatewayctx.GatewayContext, model, content string, startTime time.Time) (*int, error) {
 	if c == nil {
 		return nil, nil
 	}
-	writer := c.Writer
-	flusher, _ := writer.(http.Flusher)
-
 	chunk := map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		"object":  "chat.completion.chunk",
@@ -893,11 +898,8 @@ func (s *SoraGatewayService) writeSoraStream(c *gin.Context, model, content stri
 		},
 	}
 	encoded, _ := jsonMarshalRaw(chunk)
-	if _, err := fmt.Fprintf(writer, "data: %s\n\n", encoded); err != nil {
+	if err := gatewayctx.WriteSSEDataRaw(c, string(encoded)); err != nil {
 		return nil, err
-	}
-	if flusher != nil {
-		flusher.Flush()
 	}
 	ms := int(time.Since(startTime).Milliseconds())
 	finalChunk := map[string]any{
@@ -914,44 +916,35 @@ func (s *SoraGatewayService) writeSoraStream(c *gin.Context, model, content stri
 		},
 	}
 	finalEncoded, _ := jsonMarshalRaw(finalChunk)
-	if _, err := fmt.Fprintf(writer, "data: %s\n\n", finalEncoded); err != nil {
+	if err := gatewayctx.WriteSSEDataRaw(c, string(finalEncoded)); err != nil {
 		return &ms, err
 	}
-	if _, err := fmt.Fprint(writer, "data: [DONE]\n\n"); err != nil {
+	if err := gatewayctx.WriteSSEDataRaw(c, "[DONE]"); err != nil {
 		return &ms, err
-	}
-	if flusher != nil {
-		flusher.Flush()
 	}
 	return &ms, nil
 }
 
 func (s *SoraGatewayService) writeSoraError(c *gin.Context, status int, errType, message string, stream bool) {
+	s.writeSoraErrorContext(gatewayctx.FromGin(c), status, errType, message, stream)
+}
+
+func (s *SoraGatewayService) writeSoraErrorContext(c gatewayctx.GatewayContext, status int, errType, message string, stream bool) {
 	if c == nil {
 		return
 	}
 	if stream {
-		flusher, _ := c.Writer.(http.Flusher)
 		errorData := map[string]any{
 			"error": map[string]string{
 				"type":    errType,
 				"message": message,
 			},
 		}
-		jsonBytes, err := json.Marshal(errorData)
-		if err != nil {
-			_ = c.Error(err)
-			return
-		}
-		errorEvent := fmt.Sprintf("event: error\ndata: %s\n\n", string(jsonBytes))
-		_, _ = fmt.Fprint(c.Writer, errorEvent)
-		_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = gatewayctx.WriteSSEEvent(c, "error", errorData)
+		_ = gatewayctx.WriteSSEDataRaw(c, "[DONE]")
 		return
 	}
-	c.JSON(status, gin.H{
+	c.WriteJSON(status, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": message,
@@ -960,6 +953,10 @@ func (s *SoraGatewayService) writeSoraError(c *gin.Context, status int, errType,
 }
 
 func (s *SoraGatewayService) handleSoraRequestError(ctx context.Context, account *Account, err error, model string, c *gin.Context, stream bool) error {
+	return s.handleSoraRequestErrorContext(ctx, account, err, model, gatewayctx.FromGin(c), stream)
+}
+
+func (s *SoraGatewayService) handleSoraRequestErrorContext(ctx context.Context, account *Account, err error, model string, c gatewayctx.GatewayContext, stream bool) error {
 	if err == nil {
 		return nil
 	}
@@ -998,18 +995,22 @@ func (s *SoraGatewayService) handleSoraRequestError(ctx context.Context, account
 		if override := soraProErrorMessage(model, msg); override != "" {
 			msg = override
 		}
-		s.writeSoraError(c, upstreamErr.StatusCode, "upstream_error", msg, stream)
+		s.writeSoraErrorContext(c, upstreamErr.StatusCode, "upstream_error", msg, stream)
 		return err
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		s.writeSoraError(c, http.StatusGatewayTimeout, "timeout_error", "Sora generation timeout", stream)
+		s.writeSoraErrorContext(c, http.StatusGatewayTimeout, "timeout_error", "Sora generation timeout", stream)
 		return err
 	}
-	s.writeSoraError(c, http.StatusBadGateway, "api_error", err.Error(), stream)
+	s.writeSoraErrorContext(c, http.StatusBadGateway, "api_error", err.Error(), stream)
 	return err
 }
 
 func (s *SoraGatewayService) pollImageTask(ctx context.Context, c *gin.Context, account *Account, taskID string, stream bool) ([]string, error) {
+	return s.pollImageTaskContext(ctx, gatewayctx.FromGin(c), account, taskID, stream)
+}
+
+func (s *SoraGatewayService) pollImageTaskContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, taskID string, stream bool) ([]string, error) {
 	interval := s.pollInterval()
 	maxAttempts := s.pollMaxAttempts()
 	lastPing := time.Now()
@@ -1028,7 +1029,7 @@ func (s *SoraGatewayService) pollImageTask(ctx context.Context, c *gin.Context, 
 			return nil, errors.New("sora image generation failed")
 		}
 		if stream {
-			s.maybeSendPing(c, &lastPing)
+			s.maybeSendPingContext(c, &lastPing)
 		}
 		if err := sleepWithContext(ctx, interval); err != nil {
 			return nil, err
@@ -1038,6 +1039,10 @@ func (s *SoraGatewayService) pollImageTask(ctx context.Context, c *gin.Context, 
 }
 
 func (s *SoraGatewayService) pollVideoTaskDetailed(ctx context.Context, c *gin.Context, account *Account, taskID string, stream bool) (*SoraVideoTaskStatus, error) {
+	return s.pollVideoTaskDetailedContext(ctx, gatewayctx.FromGin(c), account, taskID, stream)
+}
+
+func (s *SoraGatewayService) pollVideoTaskDetailedContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, taskID string, stream bool) (*SoraVideoTaskStatus, error) {
 	interval := s.pollInterval()
 	maxAttempts := s.pollMaxAttempts()
 	lastPing := time.Now()
@@ -1056,7 +1061,7 @@ func (s *SoraGatewayService) pollVideoTaskDetailed(ctx context.Context, c *gin.C
 			return nil, errors.New("sora video generation failed")
 		}
 		if stream {
-			s.maybeSendPing(c, &lastPing)
+			s.maybeSendPingContext(c, &lastPing)
 		}
 		if err := sleepWithContext(ctx, interval); err != nil {
 			return nil, err
@@ -1088,7 +1093,11 @@ func (s *SoraGatewayService) pollMaxAttempts() int {
 }
 
 func (s *SoraGatewayService) maybeSendPing(c *gin.Context, lastPing *time.Time) {
-	if c == nil {
+	s.maybeSendPingContext(gatewayctx.FromGin(c), lastPing)
+}
+
+func (s *SoraGatewayService) maybeSendPingContext(c gatewayctx.GatewayContext, lastPing *time.Time) {
+	if c == nil || lastPing == nil {
 		return
 	}
 	interval := 10 * time.Second
@@ -1098,10 +1107,7 @@ func (s *SoraGatewayService) maybeSendPing(c *gin.Context, lastPing *time.Time) 
 	if time.Since(*lastPing) < interval {
 		return
 	}
-	if _, err := fmt.Fprint(c.Writer, ":\n\n"); err == nil {
-		if flusher, ok := c.Writer.(http.Flusher); ok {
-			flusher.Flush()
-		}
+	if err := gatewayctx.WriteSSEComment(c, ""); err == nil {
 		*lastPing = time.Now()
 	}
 }

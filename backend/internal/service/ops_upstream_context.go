@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,7 +20,7 @@ const (
 	// Best-effort capture of the current upstream request body so ops can
 	// retry the specific upstream attempt (not just the client request).
 	// This value is sanitized+trimmed before being persisted.
-	OpsUpstreamRequestBodyKey = "ops_upstream_request_body"
+	OpsUpstreamRequestBodyKey     = "ops_upstream_request_body"
 	OpsUpstreamRequestBodyHashKey = "ops_upstream_request_body_hash"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
@@ -50,11 +51,26 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	c.Set(OpsUpstreamRequestBodyKey, capture)
 }
 
+func setOpsUpstreamRequestBodyContext(ctx gatewayctx.GatewayContext, body []byte) {
+	if ctx == nil || len(body) == 0 {
+		return
+	}
+	capture := PrepareOpsRequestBodyCapture(body)
+	if capture == nil {
+		return
+	}
+	ctx.SetValue(OpsUpstreamRequestBodyKey, capture)
+}
+
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
+	SetOpsLatencyMsContext(gatewayctx.FromGin(c), key, value)
+}
+
+func SetOpsLatencyMsContext(c gatewayctx.GatewayContext, key string, value int64) {
 	if c == nil || strings.TrimSpace(key) == "" || value < 0 {
 		return
 	}
-	c.Set(key, value)
+	c.SetValue(key, value)
 }
 
 // SetOpsUpstreamError is the exported wrapper for setOpsUpstreamError, used by
@@ -62,6 +78,10 @@ func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 // original upstream status code before mapping it to a client-facing code.
 func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
 	setOpsUpstreamError(c, upstreamStatusCode, upstreamMessage, upstreamDetail)
+}
+
+func SetOpsUpstreamErrorContext(ctx gatewayctx.GatewayContext, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
+	setOpsUpstreamErrorContext(ctx, upstreamStatusCode, upstreamMessage, upstreamDetail)
 }
 
 func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
@@ -76,6 +96,21 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	}
 	if detail := strings.TrimSpace(upstreamDetail); detail != "" {
 		c.Set(OpsUpstreamErrorDetailKey, detail)
+	}
+}
+
+func setOpsUpstreamErrorContext(ctx gatewayctx.GatewayContext, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
+	if ctx == nil {
+		return
+	}
+	if upstreamStatusCode > 0 {
+		ctx.SetValue(OpsUpstreamStatusCodeKey, upstreamStatusCode)
+	}
+	if msg := strings.TrimSpace(upstreamMessage); msg != "" {
+		ctx.SetValue(OpsUpstreamErrorMessageKey, msg)
+	}
+	if detail := strings.TrimSpace(upstreamDetail); detail != "" {
+		ctx.SetValue(OpsUpstreamErrorDetailKey, detail)
 	}
 }
 
@@ -115,6 +150,33 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if c == nil {
 		return
 	}
+	evCopy := ev
+	appendOpsUpstreamErrorValues(
+		func(key string) (any, bool) { return c.Get(key) },
+		func(key string, value any) { c.Set(key, value) },
+		evCopy,
+	)
+	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+}
+
+func appendOpsUpstreamErrorContext(ctx gatewayctx.GatewayContext, ev OpsUpstreamErrorEvent) {
+	if ctx == nil {
+		return
+	}
+	evCopy := ev
+	appendOpsUpstreamErrorValues(
+		func(key string) (any, bool) { return ctx.Value(key) },
+		func(key string, value any) { ctx.SetValue(key, value) },
+		evCopy,
+	)
+	checkSkipMonitoringForUpstreamEventContext(ctx, &evCopy)
+}
+
+func appendOpsUpstreamErrorValues(
+	getValue func(string) (any, bool),
+	setValue func(string, any),
+	ev OpsUpstreamErrorEvent,
+) {
 	if ev.AtUnixMs <= 0 {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
@@ -132,13 +194,13 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	// If the caller didn't explicitly pass upstream request body but the gateway
 	// stored it on the context, attach it so ops can retry this specific attempt.
 	if ev.UpstreamRequestBody == "" {
-		if v, ok := c.Get(OpsUpstreamRequestBodyKey); ok {
+		if v, ok := getValue(OpsUpstreamRequestBodyKey); ok {
 			switch raw := v.(type) {
 			case *OpsPreparedRequestBody:
 				if raw != nil {
 					shouldAttach := true
 					if raw.Hash != 0 {
-						if v, ok := c.Get(OpsUpstreamRequestBodyHashKey); ok {
+						if v, ok := getValue(OpsUpstreamRequestBodyHashKey); ok {
 							if lastHash, ok := v.(uint64); ok && lastHash == raw.Hash {
 								shouldAttach = false
 							}
@@ -146,7 +208,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 					}
 					if shouldAttach {
 						ev.UpstreamRequestBody = strings.TrimSpace(raw.JSON)
-						c.Set(OpsUpstreamRequestBodyHashKey, raw.Hash)
+						setValue(OpsUpstreamRequestBodyHashKey, raw.Hash)
 						if raw.Truncated {
 							ev.Kind = strings.TrimSpace(ev.Kind)
 							if ev.Kind == "" {
@@ -167,7 +229,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	}
 
 	var existing []*OpsUpstreamErrorEvent
-	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {
+	if v, ok := getValue(OpsUpstreamErrorsKey); ok {
 		if arr, ok := v.([]*OpsUpstreamErrorEvent); ok {
 			existing = arr
 		}
@@ -175,9 +237,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 
 	evCopy := ev
 	existing = append(existing, &evCopy)
-	c.Set(OpsUpstreamErrorsKey, existing)
-
-	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+	setValue(OpsUpstreamErrorsKey, existing)
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event
@@ -206,6 +266,26 @@ func checkSkipMonitoringForUpstreamEvent(c *gin.Context, ev *OpsUpstreamErrorEve
 	rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, []byte(body))
 	if rule != nil && rule.SkipMonitoring {
 		c.Set(OpsSkipPassthroughKey, true)
+	}
+}
+
+func checkSkipMonitoringForUpstreamEventContext(ctx gatewayctx.GatewayContext, ev *OpsUpstreamErrorEvent) {
+	if ctx == nil || ev == nil || ev.UpstreamStatusCode == 0 {
+		return
+	}
+
+	svc := getBoundErrorPassthroughServiceContext(ctx)
+	if svc == nil {
+		return
+	}
+
+	body := []byte(ev.UpstreamResponseBody)
+	if body == nil {
+		body = []byte{}
+	}
+	rule := svc.MatchRule(ev.Platform, ev.UpstreamStatusCode, body)
+	if rule != nil && rule.SkipMonitoring {
+		ctx.SetValue(OpsSkipPassthroughKey, true)
 	}
 }
 

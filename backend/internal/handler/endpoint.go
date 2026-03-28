@@ -3,6 +3,7 @@ package handler
 import (
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -127,13 +128,22 @@ func responsesSubpathSuffix(rawPath string) string {
 // Apply this middleware to all gateway route groups.
 func InboundEndpointMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.FullPath()
-		if path == "" && c.Request != nil && c.Request.URL != nil {
-			path = c.Request.URL.Path
-		}
-		c.Set(ctxKeyInboundEndpoint, NormalizeInboundEndpoint(path))
+		ApplyInboundEndpointContext(gatewayctx.FromGin(c))
 		c.Next()
 	}
+}
+
+func ApplyInboundEndpointContext(c gatewayctx.GatewayContext) {
+	if c == nil {
+		return
+	}
+	path := c.Path()
+	if path == "" {
+		if req := c.Request(); req != nil && req.URL != nil {
+			path = req.URL.Path
+		}
+	}
+	c.SetValue(ctxKeyInboundEndpoint, NormalizeInboundEndpoint(path))
 }
 
 // ──────────────────────────────────────────────────────────
@@ -145,17 +155,23 @@ func InboundEndpointMiddleware() gin.HandlerFunc {
 // InboundEndpointMiddleware. If the middleware did not run (e.g. in
 // tests), it falls back to normalizing c.FullPath() on the fly.
 func GetInboundEndpoint(c *gin.Context) string {
-	if v, ok := c.Get(ctxKeyInboundEndpoint); ok {
+	return GetInboundEndpointContext(gatewayctx.FromGin(c))
+}
+
+func GetInboundEndpointContext(c gatewayctx.GatewayContext) string {
+	if c == nil {
+		return NormalizeInboundEndpoint("")
+	}
+	if v, ok := c.Value(ctxKeyInboundEndpoint); ok {
 		if s, ok := v.(string); ok && s != "" {
 			return s
 		}
 	}
 	// Fallback: normalize on the fly.
 	path := ""
-	if c != nil {
-		path = c.FullPath()
-		if path == "" && c.Request != nil && c.Request.URL != nil {
-			path = c.Request.URL.Path
+	if path = c.Path(); path == "" {
+		if req := c.Request(); req != nil && req.URL != nil {
+			path = req.URL.Path
 		}
 	}
 	return NormalizeInboundEndpoint(path)
@@ -165,10 +181,16 @@ func GetInboundEndpoint(c *gin.Context) string {
 // and the account platform. Handlers call this after scheduling an
 // account, passing account.Platform.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
-	inbound := GetInboundEndpoint(c)
+	return GetUpstreamEndpointContext(gatewayctx.FromGin(c), platform)
+}
+
+func GetUpstreamEndpointContext(c gatewayctx.GatewayContext, platform string) string {
+	inbound := GetInboundEndpointContext(c)
 	rawPath := ""
-	if c != nil && c.Request != nil && c.Request.URL != nil {
-		rawPath = c.Request.URL.Path
+	if c != nil {
+		if req := c.Request(); req != nil && req.URL != nil {
+			rawPath = req.URL.Path
+		}
 	}
 	return DeriveUpstreamEndpoint(inbound, rawPath, platform)
 }

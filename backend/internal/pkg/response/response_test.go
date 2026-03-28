@@ -14,6 +14,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type fakeResponder struct {
+	req     *http.Request
+	status  int
+	payload any
+}
+
+func (f *fakeResponder) Request() *http.Request {
+	return f.req
+}
+
+func (f *fakeResponder) WriteJSON(status int, payload any) {
+	f.status = status
+	f.payload = payload
+}
+
+type fakePaginationReader struct {
+	values map[string]string
+}
+
+func (f fakePaginationReader) QueryValue(name string) string {
+	return f.values[name]
+}
+
 // ---------- 辅助函数 ----------
 
 // parseResponseBody 从 httptest.ResponseRecorder 中解析 JSON 响应体
@@ -260,6 +283,29 @@ func TestSuccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSuccessContext(t *testing.T) {
+	resp := &fakeResponder{}
+	SuccessContext(resp, map[string]any{"ok": true})
+
+	require.Equal(t, http.StatusOK, resp.status)
+	payload, ok := resp.payload.(Response)
+	require.True(t, ok)
+	require.Equal(t, 0, payload.Code)
+	require.Equal(t, "success", payload.Message)
+}
+
+func TestParsePaginationValues(t *testing.T) {
+	page, pageSize := ParsePaginationValues(fakePaginationReader{
+		values: map[string]string{
+			"page":      "2",
+			"page_size": "50",
+		},
+	})
+
+	require.Equal(t, 2, page)
+	require.Equal(t, 50, pageSize)
 }
 
 func TestCreated(t *testing.T) {

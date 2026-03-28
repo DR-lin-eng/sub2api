@@ -11,8 +11,17 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 
 	"github.com/gin-gonic/gin"
+)
+
+const (
+	middlewareRequestLogger = "request_logger"
+	middlewareClientReqID   = "client_request_id"
+	middlewareSecurity      = "security_headers"
+	middlewareCORS          = "cors"
+	middlewareSetupGuard    = "setup_guard"
 )
 
 // installMutex prevents concurrent installation attempts (TOCTOU protection)
@@ -23,16 +32,45 @@ func RegisterRoutes(r *gin.Engine) {
 	setup := r.Group("/setup")
 	{
 		// Status endpoint is always accessible (read-only)
-		setup.GET("/status", getStatus)
+		setup.GET("/status", gatewayctx.AdaptGinHandler(getStatus))
 
 		// All modification endpoints are protected by setupGuard
 		protected := setup.Group("")
 		protected.Use(setupGuard())
 		{
-			protected.POST("/test-db", testDatabase)
-			protected.POST("/test-redis", testRedis)
-			protected.POST("/install", install)
+			protected.POST("/test-db", gatewayctx.AdaptGinHandler(testDatabase))
+			protected.POST("/test-redis", gatewayctx.AdaptGinHandler(testRedis))
+			protected.POST("/install", gatewayctx.AdaptGinHandler(install))
 		}
+	}
+}
+
+func ExecutableRoutes() []gatewayctx.RouteDef {
+	return []gatewayctx.RouteDef{
+		{
+			Method:     http.MethodGet,
+			Path:       "/setup/status",
+			Handler:    getStatus,
+			Middleware: []string{middlewareCORS, middlewareSecurity},
+		},
+		{
+			Method:     http.MethodPost,
+			Path:       "/setup/test-db",
+			Handler:    testDatabase,
+			Middleware: []string{middlewareCORS, middlewareSecurity, middlewareSetupGuard},
+		},
+		{
+			Method:     http.MethodPost,
+			Path:       "/setup/test-redis",
+			Handler:    testRedis,
+			Middleware: []string{middlewareCORS, middlewareSecurity, middlewareSetupGuard},
+		},
+		{
+			Method:     http.MethodPost,
+			Path:       "/setup/install",
+			Handler:    install,
+			Middleware: []string{middlewareCORS, middlewareSecurity, middlewareSetupGuard},
+		},
 	}
 }
 
@@ -43,8 +81,8 @@ type SetupStatus struct {
 }
 
 // getStatus returns the current setup status
-func getStatus(c *gin.Context) {
-	response.Success(c, SetupStatus{
+func getStatus(c gatewayctx.GatewayContext) {
+	response.SuccessContext(c, SetupStatus{
 		NeedsSetup: NeedsSetup(),
 		Step:       "welcome",
 	})
@@ -53,13 +91,20 @@ func getStatus(c *gin.Context) {
 // setupGuard middleware ensures setup endpoints are only accessible during setup mode
 func setupGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !NeedsSetup() {
-			response.Error(c, http.StatusForbidden, "Setup is not allowed: system is already installed")
+		if !SetupGuardContext(gatewayctx.FromGin(c)) {
 			c.Abort()
 			return
 		}
 		c.Next()
 	}
+}
+
+func SetupGuardContext(c gatewayctx.GatewayContext) bool {
+	if !NeedsSetup() {
+		response.ErrorContext(c, http.StatusForbidden, "Setup is not allowed: system is already installed")
+		return false
+	}
+	return true
 }
 
 // validateHostname checks if a hostname/IP is safe (no injection characters)
@@ -124,28 +169,28 @@ type TestDatabaseRequest struct {
 }
 
 // testDatabase tests database connection
-func testDatabase(c *gin.Context) {
+func testDatabase(c gatewayctx.GatewayContext) {
 	var req TestDatabaseRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Security: Validate all inputs to prevent injection attacks
 	if !validateHostname(req.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid hostname format")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid hostname format")
 		return
 	}
 	if !validatePort(req.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid port number")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid port number")
 		return
 	}
 	if !validateUsername(req.User) {
-		response.Error(c, http.StatusBadRequest, "Invalid username format")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid username format")
 		return
 	}
 	if !validateDBName(req.DBName) {
-		response.Error(c, http.StatusBadRequest, "Invalid database name format")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid database name format")
 		return
 	}
 
@@ -153,7 +198,7 @@ func testDatabase(c *gin.Context) {
 		req.SSLMode = "disable"
 	}
 	if !validateSSLMode(req.SSLMode) {
-		response.Error(c, http.StatusBadRequest, "Invalid SSL mode")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid SSL mode")
 		return
 	}
 
@@ -167,11 +212,11 @@ func testDatabase(c *gin.Context) {
 	}
 
 	if err := TestDatabaseConnection(cfg); err != nil {
-		response.Error(c, http.StatusBadRequest, "Connection failed: "+err.Error())
+		response.ErrorContext(c, http.StatusBadRequest, "Connection failed: "+err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Connection successful"})
+	response.SuccessContext(c, gin.H{"message": "Connection successful"})
 }
 
 // TestRedisRequest represents Redis test request
@@ -184,24 +229,24 @@ type TestRedisRequest struct {
 }
 
 // testRedis tests Redis connection
-func testRedis(c *gin.Context) {
+func testRedis(c gatewayctx.GatewayContext) {
 	var req TestRedisRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Security: Validate inputs
 	if !validateHostname(req.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid hostname format")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid hostname format")
 		return
 	}
 	if !validatePort(req.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid port number")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid port number")
 		return
 	}
 	if req.DB < 0 || req.DB > 15 {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis database number (0-15)")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid Redis database number (0-15)")
 		return
 	}
 
@@ -214,11 +259,11 @@ func testRedis(c *gin.Context) {
 	}
 
 	if err := TestRedisConnection(cfg); err != nil {
-		response.Error(c, http.StatusBadRequest, "Connection failed: "+err.Error())
+		response.ErrorContext(c, http.StatusBadRequest, "Connection failed: "+err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Connection successful"})
+	response.SuccessContext(c, gin.H{"message": "Connection successful"})
 }
 
 // InstallRequest represents installation request
@@ -230,20 +275,20 @@ type InstallRequest struct {
 }
 
 // install performs the installation
-func install(c *gin.Context) {
+func install(c gatewayctx.GatewayContext) {
 	// TOCTOU Protection: Acquire mutex to prevent concurrent installation
 	installMutex.Lock()
 	defer installMutex.Unlock()
 
 	// Double-check after acquiring lock
 	if !NeedsSetup() {
-		response.Error(c, http.StatusForbidden, "Setup is not allowed: system is already installed")
+		response.ErrorContext(c, http.StatusForbidden, "Setup is not allowed: system is already installed")
 		return
 	}
 
 	var req InstallRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -256,49 +301,49 @@ func install(c *gin.Context) {
 	// ========== COMPREHENSIVE INPUT VALIDATION ==========
 	// Database validation
 	if !validateHostname(req.Database.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid database hostname")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid database hostname")
 		return
 	}
 	if !validatePort(req.Database.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid database port")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid database port")
 		return
 	}
 	if !validateUsername(req.Database.User) {
-		response.Error(c, http.StatusBadRequest, "Invalid database username")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid database username")
 		return
 	}
 	if !validateDBName(req.Database.DBName) {
-		response.Error(c, http.StatusBadRequest, "Invalid database name")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid database name")
 		return
 	}
 
 	// Redis validation
 	if !validateHostname(req.Redis.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis hostname")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid Redis hostname")
 		return
 	}
 	if !validatePort(req.Redis.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis port")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid Redis port")
 		return
 	}
 	if req.Redis.DB < 0 || req.Redis.DB > 15 {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis database number")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid Redis database number")
 		return
 	}
 
 	// Admin validation
 	if !validateEmail(req.Admin.Email) {
-		response.Error(c, http.StatusBadRequest, "Invalid admin email format")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid admin email format")
 		return
 	}
 	if err := validatePassword(req.Admin.Password); err != nil {
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Server validation
 	if req.Server.Port != 0 && !validatePort(req.Server.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid server port")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid server port")
 		return
 	}
 
@@ -307,7 +352,7 @@ func install(c *gin.Context) {
 		req.Database.SSLMode = "disable"
 	}
 	if !validateSSLMode(req.Database.SSLMode) {
-		response.Error(c, http.StatusBadRequest, "Invalid SSL mode")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid SSL mode")
 		return
 	}
 	if req.Server.Host == "" {
@@ -321,7 +366,7 @@ func install(c *gin.Context) {
 	}
 	// Validate server mode
 	if req.Server.Mode != "release" && req.Server.Mode != "debug" {
-		response.Error(c, http.StatusBadRequest, "Invalid server mode (must be 'release' or 'debug')")
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid server mode (must be 'release' or 'debug')")
 		return
 	}
 
@@ -336,7 +381,7 @@ func install(c *gin.Context) {
 	}
 
 	if err := Install(cfg); err != nil {
-		response.Error(c, http.StatusInternalServerError, "Installation failed: "+err.Error())
+		response.ErrorContext(c, http.StatusInternalServerError, "Installation failed: "+err.Error())
 		return
 	}
 
@@ -348,7 +393,7 @@ func install(c *gin.Context) {
 		sysutil.RestartServiceAsync()
 	}()
 
-	response.Success(c, gin.H{
+	response.SuccessContext(c, gin.H{
 		"message": "Installation completed successfully. Service will restart automatically.",
 		"restart": true,
 	})

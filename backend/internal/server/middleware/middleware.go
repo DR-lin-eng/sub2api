@@ -6,6 +6,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -30,13 +31,18 @@ const (
 // 同时设置 request.Context（供 Service 使用）和 gin.Context（供 Handler 快速检查）
 func ForcePlatform(platform string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 设置到 request.Context，使用 ctxkey.ForcePlatform 供 Service 层读取
-		ctx := context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, platform)
-		c.Request = c.Request.WithContext(ctx)
-		// 同时设置到 gin.Context，供 Handler 快速检查
-		c.Set(string(ContextKeyForcePlatform), platform)
+		SetForcePlatformContext(gatewayctx.FromGin(c), platform)
 		c.Next()
 	}
+}
+
+func SetForcePlatformContext(c gatewayctx.GatewayContext, platform string) {
+	if c == nil || c.Request() == nil {
+		return
+	}
+	ctx := context.WithValue(c.Request().Context(), ctxkey.ForcePlatform, platform)
+	c.SetRequest(c.Request().WithContext(ctx))
+	c.SetValue(string(ContextKeyForcePlatform), platform)
 }
 
 // HasForcePlatform 检查是否有强制平台（用于 Handler 跳过分组检查）
@@ -45,9 +51,24 @@ func HasForcePlatform(c *gin.Context) bool {
 	return exists
 }
 
+func HasForcePlatformContext(c gatewayctx.GatewayContext) bool {
+	if c == nil {
+		return false
+	}
+	_, exists := c.Value(string(ContextKeyForcePlatform))
+	return exists
+}
+
 // GetForcePlatformFromContext 从 gin.Context 获取强制平台
 func GetForcePlatformFromContext(c *gin.Context) (string, bool) {
-	value, exists := c.Get(string(ContextKeyForcePlatform))
+	return GetForcePlatformFromGatewayContext(gatewayctx.FromGin(c))
+}
+
+func GetForcePlatformFromGatewayContext(c gatewayctx.GatewayContext) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	value, exists := c.Value(string(ContextKeyForcePlatform))
 	if !exists {
 		return "", false
 	}
@@ -81,10 +102,18 @@ func AbortWithError(c *gin.Context, statusCode int, code, message string) {
 
 // GatewayErrorWriter 定义网关错误响应格式（不同协议使用不同格式）
 type GatewayErrorWriter func(c *gin.Context, status int, message string)
+type GatewayErrorWriterContext func(c gatewayctx.GatewayContext, status int, message string)
 
 // AnthropicErrorWriter 按 Anthropic API 规范输出错误
 func AnthropicErrorWriter(c *gin.Context, status int, message string) {
-	c.JSON(status, gin.H{
+	AnthropicErrorWriterContext(gatewayctx.FromGin(c), status, message)
+}
+
+func AnthropicErrorWriterContext(c gatewayctx.GatewayContext, status int, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(status, gin.H{
 		"type":  "error",
 		"error": gin.H{"type": "permission_error", "message": message},
 	})
@@ -92,7 +121,14 @@ func AnthropicErrorWriter(c *gin.Context, status int, message string) {
 
 // GoogleErrorWriter 按 Google API 规范输出错误
 func GoogleErrorWriter(c *gin.Context, status int, message string) {
-	c.JSON(status, gin.H{
+	GoogleErrorWriterContext(gatewayctx.FromGin(c), status, message)
+}
+
+func GoogleErrorWriterContext(c gatewayctx.GatewayContext, status int, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(status, gin.H{
 		"error": gin.H{
 			"code":    status,
 			"message": message,
@@ -105,17 +141,27 @@ func GoogleErrorWriter(c *gin.Context, status int, message string) {
 // 如果未分组且系统设置不允许未分组 Key 调度则返回 403。
 func RequireGroupAssignment(settingService *service.SettingService, writeError GatewayErrorWriter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		apiKey, ok := GetAPIKeyFromContext(c)
-		if !ok || apiKey.GroupID != nil {
+		ctx := gatewayctx.FromGin(c)
+		if RequireGroupAssignmentContext(settingService, func(gc gatewayctx.GatewayContext, status int, message string) {
+			writeError(c, status, message)
+		}, ctx) {
 			c.Next()
 			return
 		}
-		// 未分组 Key — 检查系统设置
-		if settingService.IsUngroupedKeySchedulingAllowed(c.Request.Context()) {
-			c.Next()
-			return
-		}
-		writeError(c, http.StatusForbidden, "API Key is not assigned to any group and cannot be used. Please contact the administrator to assign it to a group.")
 		c.Abort()
 	}
+}
+
+func RequireGroupAssignmentContext(settingService *service.SettingService, writeError GatewayErrorWriterContext, c gatewayctx.GatewayContext) bool {
+	apiKey, ok := GetAPIKeyFromGatewayContext(c)
+	if !ok || apiKey.GroupID != nil {
+		return true
+	}
+	if settingService.IsUngroupedKeySchedulingAllowed(c.Request().Context()) {
+		return true
+	}
+	if writeError != nil {
+		writeError(c, http.StatusForbidden, "API Key is not assigned to any group and cannot be used. Please contact the administrator to assign it to a group.")
+	}
+	return false
 }

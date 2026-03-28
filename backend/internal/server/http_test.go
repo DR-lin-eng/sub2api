@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestNewHTTPServer_UsesConfiguredAddressAndTimeouts(t *testing.T) {
 	srv := NewHTTPServer(cfg, baseHandler)
 
 	require.Equal(t, "127.0.0.1:19090", srv.Addr)
-	require.Same(t, baseHandler, srv.Handler)
+	require.Equal(t, reflect.ValueOf(baseHandler).Pointer(), reflect.ValueOf(srv.Handler).Pointer())
 	require.Equal(t, 11*time.Second, srv.ReadHeaderTimeout)
 	require.Equal(t, 37*time.Second, srv.IdleTimeout)
 }

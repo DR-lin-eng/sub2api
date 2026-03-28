@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -111,7 +112,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -257,7 +258,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeDoe
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -386,7 +387,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -504,7 +505,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ModeOffReturnsPo
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -617,7 +618,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPre
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -764,7 +765,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPre
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -905,7 +906,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreEnabledSkip
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1037,7 +1038,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledPre
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1169,7 +1170,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledFun
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1301,7 +1302,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledFun
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1445,7 +1446,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PreflightPingFai
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1587,7 +1588,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledStr
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -1750,7 +1751,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_WriteFailBeforeD
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -1897,7 +1898,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PreviousResponse
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -2048,7 +2049,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StoreDisabledStr
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -2204,7 +2205,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PreviousResponse
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -2329,7 +2330,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_RejectsMessageID
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, nil)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, nil)
 	}))
 	defer wsServer.Close()
 
@@ -2585,7 +2586,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_ClientDisconnect
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -2715,7 +2716,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_UpstreamEOFPostC
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), gatewayctx.FromGin(ginCtx), conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 

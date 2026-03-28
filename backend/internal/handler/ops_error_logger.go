@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -330,18 +331,22 @@ func opsErrorLogConfig() (workerCount int, queueSize int) {
 }
 
 func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody []byte) {
+	setOpsRequestContextGateway(gatewayctx.FromGin(c), model, stream, requestBody)
+}
+
+func setOpsRequestContextGateway(c gatewayctx.GatewayContext, model string, stream bool, requestBody []byte) {
 	if c == nil {
 		return
 	}
 	model = strings.TrimSpace(model)
-	c.Set(opsModelKey, model)
-	c.Set(opsStreamKey, stream)
+	c.SetValue(opsModelKey, model)
+	c.SetValue(opsStreamKey, stream)
 	if len(requestBody) > 0 {
-		c.Set(opsRequestBodyKey, requestBody)
+		c.SetValue(opsRequestBodyKey, requestBody)
 	}
-	if c.Request != nil && model != "" {
-		ctx := context.WithValue(c.Request.Context(), ctxkey.Model, model)
-		c.Request = c.Request.WithContext(ctx)
+	if req := c.Request(); req != nil && model != "" {
+		ctx := context.WithValue(req.Context(), ctxkey.Model, model)
+		c.SetRequest(req.WithContext(ctx))
 	}
 }
 
@@ -382,19 +387,23 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 }
 
 func setOpsSelectedAccount(c *gin.Context, accountID int64, platform ...string) {
+	setOpsSelectedAccountGateway(gatewayctx.FromGin(c), accountID, platform...)
+}
+
+func setOpsSelectedAccountGateway(c gatewayctx.GatewayContext, accountID int64, platform ...string) {
 	if c == nil || accountID <= 0 {
 		return
 	}
-	c.Set(opsAccountIDKey, accountID)
-	if c.Request != nil {
-		ctx := context.WithValue(c.Request.Context(), ctxkey.AccountID, accountID)
+	c.SetValue(opsAccountIDKey, accountID)
+	if req := c.Request(); req != nil {
+		ctx := context.WithValue(req.Context(), ctxkey.AccountID, accountID)
 		if len(platform) > 0 {
 			p := strings.TrimSpace(platform[0])
 			if p != "" {
 				ctx = context.WithValue(ctx, ctxkey.Platform, p)
 			}
 		}
-		c.Request = c.Request.WithContext(ctx)
+		c.SetRequest(req.WithContext(ctx))
 	}
 }
 

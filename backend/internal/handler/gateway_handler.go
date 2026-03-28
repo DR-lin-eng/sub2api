@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -394,10 +395,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			writerSizeBeforeForward := c.Writer.Size()
 			service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 			forwardStart := time.Now()
+			transportCtx := gatewayctx.FromGin(c)
 			if account.Platform == service.PlatformAntigravity {
-				result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
+				result, err = h.antigravityGatewayService.ForwardGeminiContext(requestCtx, transportCtx, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
 			} else {
-				result, err = h.geminiCompatService.Forward(requestCtx, c, account, body)
+				result, err = h.geminiCompatService.ForwardContext(requestCtx, transportCtx, account, body)
 			}
 			forwardDurationMs := time.Since(forwardStart).Milliseconds()
 			if accountReleaseFunc != nil {
@@ -839,8 +841,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 // Returns models based on account configurations (model_mapping whitelist)
 // Falls back to default models if no whitelist is configured
 func (h *GatewayHandler) Models(c *gin.Context) {
-	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
+	h.ModelsGateway(gatewayctx.FromGin(c))
+}
 
+func (h *GatewayHandler) ModelsGateway(c gatewayctx.GatewayContext) {
+	apiKey, _ := middleware2.GetAPIKeyFromGatewayContext(c)
 	var groupID *int64
 	var platform string
 
@@ -848,19 +853,19 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		groupID = &apiKey.Group.ID
 		platform = apiKey.Group.Platform
 	}
-	if forcedPlatform, ok := middleware2.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forcedPlatform) != "" {
+	if forcedPlatform, ok := middleware2.GetForcePlatformFromGatewayContext(c); ok && strings.TrimSpace(forcedPlatform) != "" {
 		platform = forcedPlatform
 	}
 
 	if platform == service.PlatformSora {
-		c.JSON(http.StatusOK, gin.H{
+		c.WriteJSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   service.DefaultSoraModels(h.cfg),
 		})
 		return
 	}
 
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	availableModels := h.gatewayService.GetAvailableModels(c.Request().Context(), groupID, platform)
 
 	if len(availableModels) > 0 {
 		// Build model list from whitelist
@@ -873,7 +878,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 				CreatedAt:   "2024-01-01T00:00:00Z",
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{
+		c.WriteJSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   models,
 		})
@@ -882,14 +887,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Fallback to default models
 	if platform == "openai" {
-		c.JSON(http.StatusOK, gin.H{
+		c.WriteJSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   openai.DefaultModels,
 		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.WriteJSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
@@ -898,7 +903,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 // AntigravityModels 返回 Antigravity 支持的全部模型
 // GET /antigravity/models
 func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
+	h.AntigravityModelsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GatewayHandler) AntigravityModelsGateway(c gatewayctx.GatewayContext) {
+	c.WriteJSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   antigravity.DefaultModels(),
 	})
@@ -1218,11 +1227,19 @@ func (h *GatewayHandler) calculateSubscriptionRemaining(group *service.Group, su
 
 // handleConcurrencyError handles concurrency-related errors with proper 429 response
 func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
-	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error",
+	h.handleConcurrencyErrorContext(gatewayctx.FromGin(c), err, slotType, streamStarted)
+}
+
+func (h *GatewayHandler) handleConcurrencyErrorContext(c gatewayctx.GatewayContext, err error, slotType string, streamStarted bool) {
+	h.handleStreamingAwareErrorContext(c, http.StatusTooManyRequests, "rate_limit_error",
 		fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType), streamStarted)
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
+	h.handleFailoverExhaustedContext(gatewayctx.FromGin(c), failoverErr, platform, streamStarted)
+}
+
+func (h *GatewayHandler) handleFailoverExhaustedContext(c gatewayctx.GatewayContext, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 
@@ -1242,28 +1259,32 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 			}
 
 			if rule.SkipMonitoring {
-				c.Set(service.OpsSkipPassthroughKey, true)
+				c.SetValue(service.OpsSkipPassthroughKey, true)
 			}
 
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+			h.handleStreamingAwareErrorContext(c, respCode, "upstream_error", msg, streamStarted)
 			return
 		}
 	}
 
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+	service.SetOpsUpstreamErrorContext(c, statusCode, upstreamMsg, "")
 
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleStreamingAwareErrorContext(c, status, errType, errMsg, streamStarted)
 }
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *GatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
+	h.handleFailoverExhaustedSimpleContext(gatewayctx.FromGin(c), statusCode, streamStarted)
+}
+
+func (h *GatewayHandler) handleFailoverExhaustedSimpleContext(c gatewayctx.GatewayContext, statusCode int, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	service.SetOpsUpstreamErrorContext(c, statusCode, errMsg, "")
+	h.handleStreamingAwareErrorContext(c, status, errType, errMsg, streamStarted)
 }
 
 func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {
@@ -1285,43 +1306,55 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareErrorContext(gatewayctx.FromGin(c), status, errType, message, streamStarted)
+}
+
+func (h *GatewayHandler) handleStreamingAwareErrorContext(c gatewayctx.GatewayContext, status int, errType, message string, streamStarted bool) {
+	if c == nil {
+		return
+	}
 	if streamStarted {
-		// Stream already started, send error as SSE event then close
-		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
-			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
-			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
-			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
-				_ = c.Error(err)
-			}
-			flusher.Flush()
-		}
+		_ = gatewayctx.WriteSSEEvent(c, "", gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    errType,
+				"message": message,
+			},
+		})
 		return
 	}
 
 	// Normal case: return JSON response with proper status code
-	h.errorResponse(c, status, errType, message)
+	h.errorResponseGateway(c, status, errType, message)
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
 func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarted bool) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	return h.ensureForwardErrorResponseContext(gatewayctx.FromGin(c), streamStarted)
+}
+
+func (h *GatewayHandler) ensureForwardErrorResponseContext(c gatewayctx.GatewayContext, streamStarted bool) bool {
+	if c == nil || c.ResponseWritten() {
 		return false
 	}
-	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
+	h.handleStreamingAwareErrorContext(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
 	return true
 }
 
 // checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足版本要求
 // 仅对已识别的 Claude Code 客户端执行，count_tokens 路径除外
 func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
-	ctx := c.Request.Context()
+	return h.checkClaudeCodeVersionContext(gatewayctx.FromGin(c))
+}
+
+func (h *GatewayHandler) checkClaudeCodeVersionContext(c gatewayctx.GatewayContext) bool {
+	ctx := c.Context()
 	if !service.IsClaudeCodeClient(ctx) {
 		return true
 	}
 
 	// 排除 count_tokens 子路径
-	if strings.HasSuffix(c.Request.URL.Path, "/count_tokens") {
+	if strings.HasSuffix(c.Path(), "/count_tokens") {
 		return true
 	}
 
@@ -1332,20 +1365,20 @@ func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 
 	clientVersion := service.GetClaudeCodeVersion(ctx)
 	if clientVersion == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+		h.errorResponseGateway(c, http.StatusBadRequest, "invalid_request_error",
 			"Unable to determine Claude Code version. Please update Claude Code: npm update -g @anthropic-ai/claude-code")
 		return false
 	}
 
 	if minVersion != "" && service.CompareVersions(clientVersion, minVersion) < 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+		h.errorResponseGateway(c, http.StatusBadRequest, "invalid_request_error",
 			fmt.Sprintf("Your Claude Code version (%s) is below the minimum required version (%s). Please update: npm update -g @anthropic-ai/claude-code",
 				clientVersion, minVersion))
 		return false
 	}
 
 	if maxVersion != "" && service.CompareVersions(clientVersion, maxVersion) > 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+		h.errorResponseGateway(c, http.StatusBadRequest, "invalid_request_error",
 			fmt.Sprintf("Your Claude Code version (%s) exceeds the maximum allowed version (%s). "+
 				"Please downgrade: npm install -g @anthropic-ai/claude-code@%s && "+
 				"set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 to prevent auto-upgrade",
@@ -1358,7 +1391,14 @@ func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 
 // errorResponse 返回Claude API格式的错误响应
 func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
-	c.JSON(status, gin.H{
+	h.errorResponseGateway(gatewayctx.FromGin(c), status, errType, message)
+}
+
+func (h *GatewayHandler) errorResponseGateway(c gatewayctx.GatewayContext, status int, errType, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(status, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    errType,

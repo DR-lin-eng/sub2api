@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	serverruntime "github.com/Wei-Shaw/sub2api/internal/server"
 )
 
 const (
@@ -59,17 +59,22 @@ func runSingleProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 	}
 	defer app.Cleanup()
 
-	listener, err := net.Listen("tcp", app.Server.Addr)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", app.Server.Addr, err)
+	runtime := resolveApplicationRuntime(cfg, app)
+	if runtime == nil {
+		return errors.New("application ingress runtime is nil")
 	}
-	log.Printf("Server started on %s", app.Server.Addr)
-	return serveApplicationWithGracefulShutdown(app.Server, listener, gracefulShutdownTimeout(cfg))
+
+	listener, err := net.Listen("tcp", runtime.Addr())
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", runtime.Addr(), err)
+	}
+	log.Printf("Server started on %s using runtime=%s", runtime.Addr(), runtime.Name())
+	return serveApplicationWithGracefulShutdown(runtime, listener, gracefulShutdownTimeout(cfg))
 }
 
-func serveApplicationWithGracefulShutdown(server *http.Server, listener net.Listener, shutdownTimeout time.Duration) error {
-	if server == nil {
-		return errors.New("http server is nil")
+func serveApplicationWithGracefulShutdown(runtime serverruntime.IngressRuntime, listener net.Listener, shutdownTimeout time.Duration) error {
+	if runtime == nil {
+		return errors.New("ingress runtime is nil")
 	}
 	if listener == nil {
 		return errors.New("listener is nil")
@@ -80,12 +85,7 @@ func serveApplicationWithGracefulShutdown(server *http.Server, listener net.List
 
 	serveErrCh := make(chan error, 1)
 	go func() {
-		err := server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErrCh <- err
-			return
-		}
-		serveErrCh <- nil
+		serveErrCh <- runtime.Serve(listener)
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -102,12 +102,12 @@ func serveApplicationWithGracefulShutdown(server *http.Server, listener net.List
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := runtime.Shutdown(ctx); err != nil {
 		_ = listener.Close()
-		if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			log.Printf("Force close server failed: %v", closeErr)
+		if closeErr := runtime.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			log.Printf("Force close runtime failed: %v", closeErr)
 		}
-		return fmt.Errorf("server forced to shutdown: %w", err)
+		return fmt.Errorf("runtime forced to shutdown: %w", err)
 	}
 
 	if err := <-serveErrCh; err != nil {
@@ -116,6 +116,16 @@ func serveApplicationWithGracefulShutdown(server *http.Server, listener net.List
 
 	log.Println("Server exited")
 	return nil
+}
+
+func resolveApplicationRuntime(cfg *config.Config, app *Application) serverruntime.IngressRuntime {
+	if app == nil {
+		return nil
+	}
+	if app.Server == nil {
+		return nil
+	}
+	return serverruntime.ResolveIngressRuntime(cfg, app.Server)
 }
 
 func isMasterWorkerModeEnabled(cfg *config.Config) bool {

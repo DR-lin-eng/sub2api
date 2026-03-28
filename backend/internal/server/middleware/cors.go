@@ -7,13 +7,30 @@ import (
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
 var corsWarningOnce sync.Once
 
+type CORSRuntimeConfig struct {
+	allowAll         bool
+	allowCredentials bool
+	allowedSet       map[string]struct{}
+	allowHeaders     string
+}
+
 // CORS 跨域中间件
 func CORS(cfg config.CORSConfig) gin.HandlerFunc {
+	runtimeCfg := PrepareCORSRuntimeConfig(cfg)
+	return func(c *gin.Context) {
+		if ApplyCORSContext(gatewayctx.FromGin(c), runtimeCfg) {
+			c.Next()
+		}
+	}
+}
+
+func PrepareCORSRuntimeConfig(cfg config.CORSConfig) CORSRuntimeConfig {
 	allowedOrigins := normalizeOrigins(cfg.AllowedOrigins)
 	allowAll := false
 	for _, origin := range allowedOrigins {
@@ -63,41 +80,53 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 		allowHeaders = append(allowHeaders, "x-stainless-"+prop)
 	}
 	allowHeadersValue := strings.Join(allowHeaders, ", ")
-
-	return func(c *gin.Context) {
-		origin := strings.TrimSpace(c.GetHeader("Origin"))
-		originAllowed := allowAll
-		if origin != "" && !allowAll {
-			_, originAllowed = allowedSet[origin]
-		}
-
-		if originAllowed {
-			if allowAll {
-				c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-			} else if origin != "" {
-				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-				c.Writer.Header().Add("Vary", "Origin")
-			}
-			if allowCredentials {
-				c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-			}
-			c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeadersValue)
-			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag")
-			c.Writer.Header().Set("Access-Control-Max-Age", "86400")
-		}
-		// 处理预检请求
-		if c.Request.Method == http.MethodOptions {
-			if originAllowed {
-				c.AbortWithStatus(http.StatusNoContent)
-			} else {
-				c.AbortWithStatus(http.StatusForbidden)
-			}
-			return
-		}
-
-		c.Next()
+	return CORSRuntimeConfig{
+		allowAll:         allowAll,
+		allowCredentials: allowCredentials,
+		allowedSet:       allowedSet,
+		allowHeaders:     allowHeadersValue,
 	}
+}
+
+func ApplyCORSContext(c gatewayctx.GatewayContext, cfg CORSRuntimeConfig) bool {
+	if c == nil {
+		return false
+	}
+	origin := strings.TrimSpace(c.HeaderValue("Origin"))
+	originAllowed := cfg.allowAll
+	if origin != "" && !cfg.allowAll {
+		_, originAllowed = cfg.allowedSet[origin]
+	}
+
+	headers := c.Header()
+	if originAllowed {
+		if cfg.allowAll {
+			headers.Set("Access-Control-Allow-Origin", "*")
+		} else if origin != "" {
+			headers.Set("Access-Control-Allow-Origin", origin)
+			headers.Add("Vary", "Origin")
+		}
+		if cfg.allowCredentials {
+			headers.Set("Access-Control-Allow-Credentials", "true")
+		}
+		headers.Set("Access-Control-Allow-Headers", cfg.allowHeaders)
+		headers.Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
+		headers.Set("Access-Control-Expose-Headers", "ETag")
+		headers.Set("Access-Control-Max-Age", "86400")
+	}
+
+	if strings.EqualFold(c.Method(), http.MethodOptions) {
+		if originAllowed {
+			c.Abort()
+			c.SetStatus(http.StatusNoContent)
+		} else {
+			c.Abort()
+			c.SetStatus(http.StatusForbidden)
+		}
+		return false
+	}
+
+	return true
 }
 
 func normalizeOrigins(values []string) []string {

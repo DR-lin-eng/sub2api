@@ -4,6 +4,7 @@ package server
 import (
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -56,7 +57,9 @@ func ProvideRouter(
 		}
 	}
 
-	return SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+	router := SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+	registerRouterExecutableRuntimeConfig(router, buildExecutableRuntimeConfig(cfg, handlers, apiKeyService, subscriptionService, settingService))
+	return router
 }
 
 // BuildHTTPHandler wraps the base HTTP handler with server-level transport features
@@ -113,5 +116,69 @@ func NewHTTPServer(cfg *config.Config, handler http.Handler) *http.Server {
 
 // ProvideHTTPServer 提供 HTTP 服务器
 func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
-	return NewHTTPServer(cfg, BuildHTTPHandler(cfg, router))
+	httpServer := NewHTTPServer(cfg, BuildHTTPHandler(cfg, router))
+	registerHTTPServerMetadata(httpServer, BuildRouteManifest(router))
+	registerHTTPServerExecutableRuntimeConfig(httpServer, executableRuntimeForRouter(router))
+	return httpServer
+}
+
+var (
+	httpServerMetadataMu         sync.RWMutex
+	httpServerMetadata           = map[*http.Server]RouteManifest{}
+	httpServerExecutableMetadata = map[*http.Server]*executableRuntimeConfig{}
+	routerExecutableMetadata     = map[*gin.Engine]*executableRuntimeConfig{}
+)
+
+func registerHTTPServerMetadata(server *http.Server, manifest RouteManifest) {
+	if server == nil {
+		return
+	}
+	httpServerMetadataMu.Lock()
+	defer httpServerMetadataMu.Unlock()
+	httpServerMetadata[server] = cloneRouteManifest(manifest)
+}
+
+func registerRouterExecutableRuntimeConfig(router *gin.Engine, cfg *executableRuntimeConfig) {
+	if router == nil || cfg == nil {
+		return
+	}
+	httpServerMetadataMu.Lock()
+	defer httpServerMetadataMu.Unlock()
+	routerExecutableMetadata[router] = cfg
+}
+
+func registerHTTPServerExecutableRuntimeConfig(server *http.Server, cfg *executableRuntimeConfig) {
+	if server == nil || cfg == nil {
+		return
+	}
+	httpServerMetadataMu.Lock()
+	defer httpServerMetadataMu.Unlock()
+	httpServerExecutableMetadata[server] = cfg
+}
+
+func executableRuntimeForRouter(router *gin.Engine) *executableRuntimeConfig {
+	if router == nil {
+		return nil
+	}
+	httpServerMetadataMu.RLock()
+	defer httpServerMetadataMu.RUnlock()
+	return routerExecutableMetadata[router]
+}
+
+func routeManifestForHTTPServer(server *http.Server) RouteManifest {
+	if server == nil {
+		return nil
+	}
+	httpServerMetadataMu.RLock()
+	defer httpServerMetadataMu.RUnlock()
+	return cloneRouteManifest(httpServerMetadata[server])
+}
+
+func executableRuntimeForHTTPServer(server *http.Server) *executableRuntimeConfig {
+	if server == nil {
+		return nil
+	}
+	httpServerMetadataMu.RLock()
+	defer httpServerMetadataMu.RUnlock()
+	return httpServerExecutableMetadata[server]
 }

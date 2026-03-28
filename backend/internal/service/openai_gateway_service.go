@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -647,7 +648,11 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 }
 
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	return s.writeOpenAIWSFallbackErrorResponseContext(gatewayctx.FromGin(c), account, wsErr)
+}
+
+func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponseContext(c gatewayctx.GatewayContext, account *Account, wsErr error) bool {
+	if c == nil || c.ResponseWritten() {
 		return false
 	}
 	statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(wsErr)
@@ -661,9 +666,9 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 		upstreamMessage = clientMessage
 	}
 
-	setOpsUpstreamError(c, statusCode, upstreamMessage, "")
+	setOpsUpstreamErrorContext(c, statusCode, upstreamMessage, "")
 	if account != nil {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -672,7 +677,7 @@ func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context
 			Message:            upstreamMessage,
 		})
 	}
-	c.JSON(statusCode, gin.H{
+	c.WriteJSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": clientMessage,
@@ -850,7 +855,49 @@ func SnapshotOpenAICompatibilityFallbackMetrics() OpenAICompatibilityFallbackMet
 }
 
 func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, account *Account) CodexClientRestrictionDetectionResult {
-	return s.getCodexClientRestrictionDetector().Detect(c, account)
+	return s.detectCodexClientRestrictionContext(gatewayctx.FromGin(c), account)
+}
+
+func (s *OpenAIGatewayService) detectCodexClientRestrictionContext(c gatewayctx.GatewayContext, account *Account) CodexClientRestrictionDetectionResult {
+	if account == nil || !account.IsCodexCLIOnlyEnabled() {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: false,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonDisabled,
+		}
+	}
+	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: true,
+			Reason:  CodexClientRestrictionReasonForceCodexCLI,
+		}
+	}
+	userAgent := ""
+	originator := ""
+	if c != nil {
+		userAgent = c.HeaderValue("User-Agent")
+		originator = c.HeaderValue("originator")
+	}
+	if openai.IsCodexOfficialClientRequest(userAgent) {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: true,
+			Reason:  CodexClientRestrictionReasonMatchedUA,
+		}
+	}
+	if openai.IsCodexOfficialClientOriginator(originator) {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: true,
+			Reason:  CodexClientRestrictionReasonMatchedOriginator,
+		}
+	}
+	return CodexClientRestrictionDetectionResult{
+		Enabled: true,
+		Matched: false,
+		Reason:  CodexClientRestrictionReasonNotMatchedUA,
+	}
 }
 
 func getAPIKeyIDFromContext(c *gin.Context) int64 {
@@ -858,6 +905,21 @@ func getAPIKeyIDFromContext(c *gin.Context) int64 {
 		return 0
 	}
 	v, exists := c.Get("api_key")
+	if !exists {
+		return 0
+	}
+	apiKey, ok := v.(*APIKey)
+	if !ok || apiKey == nil {
+		return 0
+	}
+	return apiKey.ID
+}
+
+func getAPIKeyIDFromGatewayContext(ctx gatewayctx.GatewayContext) int64 {
+	if ctx == nil {
+		return 0
+	}
+	v, exists := ctx.Value("api_key")
 	if !exists {
 		return 0
 	}
@@ -883,6 +945,10 @@ func isolateOpenAISessionID(apiKeyID int64, raw string) string {
 }
 
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
+	logCodexCLIOnlyDetectionContext(ctx, gatewayctx.FromGin(c), account, apiKeyID, result, body)
+}
+
+func logCodexCLIOnlyDetectionContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
 	}
@@ -904,7 +970,7 @@ func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Acco
 		fields = append(fields, zap.Int64("api_key_id", apiKeyID))
 	}
 	if !result.Matched {
-		fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, body)
+		fields = appendCodexCLIOnlyRejectedRequestFieldsContext(fields, c, body)
 	}
 	log := logger.FromContext(ctx).With(fields...)
 	if result.Matched {
@@ -914,11 +980,15 @@ func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Acco
 }
 
 func appendCodexCLIOnlyRejectedRequestFields(fields []zap.Field, c *gin.Context, body []byte) []zap.Field {
-	if c == nil || c.Request == nil {
+	return appendCodexCLIOnlyRejectedRequestFieldsContext(fields, gatewayctx.FromGin(c), body)
+}
+
+func appendCodexCLIOnlyRejectedRequestFieldsContext(fields []zap.Field, c gatewayctx.GatewayContext, body []byte) []zap.Field {
+	if c == nil || c.Request() == nil {
 		return fields
 	}
 
-	req := c.Request
+	req := c.Request()
 	requestModel, requestStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	fields = append(fields,
 		zap.String("request_method", strings.TrimSpace(req.Method)),
@@ -927,7 +997,7 @@ func appendCodexCLIOnlyRejectedRequestFields(fields []zap.Field, c *gin.Context,
 		zap.String("request_host", strings.TrimSpace(req.Host)),
 		zap.String("request_client_ip", strings.TrimSpace(c.ClientIP())),
 		zap.String("request_remote_addr", strings.TrimSpace(req.RemoteAddr)),
-		zap.String("request_user_agent", strings.TrimSpace(req.Header.Get("User-Agent"))),
+		zap.String("request_user_agent", strings.TrimSpace(c.HeaderValue("User-Agent"))),
 		zap.String("request_content_type", strings.TrimSpace(req.Header.Get("Content-Type"))),
 		zap.Int64("request_content_length", req.ContentLength),
 		zap.Bool("request_stream", requestStream),
@@ -979,6 +1049,18 @@ func logOpenAIInstructionsRequiredDebug(
 	requestBody []byte,
 	upstreamBody []byte,
 ) {
+	logOpenAIInstructionsRequiredDebugContext(ctx, gatewayctx.FromGin(c), account, upstreamStatusCode, upstreamMsg, requestBody, upstreamBody)
+}
+
+func logOpenAIInstructionsRequiredDebugContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	upstreamStatusCode int,
+	upstreamMsg string,
+	requestBody []byte,
+	upstreamBody []byte,
+) {
 	msg := strings.TrimSpace(upstreamMsg)
 	if !isOpenAIInstructionsRequiredError(upstreamStatusCode, msg, upstreamBody) {
 		return
@@ -997,8 +1079,8 @@ func logOpenAIInstructionsRequiredDebug(
 	userAgent := ""
 	originator := ""
 	if c != nil {
-		userAgent = strings.TrimSpace(c.GetHeader("User-Agent"))
-		originator = strings.TrimSpace(c.GetHeader("originator"))
+		userAgent = strings.TrimSpace(c.HeaderValue("User-Agent"))
+		originator = strings.TrimSpace(c.HeaderValue("originator"))
 	}
 
 	fields := []zap.Field{
@@ -1010,7 +1092,7 @@ func logOpenAIInstructionsRequiredDebug(
 		zap.String("request_user_agent", userAgent),
 		zap.Bool("codex_official_client_match", openai.IsCodexOfficialClientByHeaders(userAgent, originator)),
 	}
-	fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, requestBody)
+	fields = appendCodexCLIOnlyRejectedRequestFieldsContext(fields, c, requestBody)
 
 	logger.FromContext(ctx).With(fields...).Warn("OpenAI 上游返回 Instructions are required，已记录请求详情用于排查")
 }
@@ -1102,12 +1184,16 @@ func isOpenAITransientProcessingError(upstreamStatusCode int, upstreamMsg string
 // ExtractSessionID extracts the raw session ID from headers or body without hashing.
 // Used by ForwardAsAnthropic to pass as prompt_cache_key for upstream cache.
 func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) string {
+	return s.ExtractSessionIDContext(gatewayctx.FromGin(c), body)
+}
+
+func (s *OpenAIGatewayService) ExtractSessionIDContext(c gatewayctx.GatewayContext, body []byte) string {
 	if c == nil {
 		return ""
 	}
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	sessionID := strings.TrimSpace(c.HeaderValue("session_id"))
 	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+		sessionID = strings.TrimSpace(c.HeaderValue("conversation_id"))
 	}
 	if sessionID == "" && len(body) > 0 {
 		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
@@ -1122,23 +1208,21 @@ func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) str
 //  2. Header: conversation_id
 //  3. Body:   prompt_cache_key (opencode)
 func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) string {
+	return s.GenerateSessionHashContext(gatewayctx.FromGin(c), body)
+}
+
+func (s *OpenAIGatewayService) GenerateSessionHashContext(c gatewayctx.GatewayContext, body []byte) string {
 	if c == nil {
 		return ""
 	}
 
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
-	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
+	sessionID := s.ExtractSessionIDContext(c, body)
 	if sessionID == "" {
 		return ""
 	}
 
 	currentHash, legacyHash := deriveOpenAISessionHashes(sessionID)
-	attachOpenAILegacySessionHashToGin(c, legacyHash)
+	attachOpenAILegacySessionHash(c, legacyHash)
 	return currentHash
 }
 
@@ -1146,7 +1230,11 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 // 当未携带 session_id/conversation_id/prompt_cache_key 时，使用 fallbackSeed 生成稳定哈希。
 // 该方法用于 WS ingress，避免会话信号缺失时发生跨账号漂移。
 func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, body []byte, fallbackSeed string) string {
-	sessionHash := s.GenerateSessionHash(c, body)
+	return s.GenerateSessionHashWithFallbackContext(gatewayctx.FromGin(c), body, fallbackSeed)
+}
+
+func (s *OpenAIGatewayService) GenerateSessionHashWithFallbackContext(c gatewayctx.GatewayContext, body []byte, fallbackSeed string) string {
+	sessionHash := s.GenerateSessionHashContext(c, body)
 	if sessionHash != "" {
 		return sessionHash
 	}
@@ -1157,13 +1245,13 @@ func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, b
 	}
 
 	currentHash, legacyHash := deriveOpenAISessionHashes(seed)
-	attachOpenAILegacySessionHashToGin(c, legacyHash)
+	attachOpenAILegacySessionHash(c, legacyHash)
 	return currentHash
 }
 
-func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) string {
+func resolveOpenAIUpstreamOriginator(c gatewayctx.GatewayContext, isOfficialClient bool) string {
 	if c != nil {
-		if originator := strings.TrimSpace(c.GetHeader("originator")); originator != "" {
+		if originator := strings.TrimSpace(c.HeaderValue("originator")); originator != "" {
 			return originator
 		}
 	}
@@ -1825,13 +1913,17 @@ func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context,
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	return s.ForwardContext(ctx, gatewayctx.FromGin(c), account, body)
+}
+
+func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
-	restrictionResult := s.detectCodexClientRestriction(c, account)
-	apiKeyID := getAPIKeyIDFromContext(c)
-	logCodexCLIOnlyDetection(ctx, c, account, apiKeyID, restrictionResult, body)
+	restrictionResult := s.detectCodexClientRestrictionContext(c, account)
+	apiKeyID := getAPIKeyIDFromGatewayContext(c)
+	logCodexCLIOnlyDetectionContext(ctx, c, account, apiKeyID, restrictionResult, body)
 	if restrictionResult.Enabled && !restrictionResult.Matched {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.WriteJSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
 				"type":    "forbidden_error",
 				"message": "This account only allows Codex official clients",
@@ -1844,14 +1936,79 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
 
-	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.HeaderValue("User-Agent"), c.HeaderValue("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	_ = promptCacheKey
+	_ = originalModel
+	_ = isCodexCLI
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
-	clientTransport := GetOpenAIClientTransport(c)
+	clientTransport := GetOpenAIClientTransportContext(c)
+	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
+	if c != nil {
+		c.SetValue("openai_ws_transport_decision", string(wsDecision.Transport))
+		c.SetValue("openai_ws_transport_reason", wsDecision.Reason)
+	}
+	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		logOpenAIWSModeDebug(
+			"selected account_id=%d account_type=%s transport=%s reason=%s model=%s stream=%v",
+			account.ID,
+			account.Type,
+			normalizeOpenAIWSLogValue(string(wsDecision.Transport)),
+			normalizeOpenAIWSLogValue(wsDecision.Reason),
+			reqModel,
+			reqStream,
+		)
+	}
+	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+		c.WriteJSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2.",
+			},
+		})
+		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
+	}
+	if account.IsOpenAIPassthroughEnabled() {
+		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
+		return s.forwardOpenAIPassthroughContext(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+	}
+
+	reqBody, err := getOpenAIRequestBodyMapContext(c, body)
+	if err != nil {
+		return nil, err
+	}
+	_ = reqBody
+
+	return s.forwardWithContext(ctx, c, account, body)
+}
+
+func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	startTime := time.Now()
+
+	restrictionResult := s.detectCodexClientRestrictionContext(c, account)
+	apiKeyID := getAPIKeyIDFromGatewayContext(c)
+	logCodexCLIOnlyDetectionContext(ctx, c, account, apiKeyID, restrictionResult, body)
+	if restrictionResult.Enabled && !restrictionResult.Matched {
+		c.WriteJSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "forbidden_error",
+				"message": "This account only allows Codex official clients",
+			},
+		})
+		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
+	}
+
+	originalBody := body
+	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
+	originalModel := reqModel
+
+	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.HeaderValue("User-Agent"), c.HeaderValue("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	clientTransport := GetOpenAIClientTransportContext(c)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
 	if c != nil {
-		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
-		c.Set("openai_ws_transport_reason", wsDecision.Reason)
+		c.SetValue("openai_ws_transport_decision", string(wsDecision.Transport))
+		c.SetValue("openai_ws_transport_reason", wsDecision.Reason)
 	}
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
 		logOpenAIWSModeDebug(
@@ -1867,7 +2024,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// 当前仅支持 WSv2；WSv1 命中时直接返回错误，避免出现“配置可开但行为不确定”。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
 		if c != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.WriteJSON(http.StatusBadRequest, gin.H{
 				"error": gin.H{
 					"type":    "invalid_request_error",
 					"message": "OpenAI WSv1 is temporarily unsupported. Please enable responses_websockets_v2.",
@@ -1880,10 +2037,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if passthroughEnabled {
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
-		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		return s.forwardOpenAIPassthroughContext(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
-	reqBody, err := getOpenAIRequestBodyMap(c, body)
+	reqBody, err := getOpenAIRequestBodyMapContext(c, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2000,7 +2157,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if account.Type == AccountTypeOAuth {
-		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c))
+		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPathContext(c))
 		if codexResult.Modified {
 			bodyModified = true
 			disablePatch()
@@ -2107,7 +2264,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// Capture upstream request body for ops retry of this attempt.
-	setOpsUpstreamRequestBody(c, body)
+	setOpsUpstreamRequestBodyContext(c, body)
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
@@ -2220,7 +2377,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsErr == nil {
 				break
 			}
-			if c != nil && c.Writer != nil && c.Writer.Written() {
+			if c != nil && c.ResponseWritten() {
 				break
 			}
 
@@ -2316,7 +2473,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			wsResult.UpstreamModel = mappedModel
 			return wsResult, nil
 		}
-		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
+		s.writeOpenAIWSFallbackErrorResponseContext(c, account, wsErr)
 		return nil, wsErr
 	}
 
@@ -2324,7 +2481,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
+		upstreamReq, err := s.buildUpstreamRequestContext(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 		releaseUpstreamCtx()
 		if err != nil {
 			return nil, err
@@ -2339,20 +2496,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Send request
 		upstreamStart := time.Now()
 		var cancelQuickFail context.CancelFunc
-		if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
+		if shouldUseOpenAIStagedTransportBudgetContext(c, reqStream) {
 			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
 		} else {
 			upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 		}
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		c.SetValue(OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
 			if cancelQuickFail != nil {
 				cancelQuickFail()
 			}
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
-			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			setOpsUpstreamErrorContext(c, 0, safeErr, "")
+			appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2381,7 +2538,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					if err != nil {
 						return nil, fmt.Errorf("serialize invalid_encrypted_content retry body: %w", err)
 					}
-					setOpsUpstreamRequestBody(c, body)
+					setOpsUpstreamRequestBodyContext(c, body)
 					httpInvalidEncryptedContentRetryTried = true
 					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after invalid_encrypted_content (account: %s)", account.Name)
 					continue
@@ -2397,7 +2554,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					}
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -2411,7 +2568,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				s.handleFailoverSideEffects(ctx, resp, account)
 				return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 			}
-			return s.handleErrorResponse(ctx, resp, c, account, body)
+			return s.handleErrorResponseContext(ctx, resp, c, account, body)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
@@ -2421,14 +2578,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffort := extractOpenAIReasoningEffort(reqBody, originalModel)
 		streamCtx := withOpenAIReasoningEffort(ctx, reasoningEffort)
 		if reqStream {
-			streamResult, err := s.handleStreamingResponse(streamCtx, resp, c, account, startTime, originalModel, mappedModel)
+			streamResult, err := s.handleStreamingResponseContext(streamCtx, resp, c, account, startTime, originalModel, mappedModel)
 			if err != nil {
 				return nil, err
 			}
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 		} else {
-			usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, mappedModel)
+			usage, err = s.handleNonStreamingResponseContext(ctx, resp, c, account, originalModel, mappedModel)
 			if err != nil {
 				return nil, err
 			}
@@ -2472,11 +2629,24 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	return s.forwardOpenAIPassthroughContext(ctx, gatewayctx.FromGin(c), account, body, reqModel, reasoningEffort, reqStream, startTime)
+}
+
+func (s *OpenAIGatewayService) forwardOpenAIPassthroughContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	body []byte,
+	reqModel string,
+	reasoningEffort *string,
+	reqStream bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
 	if account != nil && account.Type == AccountTypeOAuth {
 		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
 			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
-			setOpsUpstreamError(c, http.StatusForbidden, rejectMsg, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			setOpsUpstreamErrorContext(c, http.StatusForbidden, rejectMsg, "")
+			appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2486,8 +2656,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				Message:            rejectMsg,
 				Detail:             rejectReason,
 			})
-			logOpenAIPassthroughInstructionsRejected(ctx, c, account, reqModel, rejectReason, body)
-			c.JSON(http.StatusForbidden, gin.H{
+			logOpenAIPassthroughInstructionsRejectedContext(ctx, c, account, reqModel, rejectReason, body)
+			c.WriteJSON(http.StatusForbidden, gin.H{
 				"error": gin.H{
 					"type":    "forbidden_error",
 					"message": rejectMsg,
@@ -2496,7 +2666,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
 		}
 
-		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPath(c))
+		normalizedBody, normalized, err := normalizeOpenAIPassthroughOAuthBody(body, isOpenAIResponsesCompactPathContext(c))
 		if err != nil {
 			return nil, err
 		}
@@ -2514,8 +2684,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		reqModel,
 		reqStream,
 	)
-	if reqStream && c != nil && c.Request != nil {
-		if timeoutHeaders := collectOpenAIPassthroughTimeoutHeaders(c.Request.Header); len(timeoutHeaders) > 0 {
+	if reqStream && c != nil && c.Request() != nil {
+		if timeoutHeaders := collectOpenAIPassthroughTimeoutHeaders(c.Request().Header); len(timeoutHeaders) > 0 {
 			streamWarnLogger := logger.FromContext(ctx).With(
 				zap.String("component", "service.openai_gateway"),
 				zap.Int64("account_id", account.ID),
@@ -2548,33 +2718,35 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
+		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthroughContext(upstreamCtx, c, account, body, token)
 		releaseUpstreamCtx()
 		if err != nil {
 			return nil, err
 		}
 
-		setOpsUpstreamRequestBody(c, body)
 		if c != nil {
-			c.Set("openai_passthrough", true)
+			setOpsUpstreamRequestBodyContext(c, body)
+			c.SetValue("openai_passthrough", true)
 		}
 
 		upstreamStart := time.Now()
 		var cancelQuickFail context.CancelFunc
-		if shouldUseOpenAIStagedTransportBudget(c, reqStream) {
+		if shouldUseOpenAIStagedTransportBudgetContext(c, reqStream) {
 			upstreamReq = s.applyOpenAITransportOverride(upstreamReq, body, true)
 		} else {
 			upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
 		}
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if c != nil {
+			c.SetValue(OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		}
 		if err != nil {
 			if cancelQuickFail != nil {
 				cancelQuickFail()
 			}
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
-			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			setOpsUpstreamErrorContext(c, 0, safeErr, "")
+			appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -2600,8 +2772,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					if downgradeErr == nil && downgraded {
 						priorityFallbackAttempted = true
 						body = downgradedBody
-						setOpsUpstreamRequestBody(c, body)
-						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						setOpsUpstreamRequestBodyContext(c, body)
+						appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 							Platform:           account.Platform,
 							AccountID:          account.ID,
 							AccountName:        account.Name,
@@ -2626,8 +2798,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					}
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
-				setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				setOpsUpstreamErrorContext(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+				appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -2646,7 +2818,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			}
 
 			// 透传模式不做 failover（避免改变原始上游语义），按上游原样返回错误响应。
-			return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
+			return nil, s.handleErrorResponsePassthroughContext(ctx, resp, c, account, body)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
@@ -2654,14 +2826,14 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		var firstTokenMs *int
 		if reqStream {
 			streamCtx := withOpenAIReasoningEffort(ctx, reasoningEffort)
-			result, err := s.handleStreamingResponsePassthrough(streamCtx, resp, c, account, startTime, reqModel)
+			result, err := s.handleStreamingResponsePassthroughContext(streamCtx, resp, c, account, startTime, reqModel)
 			if err != nil {
 				return nil, err
 			}
 			usage = result.usage
 			firstTokenMs = result.firstTokenMs
 		} else {
-			usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c)
+			usage, err = s.handleNonStreamingResponsePassthroughContext(ctx, resp, c)
 			if err != nil {
 				return nil, err
 			}
@@ -2697,6 +2869,17 @@ func logOpenAIPassthroughInstructionsRejected(
 	rejectReason string,
 	body []byte,
 ) {
+	logOpenAIPassthroughInstructionsRejectedContext(ctx, gatewayctx.FromGin(c), account, reqModel, rejectReason, body)
+}
+
+func logOpenAIPassthroughInstructionsRejectedContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	reqModel string,
+	rejectReason string,
+	body []byte,
+) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2716,13 +2899,23 @@ func logOpenAIPassthroughInstructionsRejected(
 		zap.String("request_model", strings.TrimSpace(reqModel)),
 		zap.String("reject_reason", strings.TrimSpace(rejectReason)),
 	}
-	fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, body)
+	fields = appendCodexCLIOnlyRejectedRequestFieldsContext(fields, c, body)
 	logger.FromContext(ctx).With(fields...).Warn("OpenAI passthrough 本地拦截：Codex 请求缺少有效 instructions")
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	ctx context.Context,
 	c *gin.Context,
+	account *Account,
+	body []byte,
+	token string,
+) (*http.Request, error) {
+	return s.buildUpstreamRequestOpenAIPassthroughContext(ctx, gatewayctx.FromGin(c), account, body, token)
+}
+
+func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthroughContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
 	account *Account,
 	body []byte,
 	token string,
@@ -2741,7 +2934,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			targetURL = buildOpenAIResponsesURL(validatedURL)
 		}
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffixContext(c))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -2750,8 +2943,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// 透传客户端请求头（安全白名单）。
 	allowTimeoutHeaders := s.isOpenAIPassthroughTimeoutHeadersAllowed()
-	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
+	if c != nil && c.Request() != nil {
+		for key, values := range c.Request().Header {
 			lower := strings.ToLower(strings.TrimSpace(key))
 			if !isOpenAIPassthroughAllowedRequestHeader(lower, allowTimeoutHeaders) {
 				continue
@@ -2775,17 +2968,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		apiKeyID := getAPIKeyIDFromContext(c)
+		apiKeyID := getAPIKeyIDFromGatewayContext(c)
 		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
 		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		if isOpenAIResponsesCompactPath(c) {
+		if isOpenAIResponsesCompactPathContext(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
 			if clientSessionID == "" {
-				clientSessionID = resolveOpenAICompactSessionID(c)
+				clientSessionID = resolveOpenAICompactSessionIDContext(c)
 			}
 		} else if req.Header.Get("accept") == "" {
 			req.Header.Set("accept", "text/event-stream")
@@ -2838,6 +3031,16 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	account *Account,
 	requestBody []byte,
 ) error {
+	return s.handleErrorResponsePassthroughContext(ctx, resp, gatewayctx.FromGin(c), account, requestBody)
+}
+
+func (s *OpenAIGatewayService) handleErrorResponsePassthroughContext(
+	ctx context.Context,
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	requestBody []byte,
+) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
@@ -2850,9 +3053,9 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
-	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
-	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	setOpsUpstreamErrorContext(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	logOpenAIInstructionsRequiredDebugContext(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -2865,12 +3068,13 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	writeOpenAIPassthroughResponseHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	c.Data(resp.StatusCode, contentType, body)
+	c.SetHeader("Content-Type", contentType)
+	_, _ = c.WriteBytes(resp.StatusCode, body)
 
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -2933,32 +3137,41 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	startTime time.Time,
 	requestModel string,
 ) (*openaiStreamingResultPassthrough, error) {
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	return s.handleStreamingResponsePassthroughContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, requestModel)
+}
 
-	// SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache, no-transform")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Writer.Header().Del("Content-Encoding")
-	c.Writer.Header().Del("Content-Length")
-	c.Writer.Header().Del("Transfer-Encoding")
+func (s *OpenAIGatewayService) handleStreamingResponsePassthroughContext(
+	ctx context.Context,
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	startTime time.Time,
+	requestModel string,
+) (*openaiStreamingResultPassthrough, error) {
+	if c == nil {
+		return nil, errors.New("gateway context is nil")
+	}
+	writeOpenAIPassthroughResponseHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  "text/event-stream",
+		CacheControl: "no-cache, no-transform",
+	})
 	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
+		c.SetHeader("x-request-id", v)
 	}
 
-	w := c.Writer
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if err := c.Flush(); err != nil {
 		return nil, errors.New("streaming not supported")
 	}
-	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
+	bufferedWriter := bufio.NewWriterSize(gatewayContextWriter{ctx: c}, 4*1024)
 	flushController := s.newOpenAIHTTPStreamFlushController()
 	flushBuffered := func() error {
 		if err := bufferedWriter.Flush(); err != nil {
 			return err
 		}
-		flusher.Flush()
+		if err := c.Flush(); err != nil {
+			return err
+		}
 		flushController.markFlushed()
 		return nil
 	}
@@ -3278,17 +3491,36 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 }
 
+func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithGin(
+	ctx context.Context,
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	startTime time.Time,
+	requestModel string,
+) (*openaiStreamingResultPassthrough, error) {
+	return s.handleStreamingResponsePassthroughContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, requestModel)
+}
+
 func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 ) (*OpenAIUsage, error) {
+	return s.handleNonStreamingResponsePassthroughContext(ctx, resp, gatewayctx.FromGin(c))
+}
+
+func (s *OpenAIGatewayService) handleNonStreamingResponsePassthroughContext(
+	ctx context.Context,
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+) (*OpenAIUsage, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
 		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
-			setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
-			c.JSON(http.StatusBadGateway, gin.H{
+			setOpsUpstreamErrorContext(c, http.StatusBadGateway, "upstream response too large", "")
+			c.WriteJSON(http.StatusBadGateway, gin.H{
 				"error": gin.H{
 					"type":    "upstream_error",
 					"message": "Upstream response too large",
@@ -3311,13 +3543,14 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
 
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	writeOpenAIPassthroughResponseHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	c.Data(resp.StatusCode, contentType, body)
+	c.SetHeader("Content-Type", contentType)
+	_, _ = c.WriteBytes(resp.StatusCode, body)
 	return usage, nil
 }
 
@@ -3370,6 +3603,13 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	return s.buildUpstreamRequestContext(ctx, gatewayctx.FromGin(c), account, body, token, isStream, promptCacheKey, isCodexCLI)
+}
+
+func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	if c == nil {
+		return nil, errors.New("gateway context is nil")
+	}
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
@@ -3391,7 +3631,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	default:
 		targetURL = openaiPlatformAPIURL
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffixContext(c))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -3413,11 +3653,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 
 	// Whitelist passthrough headers
-	for key, values := range c.Request.Header {
-		lowerKey := strings.ToLower(key)
-		if openaiAllowedHeaders[lowerKey] {
-			for _, v := range values {
-				req.Header.Add(key, v)
+	if request := c.Request(); request != nil {
+		for key, values := range request.Header {
+			lowerKey := strings.ToLower(key)
+			if openaiAllowedHeaders[lowerKey] {
+				for _, v := range values {
+					req.Header.Add(key, v)
+				}
 			}
 		}
 	}
@@ -3428,13 +3670,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
-		apiKeyID := getAPIKeyIDFromContext(c)
-		if isOpenAIResponsesCompactPath(c) {
+		apiKeyID := getAPIKeyIDFromGatewayContext(c)
+		if isOpenAIResponsesCompactPathContext(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			compactSession := resolveOpenAICompactSessionID(c)
+			compactSession := resolveOpenAICompactSessionIDContext(c)
 			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
 		} else {
 			req.Header.Set("accept", "text/event-stream")
@@ -3473,6 +3715,16 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	account *Account,
 	requestBody []byte,
 ) (*OpenAIForwardResult, error) {
+	return s.handleErrorResponseContext(ctx, resp, gatewayctx.FromGin(c), account, requestBody)
+}
+
+func (s *OpenAIGatewayService) handleErrorResponseContext(
+	ctx context.Context,
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	requestBody []byte,
+) (*OpenAIForwardResult, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
@@ -3485,8 +3737,8 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
-	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
-	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	setOpsUpstreamErrorContext(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	logOpenAIInstructionsRequiredDebugContext(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		logger.LegacyPrintf("service.openai_gateway",
@@ -3499,7 +3751,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
-	if status, errType, errMsg, matched := applyErrorPassthroughRule(
+	if status, errType, errMsg, matched := applyErrorPassthroughRuleContext(
 		c,
 		PlatformOpenAI,
 		resp.StatusCode,
@@ -3508,7 +3760,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		c.JSON(status, gin.H{
+		c.WriteJSON(status, gin.H{
 			"error": gin.H{
 				"type":    errType,
 				"message": errMsg,
@@ -3525,7 +3777,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -3535,7 +3787,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
 		})
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.WriteJSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
 				"message": "Upstream gateway error",
@@ -3556,7 +3808,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	if shouldDisable {
 		kind = "failover"
 	}
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -3597,7 +3849,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errMsg = "Upstream request failed"
 	}
 
-	c.JSON(statusCode, gin.H{
+	c.WriteJSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": errMsg,
@@ -3613,6 +3865,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 // compatErrorWriter is the signature for format-specific error writers used by
 // the compat paths (Chat Completions and Anthropic Messages).
 type compatErrorWriter func(c *gin.Context, statusCode int, errType, message string)
+type compatErrorWriterContext func(c gatewayctx.GatewayContext, statusCode int, errType, message string)
 
 // handleCompatErrorResponse is the shared non-failover error handler for the
 // Chat Completions and Anthropic Messages compat paths. It mirrors the logic of
@@ -3624,6 +3877,19 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	c *gin.Context,
 	account *Account,
 	writeError compatErrorWriter,
+) (*OpenAIForwardResult, error) {
+	return s.handleCompatErrorResponseContext(resp, gatewayctx.FromGin(c), account, func(ctx gatewayctx.GatewayContext, statusCode int, errType, message string) {
+		if native, ok := ctx.Native().(*gin.Context); ok && native != nil {
+			writeError(native, statusCode, errType, message)
+		}
+	})
+}
+
+func (s *OpenAIGatewayService) handleCompatErrorResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	writeError compatErrorWriterContext,
 ) (*OpenAIForwardResult, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 
@@ -3641,10 +3907,10 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		}
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
-	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	setOpsUpstreamErrorContext(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
 	// Apply error passthrough rules
-	if status, errType, errMsg, matched := applyErrorPassthroughRule(
+	if status, errType, errMsg, matched := applyErrorPassthroughRuleContext(
 		c, account.Platform, resp.StatusCode, body,
 		http.StatusBadGateway, "api_error", "Upstream request failed",
 	); matched {
@@ -3661,7 +3927,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// Check custom error codes — if the account does not handle this status,
 	// return a generic error without exposing upstream details.
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -3682,14 +3948,14 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	shouldDisable := false
 	if s.rateLimitService != nil {
 		shouldDisable = s.rateLimitService.HandleUpstreamError(
-			c.Request.Context(), account, resp.StatusCode, resp.Header, body,
+			c.Context(), account, resp.StatusCode, resp.Header, body,
 		)
 	}
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"
 	}
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -3738,6 +4004,17 @@ type openAIStreamFlushController struct {
 	lastFlushAt   time.Time
 }
 
+type gatewayContextWriter struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (w gatewayContextWriter) Write(p []byte) (int, error) {
+	if w.ctx == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return w.ctx.WriteBytes(0, p)
+}
+
 func (s *OpenAIGatewayService) newOpenAIHTTPStreamFlushController() *openAIStreamFlushController {
 	batchSize := s.openAIHTTPFlushBatchSize()
 	flushInterval := s.openAIHTTPFlushInterval()
@@ -3777,36 +4054,40 @@ func (c *openAIStreamFlushController) markFlushed() {
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
+	return s.handleStreamingResponseContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, originalModel, mappedModel)
+}
+
+func (s *OpenAIGatewayService) handleStreamingResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
+	if c == nil {
+		return nil, errors.New("gateway context is nil")
+	}
 	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	}
 
 	// Set SSE response headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache, no-transform")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Writer.Header().Del("Content-Encoding")
-	c.Writer.Header().Del("Content-Length")
-	c.Writer.Header().Del("Transfer-Encoding")
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  "text/event-stream",
+		CacheControl: "no-cache, no-transform",
+	})
 
 	// Pass through other headers
 	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
+		c.SetHeader("x-request-id", v)
 	}
 
-	w := c.Writer
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if err := c.Flush(); err != nil {
 		return nil, errors.New("streaming not supported")
 	}
-	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
+	bufferedWriter := bufio.NewWriterSize(gatewayContextWriter{ctx: c}, 4*1024)
 	flushController := s.newOpenAIHTTPStreamFlushController()
 	flushBuffered := func() error {
 		if err := bufferedWriter.Flush(); err != nil {
 			return err
 		}
-		flusher.Flush()
+		if err := c.Flush(); err != nil {
+			return err
+		}
 		flushController.markFlushed()
 		return nil
 	}
@@ -3979,14 +4260,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if firstTokenMs == nil && data != "" && data != "[DONE]" {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
-				if c != nil {
-					if raw, ok := c.Get(OpsUpstreamLatencyMsKey); ok {
-						switch typed := raw.(type) {
-						case int64:
-							s.openaiRelayMetrics.recordFirstTokenAfterHeader(int64(ms) - typed)
-						case int:
-							s.openaiRelayMetrics.recordFirstTokenAfterHeader(int64(ms - typed))
-						}
+				if raw, ok := c.Value(OpsUpstreamLatencyMsKey); ok {
+					switch typed := raw.(type) {
+					case int64:
+						s.openaiRelayMetrics.recordFirstTokenAfterHeader(int64(ms) - typed)
+					case int:
+						s.openaiRelayMetrics.recordFirstTokenAfterHeader(int64(ms - typed))
 					}
 				}
 			}
@@ -4113,6 +4392,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 }
 
+func (s *OpenAIGatewayService) handleStreamingResponseWithGin(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
+	return s.handleStreamingResponseContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, originalModel, mappedModel)
+}
+
 // extractOpenAISSEDataLine 低开销提取 SSE `data:` 行内容。
 // 兼容 `data: xxx` 与 `data:xxx` 两种格式。
 func extractOpenAISSEDataLine(line string) (string, bool) {
@@ -4214,12 +4497,16 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
+	return s.handleNonStreamingResponseContext(ctx, resp, gatewayctx.FromGin(c), account, originalModel, mappedModel)
+}
+
+func (s *OpenAIGatewayService) handleNonStreamingResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
 		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
-			setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
-			c.JSON(http.StatusBadGateway, gin.H{
+			setOpsUpstreamErrorContext(c, http.StatusBadGateway, "upstream response too large", "")
+			c.WriteJSON(http.StatusBadGateway, gin.H{
 				"error": gin.H{
 					"type":    "upstream_error",
 					"message": "Upstream response too large",
@@ -4232,7 +4519,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if account.Type == AccountTypeOAuth {
 		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
 		if isEventStreamResponse(resp.Header) || bodyLooksLikeSSE {
-			return s.handleOAuthSSEToJSON(resp, c, body, originalModel, mappedModel)
+			return s.handleOAuthSSEToJSONContext(resp, c, body, originalModel, mappedModel)
 		}
 	}
 
@@ -4247,7 +4534,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -4256,7 +4543,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	c.Data(resp.StatusCode, contentType, body)
+	c.SetHeader("Content-Type", contentType)
+	_, _ = c.WriteBytes(resp.StatusCode, body)
 
 	return usage, nil
 }
@@ -4267,6 +4555,10 @@ func isEventStreamResponse(header http.Header) bool {
 }
 
 func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.Context, body []byte, originalModel, mappedModel string) (*OpenAIUsage, error) {
+	return s.handleOAuthSSEToJSONContext(resp, gatewayctx.FromGin(c), body, originalModel, mappedModel)
+}
+
+func (s *OpenAIGatewayService) handleOAuthSSEToJSONContext(resp *http.Response, c gatewayctx.GatewayContext, body []byte, originalModel, mappedModel string) (*OpenAIUsage, error) {
 	bodyText := string(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
@@ -4288,7 +4580,7 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 			if msg == "" {
 				msg = "Upstream compact response failed"
 			}
-			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
+			return nil, s.writeOpenAINonStreamingProtocolErrorContext(resp, c, msg)
 		}
 		usage = s.parseSSEUsageFromBody(bodyText)
 		if originalModel != mappedModel {
@@ -4297,7 +4589,7 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 		body = []byte(bodyText)
 	}
 
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
 	if !ok {
@@ -4306,7 +4598,8 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 			contentType = "text/event-stream"
 		}
 	}
-	c.Data(resp.StatusCode, contentType, body)
+	c.SetHeader("Content-Type", contentType)
+	_, _ = c.WriteBytes(resp.StatusCode, body)
 
 	return usage, nil
 }
@@ -4340,14 +4633,18 @@ func extractOpenAISSEErrorMessage(payload []byte) string {
 }
 
 func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.Response, c *gin.Context, message string) error {
+	return s.writeOpenAINonStreamingProtocolErrorContext(resp, gatewayctx.FromGin(c), message)
+}
+
+func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolErrorContext(resp *http.Response, c gatewayctx.GatewayContext, message string) error {
 	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
 	if message == "" {
 		message = "Upstream returned an invalid non-streaming response"
 	}
-	setOpsUpstreamError(c, http.StatusBadGateway, message, "")
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusBadGateway, gin.H{
+	setOpsUpstreamErrorContext(c, http.StatusBadGateway, message, "")
+	responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
+	c.SetHeader("Content-Type", "application/json; charset=utf-8")
+	c.WriteJSON(http.StatusBadGateway, gin.H{
 		"error": gin.H{
 			"type":    "upstream_error",
 			"message": message,
@@ -4540,7 +4837,11 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 }
 
 func IsOpenAIResponsesCompactPathForTest(c *gin.Context) bool {
-	return isOpenAIResponsesCompactPath(c)
+	return isOpenAIResponsesCompactPathContext(gatewayctx.FromGin(c))
+}
+
+func IsOpenAIResponsesCompactPathForTestContext(c gatewayctx.GatewayContext) bool {
+	return isOpenAIResponsesCompactPathContext(c)
 }
 
 func OpenAICompactSessionSeedKeyForTest() string {
@@ -4552,7 +4853,11 @@ func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error)
 }
 
 func isOpenAIResponsesCompactPath(c *gin.Context) bool {
-	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c))
+	return isOpenAIResponsesCompactPathContext(gatewayctx.FromGin(c))
+}
+
+func isOpenAIResponsesCompactPathContext(c gatewayctx.GatewayContext) bool {
+	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffixContext(c))
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
 }
 
@@ -4581,14 +4886,22 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 }
 
 func resolveOpenAICompactSessionID(c *gin.Context) string {
+	return resolveOpenAICompactSessionIDContext(gatewayctx.FromGin(c))
+}
+
+func openAIResponsesRequestPathSuffix(c *gin.Context) string {
+	return openAIResponsesRequestPathSuffixContext(gatewayctx.FromGin(c))
+}
+
+func resolveOpenAICompactSessionIDContext(c gatewayctx.GatewayContext) string {
 	if c != nil {
-		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
+		if sessionID := strings.TrimSpace(c.HeaderValue("session_id")); sessionID != "" {
 			return sessionID
 		}
-		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
+		if conversationID := strings.TrimSpace(c.HeaderValue("conversation_id")); conversationID != "" {
 			return conversationID
 		}
-		if seed, ok := c.Get(openAICompactSessionSeedKey); ok {
+		if seed, ok := c.Value(openAICompactSessionSeedKey); ok {
 			if seedStr, ok := seed.(string); ok && strings.TrimSpace(seedStr) != "" {
 				return strings.TrimSpace(seedStr)
 			}
@@ -4597,11 +4910,11 @@ func resolveOpenAICompactSessionID(c *gin.Context) string {
 	return uuid.NewString()
 }
 
-func openAIResponsesRequestPathSuffix(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
+func openAIResponsesRequestPathSuffixContext(c gatewayctx.GatewayContext) string {
+	if c == nil || c.Request() == nil || c.Request().URL == nil {
 		return ""
 	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request().URL.Path), "/")
 	if normalizedPath == "" {
 		return ""
 	}
@@ -4629,10 +4942,14 @@ func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 }
 
 func shouldUseOpenAIStagedTransportBudget(c *gin.Context, reqStream bool) bool {
+	return shouldUseOpenAIStagedTransportBudgetContext(gatewayctx.FromGin(c), reqStream)
+}
+
+func shouldUseOpenAIStagedTransportBudgetContext(c gatewayctx.GatewayContext, reqStream bool) bool {
 	if reqStream {
 		return true
 	}
-	return isOpenAIResponsesCompactPath(c)
+	return isOpenAIResponsesCompactPathContext(c)
 }
 
 func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel, toModel string) []byte {
@@ -5260,8 +5577,12 @@ func downgradeOpenAIPassthroughPriorityBody(body []byte) ([]byte, bool, error) {
 }
 
 func getOpenAIRequestBodyMap(c *gin.Context, body []byte) (map[string]any, error) {
+	return getOpenAIRequestBodyMapContext(gatewayctx.FromGin(c), body)
+}
+
+func getOpenAIRequestBodyMapContext(c gatewayctx.GatewayContext, body []byte) (map[string]any, error) {
 	if c != nil {
-		if cached, ok := c.Get(OpenAIParsedRequestBodyKey); ok {
+		if cached, ok := c.Value(OpenAIParsedRequestBodyKey); ok {
 			if reqBody, ok := cached.(map[string]any); ok && reqBody != nil {
 				return reqBody, nil
 			}
@@ -5273,7 +5594,7 @@ func getOpenAIRequestBodyMap(c *gin.Context, body []byte) (map[string]any, error
 		return nil, fmt.Errorf("parse request: %w", err)
 	}
 	if c != nil {
-		c.Set(OpenAIParsedRequestBodyKey, reqBody)
+		c.SetValue(OpenAIParsedRequestBodyKey, reqBody)
 	}
 	return reqBody, nil
 }

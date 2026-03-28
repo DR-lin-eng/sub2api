@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -27,6 +28,17 @@ import (
 func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	ctx context.Context,
 	c *gin.Context,
+	account *Account,
+	body []byte,
+	promptCacheKey string,
+	defaultMappedModel string,
+) (*OpenAIForwardResult, error) {
+	return s.ForwardAsChatCompletionsContext(ctx, gatewayctx.FromGin(c), account, body, promptCacheKey, defaultMappedModel)
+}
+
+func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
+	ctx context.Context,
+	c gatewayctx.GatewayContext,
 	account *Account,
 	body []byte,
 	promptCacheKey string,
@@ -106,7 +118,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 6. Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
+	upstreamReq, err := s.buildUpstreamRequestContext(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
@@ -132,8 +144,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			cancelQuickFail()
 		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		setOpsUpstreamErrorContext(c, 0, safeErr, "")
+		appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
@@ -165,7 +177,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				}
 				upstreamDetail = truncateString(string(respBody), maxBytes)
 			}
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			appendOpsUpstreamErrorContext(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -181,16 +193,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			s.queueOpenAIRuntimeStateSync(account.ID)
 			return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 		}
-		return s.handleChatCompletionsErrorResponse(resp, c, account)
+		return s.handleChatCompletionsErrorResponseContext(resp, c, account)
 	}
 
 	// 9. Handle normal response
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, originalModel, mappedModel, includeUsage, startTime)
+		result, handleErr = s.handleChatStreamingResponseContext(resp, c, originalModel, mappedModel, includeUsage, startTime)
 	} else {
-		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleChatBufferedStreamingResponseContext(resp, c, originalModel, mappedModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -222,7 +234,15 @@ func (s *OpenAIGatewayService) handleChatCompletionsErrorResponse(
 	c *gin.Context,
 	account *Account,
 ) (*OpenAIForwardResult, error) {
-	return s.handleCompatErrorResponse(resp, c, account, writeChatCompletionsError)
+	return s.handleChatCompletionsErrorResponseContext(resp, gatewayctx.FromGin(c), account)
+}
+
+func (s *OpenAIGatewayService) handleChatCompletionsErrorResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+) (*OpenAIForwardResult, error) {
+	return s.handleCompatErrorResponseContext(resp, c, account, writeChatCompletionsErrorContext)
 }
 
 // handleChatBufferedStreamingResponse reads all Responses SSE events from the
@@ -231,6 +251,16 @@ func (s *OpenAIGatewayService) handleChatCompletionsErrorResponse(
 func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
+	originalModel string,
+	mappedModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	return s.handleChatBufferedStreamingResponseContext(resp, gatewayctx.FromGin(c), originalModel, mappedModel, startTime)
+}
+
+func (s *OpenAIGatewayService) handleChatBufferedStreamingResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
 	originalModel string,
 	mappedModel string,
 	startTime time.Time,
@@ -296,7 +326,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			)
 			finalResponse = partial.responseSnapshot()
 		} else {
-			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
+			writeChatCompletionsErrorContext(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
 			return nil, fmt.Errorf("upstream stream ended without terminal event")
 		}
 	}
@@ -304,9 +334,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, chatResp)
+	c.WriteJSON(http.StatusOK, chatResp)
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
@@ -329,16 +359,27 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	includeUsage bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	return s.handleChatStreamingResponseContext(resp, gatewayctx.FromGin(c), originalModel, mappedModel, includeUsage, startTime)
+}
+
+func (s *OpenAIGatewayService) handleChatStreamingResponseContext(
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	originalModel string,
+	mappedModel string,
+	includeUsage bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	c.SetStatus(http.StatusOK)
 
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = originalModel
@@ -348,12 +389,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var firstTokenMs *int
 	firstChunk := true
 	flushController := s.newOpenAIHTTPStreamFlushController()
-	flusher, _ := c.Writer.(http.Flusher)
 	flushClient := func() {
-		if flusher != nil {
-			flusher.Flush()
-			flushController.markFlushed()
-		}
+		_ = c.Flush()
+		flushController.markFlushed()
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -415,7 +453,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				)
 				continue
 			}
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+			if _, err := c.WriteBytes(0, []byte(sse)); err != nil {
 				logger.L().Info("openai chat_completions stream: client disconnected",
 					zap.String("request_id", requestID),
 				)
@@ -435,11 +473,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				if err != nil {
 					continue
 				}
-				fmt.Fprint(c.Writer, sse) //nolint:errcheck
+				_, _ = c.WriteBytes(0, []byte(sse))
 			}
 		}
 		// Send [DONE] sentinel
-		fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
+		_, _ = c.WriteBytes(0, []byte("data: [DONE]\n\n"))
 		flushClient()
 		return resultWithUsage(), nil
 	}
@@ -530,7 +568,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				continue
 			}
 			// Send SSE comment as keepalive
-			if _, err := fmt.Fprint(c.Writer, ":\n\n"); err != nil {
+			if _, err := c.WriteBytes(0, []byte(":\n\n")); err != nil {
 				logger.L().Info("openai chat_completions stream: client disconnected during keepalive",
 					zap.String("request_id", requestID),
 				)
@@ -543,7 +581,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 // writeChatCompletionsError writes an error response in OpenAI Chat Completions format.
 func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message string) {
-	c.JSON(statusCode, gin.H{
+	writeChatCompletionsErrorContext(gatewayctx.FromGin(c), statusCode, errType, message)
+}
+
+func writeChatCompletionsErrorContext(c gatewayctx.GatewayContext, statusCode int, errType, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": message,

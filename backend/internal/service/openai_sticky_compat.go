@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 )
@@ -72,6 +73,17 @@ func attachOpenAILegacySessionHashToGin(c *gin.Context, legacyHash string) {
 		return
 	}
 	c.Request = c.Request.WithContext(withOpenAILegacySessionHash(c.Request.Context(), legacyHash))
+}
+
+func attachOpenAILegacySessionHash(ctx gatewayctx.GatewayContext, legacyHash string) {
+	if ctx == nil {
+		return
+	}
+	req := ctx.Request()
+	if req == nil {
+		return
+	}
+	ctx.SetRequest(req.WithContext(withOpenAILegacySessionHash(req.Context(), legacyHash)))
 }
 
 func (s *OpenAIGatewayService) openAISessionHashReadOldFallbackEnabled() bool {

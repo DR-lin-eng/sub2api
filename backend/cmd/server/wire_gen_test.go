@@ -53,31 +53,33 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	cleanup := provideCleanup(
 		nil, // entClient
 		nil, // redis
-		&service.OpsMetricsCollector{},
-		&service.OpsAggregationService{},
-		&service.OpsAlertEvaluatorService{},
-		&service.OpsCleanupService{},
-		&service.OpsScheduledReportService{},
+		nil, // opsMetricsCollector
+		nil, // opsAggregation
+		nil, // opsAlertEvaluator
+		nil, // opsCleanup
+		nil, // opsScheduledReport
 		opsSystemLogSinkSvc,
-		&service.SoraMediaCleanupService{},
+		nil, // soraMediaCleanup
 		schedulerSnapshotSvc,
 		tokenRefreshSvc,
 		accountExpirySvc,
-		&service.AccountModelsRefreshService{},
+		nil, // accountModelsRefresh
 		subscriptionExpirySvc,
-		&service.UsageCleanupService{},
+		nil, // usageCleanup
 		idempotencyCleanupSvc,
 		pricingSvc,
 		emailQueueSvc,
 		billingCacheSvc,
-		&service.UsageRecordWorkerPool{},
-		&service.SubscriptionService{},
+		nil, // usageRecordWorkerPool
+		nil, // subscriptionService
 		oauthSvc,
 		openAIOAuthSvc,
 		geminiOAuthSvc,
 		antigravityOAuthSvc,
+		nil, // gateway
 		nil, // openAIGateway
 		nil, // scheduledTestRunner
+		nil, // proxyMaintenanceRunner
 		nil, // backupSvc
 	)
 

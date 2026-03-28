@@ -16,10 +16,13 @@ import (
 )
 
 const (
-	RunModeStandard         = "standard"
-	RunModeSimple           = "simple"
-	ProcessModeSingle       = "single"
-	ProcessModeMasterWorker = "master_worker"
+	RunModeStandard          = "standard"
+	RunModeSimple            = "simple"
+	ProcessModeSingle        = "single"
+	ProcessModeMasterWorker  = "master_worker"
+	ServerRuntimeModeNetHTTP = "nethttp"
+	ServerRuntimeModeHybrid  = "hybrid"
+	ServerRuntimeModeGnet    = "gnet"
 )
 
 // 使用量记录队列溢出策略
@@ -227,6 +230,7 @@ type ServerConfig struct {
 	Host               string    `mapstructure:"host"`
 	Port               int       `mapstructure:"port"`
 	Mode               string    `mapstructure:"mode"`                  // debug/release
+	RuntimeMode        string    `mapstructure:"runtime_mode"`          // nethttp/hybrid/gnet
 	FrontendURL        string    `mapstructure:"frontend_url"`          // 前端基础 URL，用于生成邮件中的外部链接
 	ReadHeaderTimeout  int       `mapstructure:"read_header_timeout"`   // 读取请求头超时（秒）
 	IdleTimeout        int       `mapstructure:"idle_timeout"`          // 空闲连接超时（秒）
@@ -796,6 +800,18 @@ func (s *ServerConfig) Address() string {
 	return fmt.Sprintf("%s:%d", s.Host, s.Port)
 }
 
+func NormalizeServerRuntimeMode(raw string) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case ServerRuntimeModeHybrid, ServerRuntimeModeGnet:
+		return mode
+	case "", ServerRuntimeModeNetHTTP:
+		return ServerRuntimeModeNetHTTP
+	default:
+		return mode
+	}
+}
+
 // DatabaseConfig 数据库连接配置
 // 性能优化：新增连接池参数，避免频繁创建/销毁连接
 type DatabaseConfig struct {
@@ -1098,6 +1114,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if cfg.Server.Mode == "" {
 		cfg.Server.Mode = "debug"
 	}
+	cfg.Server.RuntimeMode = NormalizeServerRuntimeMode(cfg.Server.RuntimeMode)
 	cfg.Server.FrontendURL = strings.TrimSpace(cfg.Server.FrontendURL)
 	cfg.JWT.Secret = strings.TrimSpace(cfg.JWT.Secret)
 	cfg.LinuxDo.ClientID = strings.TrimSpace(cfg.LinuxDo.ClientID)
@@ -1197,6 +1214,7 @@ func setDefaults() {
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", 8080)
 	viper.SetDefault("server.mode", "release")
+	viper.SetDefault("server.runtime_mode", ServerRuntimeModeNetHTTP)
 	viper.SetDefault("server.frontend_url", "")
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
@@ -1715,6 +1733,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("server.frontend_url invalid: must not include userinfo")
 		}
 		warnIfInsecureURL("server.frontend_url", c.Server.FrontendURL)
+	}
+	switch c.Server.RuntimeMode {
+	case ServerRuntimeModeNetHTTP, ServerRuntimeModeHybrid, ServerRuntimeModeGnet:
+	default:
+		return fmt.Errorf("server.runtime_mode must be one of: %s/%s/%s", ServerRuntimeModeNetHTTP, ServerRuntimeModeHybrid, ServerRuntimeModeGnet)
 	}
 	switch c.Process.Mode {
 	case ProcessModeSingle, ProcessModeMasterWorker:
