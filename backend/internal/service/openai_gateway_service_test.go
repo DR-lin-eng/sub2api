@@ -1031,6 +1031,42 @@ func TestOpenAIStreamingMissingTerminalEventAfterContentReturnsSuccess(t *testin
 	}
 }
 
+func TestOpenAIStreamingEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		time.Sleep(30 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
+	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
+}
+
 func TestOpenAIStreamingPassthroughMissingTerminalEventAfterContentReturnsSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1064,6 +1100,40 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventAfterContentReturnsSucces
 	if result == nil {
 		t.Fatalf("expected passthrough streaming result")
 	}
+}
+
+func TestOpenAIStreamingPassthroughEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		time.Sleep(30 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
+	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {

@@ -3000,6 +3000,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		flushController.markFlushed()
 		return nil
 	}
+	if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
+		return nil, err
+	}
+	if err := flushBuffered(); err != nil {
+		return nil, err
+	}
 
 	usage := &OpenAIUsage{}
 	var firstTokenMs *int
@@ -3323,8 +3329,26 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	account *Account,
 ) (*OpenAIUsage, error) {
 	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPath(c) {
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		c.Status(resp.StatusCode)
+		keepalive := startNonstreamKeepalive(c, defaultNonstreamKeepaliveInterval)
 		result, err := s.readOpenAICompactBufferedResponse(ctx, resp, c, account)
+		if keepalive != nil {
+			keepalive.stop()
+		}
 		if err != nil {
+			if keepalive != nil && keepalive.emittedAny() {
+				var protocolErr *openAICompactProtocolError
+				msg := "Upstream compact request failed"
+				if errors.As(err, &protocolErr) {
+					msg = protocolErr.Message()
+				} else if trimmed := strings.TrimSpace(err.Error()); trimmed != "" {
+					msg = sanitizeUpstreamErrorMessage(trimmed)
+				}
+				_, _ = c.Writer.Write([]byte(`{"error":{"type":"upstream_error","message":` + strconv.Quote(msg) + `}}`))
+				return nil, fmt.Errorf("compact passthrough failed after keepalive write: %w", err)
+			}
 			var protocolErr *openAICompactProtocolError
 			if errors.As(err, &protocolErr) {
 				return nil, s.writeOpenAINonStreamingProtocolError(resp, c, protocolErr.Message())
@@ -3335,9 +3359,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			return nil, fmt.Errorf("compact response is empty")
 		}
 
-		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-		writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
-		c.Data(resp.StatusCode, "application/json; charset=utf-8", result.body)
+		if keepalive == nil || !keepalive.emittedAny() {
+			writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
+			c.Data(resp.StatusCode, "application/json; charset=utf-8", result.body)
+		} else {
+			_, _ = c.Writer.Write(result.body)
+		}
 
 		usage := result.usage
 		return &usage, nil
@@ -3870,6 +3897,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		flushController.markFlushed()
 		return nil
 	}
+	if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
+		return nil, err
+	}
+	if err := flushBuffered(); err != nil {
+		return nil, err
+	}
 
 	usage := &OpenAIUsage{}
 	var firstTokenMs *int
@@ -4275,8 +4308,26 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
 	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPath(c) {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		c.Status(resp.StatusCode)
+		keepalive := startNonstreamKeepalive(c, defaultNonstreamKeepaliveInterval)
 		result, err := s.readOpenAICompactBufferedResponse(ctx, resp, c, account)
+		if keepalive != nil {
+			keepalive.stop()
+		}
 		if err != nil {
+			if keepalive != nil && keepalive.emittedAny() {
+				var protocolErr *openAICompactProtocolError
+				msg := "Upstream compact request failed"
+				if errors.As(err, &protocolErr) {
+					msg = protocolErr.Message()
+				} else if trimmed := strings.TrimSpace(err.Error()); trimmed != "" {
+					msg = sanitizeUpstreamErrorMessage(trimmed)
+				}
+				_, _ = c.Writer.Write([]byte(`{"error":{"type":"upstream_error","message":` + strconv.Quote(msg) + `}}`))
+				return nil, fmt.Errorf("compact failed after keepalive write: %w", err)
+			}
 			var protocolErr *openAICompactProtocolError
 			if errors.As(err, &protocolErr) {
 				return nil, s.writeOpenAINonStreamingProtocolError(resp, c, protocolErr.Message())
@@ -4293,9 +4344,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 		body = s.correctToolCallsInResponseBody(body)
 
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-		writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
-		c.Data(resp.StatusCode, "application/json; charset=utf-8", body)
+		if keepalive == nil || !keepalive.emittedAny() {
+			writeOpenAICompactProgressHeaders(c.Writer.Header(), result.meta)
+			c.Data(resp.StatusCode, "application/json; charset=utf-8", body)
+		} else {
+			_, _ = c.Writer.Write(body)
+		}
 
 		usage := result.usage
 		return &usage, nil
