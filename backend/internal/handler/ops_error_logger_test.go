@@ -1,67 +1,16 @@
 package handler
 
 import (
-	"bufio"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
-
-type informationalRecorder struct {
-	header      http.Header
-	infoCodes   []int
-	finalStatus int
-	body        []byte
-}
-
-func newInformationalRecorder() *informationalRecorder {
-	return &informationalRecorder{header: make(http.Header)}
-}
-
-func (w *informationalRecorder) Header() http.Header {
-	return w.header
-}
-
-func (w *informationalRecorder) WriteHeader(code int) {
-	if code >= 100 && code < 200 {
-		w.infoCodes = append(w.infoCodes, code)
-		return
-	}
-	if w.finalStatus == 0 {
-		w.finalStatus = code
-	}
-}
-
-func (w *informationalRecorder) Write(data []byte) (int, error) {
-	if w.finalStatus == 0 {
-		w.finalStatus = http.StatusOK
-	}
-	w.body = append(w.body, data...)
-	return len(data), nil
-}
-
-func (w *informationalRecorder) Flush() {}
-
-func (w *informationalRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return nil, nil, http.ErrNotSupported
-}
-
-func (w *informationalRecorder) CloseNotify() <-chan bool {
-	ch := make(chan bool)
-	return ch
-}
-
-func (w *informationalRecorder) Push(string, *http.PushOptions) error {
-	return http.ErrNotSupported
-}
 
 func resetOpsErrorLoggerStateForTest(t *testing.T) {
 	t.Helper()
@@ -259,26 +208,6 @@ func TestOpsCaptureWriter_UnwrapReturnsUnderlyingWriter(t *testing.T) {
 	unwrapped := writer.Unwrap()
 	require.NotNil(t, unwrapped)
 	require.NotSame(t, writer, unwrapped)
-}
-
-func TestOpsErrorLoggerMiddleware_AllowsInformationalKeepalive(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	r := gin.New()
-	r.Use(middleware2.NonstreamProcessingKeepaliveForTest(20 * time.Millisecond))
-	r.Use(OpsErrorLoggerMiddleware(nil))
-	r.GET("/slow", func(c *gin.Context) {
-		time.Sleep(35 * time.Millisecond)
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	rec := newInformationalRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/slow", nil)
-	r.ServeHTTP(rec, req)
-
-	require.Contains(t, rec.infoCodes, http.StatusProcessing)
-	require.Equal(t, http.StatusOK, rec.finalStatus)
-	require.Contains(t, string(rec.body), `"ok":true`)
 }
 
 func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {

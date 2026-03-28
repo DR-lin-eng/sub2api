@@ -170,3 +170,41 @@ func TestHandleNonStreamingResponse_CompactKeepaliveWritesBlankLineBeforeFinalJS
 	require.Contains(t, rec.Body.String(), `"id":"resp_keepalive"`)
 	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"), "expected blank-line keepalive before final json")
 }
+
+func TestHandleNonStreamingResponsePassthrough_CompactKeepaliveWritesBlankLineBeforeFinalJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	previousInterval := defaultNonstreamKeepaliveInterval
+	defaultNonstreamKeepaliveInterval = 15 * time.Millisecond
+	defer func() { defaultNonstreamKeepaliveInterval = previousInterval }()
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"X-Request-Id": []string{"rid-compact-pass-keepalive"},
+		},
+		Body: pr,
+	}
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = pw.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_keepalive_passthrough","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}`,
+			`data: [DONE]`,
+		}, "\n")))
+		_ = pw.Close()
+	}()
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	usage, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, &Account{Type: AccountTypeOAuth})
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 1, usage.InputTokens)
+	require.Contains(t, rec.Body.String(), `"id":"resp_keepalive_passthrough"`)
+	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"), "expected blank-line keepalive before final json")
+}
