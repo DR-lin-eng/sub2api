@@ -167,6 +167,8 @@ func TestHandleNonStreamingResponse_CompactKeepaliveWritesBlankLineBeforeFinalJS
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 1, usage.InputTokens)
+	require.Equal(t, "no-cache, no-transform", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
 	require.Contains(t, rec.Body.String(), `"id":"resp_keepalive"`)
 	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"), "expected blank-line keepalive before final json")
 }
@@ -205,6 +207,8 @@ func TestHandleNonStreamingResponsePassthrough_CompactKeepaliveWritesBlankLineBe
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 1, usage.InputTokens)
+	require.Equal(t, "no-cache, no-transform", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no", rec.Header().Get("X-Accel-Buffering"))
 	require.Contains(t, rec.Body.String(), `"id":"resp_keepalive_passthrough"`)
 	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"), "expected blank-line keepalive before final json")
 }

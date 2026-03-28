@@ -1841,6 +1841,10 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		return
 	}
 
+	if service.WriteOpenAICompactErrorAfterResponseStarted(c, errType, message) {
+		return
+	}
+
 	// Normal case: return JSON response with proper status code
 	h.errorResponse(c, status, errType, message)
 }

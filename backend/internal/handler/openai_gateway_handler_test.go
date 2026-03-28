@@ -269,6 +269,26 @@ func TestHandleRemoteCompactFailure_PreservesUpstreamStatusAndMessage(t *testing
 	require.Equal(t, "remote compact failed for large context", errorObj["message"])
 }
 
+func TestHandleRemoteCompactFailure_WritesErrorBodyWhenCompactResponseAlreadyStarted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	c.Status(http.StatusOK)
+	_, err := c.Writer.Write([]byte("\n"))
+	require.NoError(t, err)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleRemoteCompactFailure(c, &service.UpstreamFailoverError{
+		StatusCode:   http.StatusGatewayTimeout,
+		ResponseBody: []byte(`{"error":{"message":"upstream timed out"}}`),
+	}, false)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, strings.HasPrefix(w.Body.String(), "\n"))
+	require.Contains(t, w.Body.String(), `"message":"upstream timed out"`)
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 )
 
 var defaultNonstreamKeepaliveInterval = 10 * time.Second
+
+const openAICompactKeepaliveContextKey = "openai_compact_nonstream_keepalive"
 
 type nonstreamKeepaliveController struct {
 	writer  gin.ResponseWriter
@@ -46,9 +49,6 @@ func startNonstreamKeepalive(c *gin.Context, interval time.Duration) *nonstreamK
 			case <-req.Context().Done():
 				return
 			case <-ticker.C:
-				if ctrl.writer.Written() {
-					return
-				}
 				_, err := ctrl.writer.WriteString("\n")
 				if err != nil {
 					return
@@ -76,4 +76,62 @@ func (c *nonstreamKeepaliveController) stop() {
 
 func (c *nonstreamKeepaliveController) emittedAny() bool {
 	return c != nil && c.emitted.Load()
+}
+
+func getOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	if c == nil {
+		return nil
+	}
+	raw, ok := c.Get(openAICompactKeepaliveContextKey)
+	if !ok {
+		return nil
+	}
+	ctrl, _ := raw.(*nonstreamKeepaliveController)
+	return ctrl
+}
+
+func startOpenAICompactKeepalive(c *gin.Context, account *Account, reqStream bool) *nonstreamKeepaliveController {
+	if c == nil || c.Writer == nil || reqStream || account == nil || account.Type != AccountTypeOAuth || !isOpenAIResponsesCompactPath(c) {
+		return nil
+	}
+	if existing := getOpenAICompactKeepalive(c); existing != nil {
+		return existing
+	}
+
+	c.Writer.Header().Set("Cache-Control", "no-cache, no-transform")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+
+	ctrl := startNonstreamKeepalive(c, defaultNonstreamKeepaliveInterval)
+	if ctrl != nil {
+		c.Set(openAICompactKeepaliveContextKey, ctrl)
+	}
+	return ctrl
+}
+
+func stopOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	ctrl := getOpenAICompactKeepalive(c)
+	if ctrl != nil {
+		ctrl.stop()
+	}
+	return ctrl
+}
+
+func WriteOpenAICompactErrorAfterResponseStarted(c *gin.Context, errType, message string) bool {
+	if c == nil || c.Writer == nil || !c.Writer.Written() || !isOpenAIResponsesCompactPath(c) {
+		return false
+	}
+	ctrl := stopOpenAICompactKeepalive(c)
+	if ctrl != nil && !ctrl.emittedAny() {
+		return false
+	}
+	if errType == "" {
+		errType = "upstream_error"
+	}
+	if message == "" {
+		message = "Upstream request failed"
+	}
+	_, err := c.Writer.Write([]byte(`{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}`))
+	return err == nil
 }

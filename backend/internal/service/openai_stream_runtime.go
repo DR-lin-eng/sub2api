@@ -414,12 +414,19 @@ func extendOpenAIIdleTimeoutForReasoning(base time.Duration, reasoningEffort str
 }
 
 func (s *OpenAIGatewayService) openAIStreamIdleTimeout(ctx context.Context) time.Duration {
-	budget := s.openAIStreamingPhaseBudget()
 	base := time.Duration(0)
-	if budget.StreamIdleBudget > 0 {
-		base = budget.StreamIdleBudget
-	} else if s != nil && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
-		base = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	if s != nil && s.cfg != nil {
+		if s.cfg.Gateway.OpenAI.Streaming.StreamIdleTimeoutMS > 0 {
+			base = time.Duration(s.cfg.Gateway.OpenAI.Streaming.StreamIdleTimeoutMS) * time.Millisecond
+		} else if s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+			base = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+		}
+	}
+	if base <= 0 {
+		budget := s.openAIStreamingPhaseBudget()
+		if budget.StreamIdleBudget > 0 {
+			base = budget.StreamIdleBudget
+		}
 	}
 	if base <= 0 {
 		return 0

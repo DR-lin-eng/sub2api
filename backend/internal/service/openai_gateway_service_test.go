@@ -886,9 +886,13 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
-			StreamDataIntervalTimeout: 1,
-			StreamKeepaliveInterval:   0,
-			MaxLineSize:               defaultMaxLineSize,
+			StreamKeepaliveInterval: 0,
+			MaxLineSize:             defaultMaxLineSize,
+			OpenAI: config.GatewayOpenAIConfig{
+				Streaming: config.GatewayOpenAIStreamingConfig{
+					StreamIdleTimeoutMS: 1000,
+				},
+			},
 		},
 	}
 	svc := &OpenAIGatewayService{cfg: cfg}
@@ -912,8 +916,8 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
 		t.Fatalf("expected stream timeout error, got %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
-		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no downstream bytes before bootstrap timeout, got %q", rec.Body.String())
 	}
 }
 
@@ -1031,12 +1035,12 @@ func TestOpenAIStreamingMissingTerminalEventAfterContentReturnsSuccess(t *testin
 	}
 }
 
-func TestOpenAIStreamingEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
+func TestOpenAIStreamingSendsKeepaliveBeforeFirstEventWhenIntervalEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
-			StreamKeepaliveInterval:   0,
+			StreamKeepaliveInterval:   1,
 			MaxLineSize:               defaultMaxLineSize,
 		},
 	}
@@ -1055,7 +1059,7 @@ func TestOpenAIStreamingEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
 
 	go func() {
 		defer func() { _ = pw.Close() }()
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(1200 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n"))
 	}()
 
@@ -1065,6 +1069,43 @@ func TestOpenAIStreamingEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
 	require.NotNil(t, result)
 	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
 	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
+}
+
+func TestOpenAIStreamingMissingTerminalAfterKeepaliveAppendsFailureAndDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   1,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-keepalive-close"}},
+	}
+
+	go func() {
+		time.Sleep(1200 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
+	require.Contains(t, rec.Body.String(), `"type":"response.failed"`)
+	require.Contains(t, rec.Body.String(), `"code":"stream_disconnected"`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventAfterContentReturnsSuccess(t *testing.T) {
@@ -1102,11 +1143,12 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventAfterContentReturnsSucces
 	}
 }
 
-func TestOpenAIStreamingPassthroughEmitsInitialKeepaliveBeforeFirstEvent(t *testing.T) {
+func TestOpenAIStreamingPassthroughSendsKeepaliveBeforeFirstEventWhenIntervalEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
-			MaxLineSize: defaultMaxLineSize,
+			MaxLineSize:             defaultMaxLineSize,
+			StreamKeepaliveInterval: 1,
 		},
 	}
 	svc := &OpenAIGatewayService{cfg: cfg}
@@ -1124,7 +1166,7 @@ func TestOpenAIStreamingPassthroughEmitsInitialKeepaliveBeforeFirstEvent(t *test
 
 	go func() {
 		defer func() { _ = pw.Close() }()
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(1200 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n"))
 	}()
 
@@ -1281,8 +1323,8 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 	if !errors.Is(err, bufio.ErrTooLong) {
 		t.Fatalf("expected ErrTooLong, got %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "response_too_large") {
-		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
+	if rec.Body.Len() != 0 {
+		t.Fatalf("expected no downstream bytes before oversized first line failure, got %q", rec.Body.String())
 	}
 }
 
