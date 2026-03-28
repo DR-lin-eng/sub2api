@@ -381,8 +381,8 @@ gateway:
     lb_top_k: 5
     # 通用 Gateway 运行时指标的 EWMA 平滑系数（0-1]
     runtime_stats_alpha: 0.2
-    # 是否启用 ticket 化公平等待队列（默认关闭，按需灰度）
-    fair_wait_queue_enabled: false
+    # 是否启用 ticket 化公平等待队列（默认开启，降低 Redis 轮询风暴）
+    fair_wait_queue_enabled: true
     scheduler_score_weights:
       priority: 1.0
       load: 1.0

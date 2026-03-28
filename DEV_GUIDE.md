@@ -62,8 +62,17 @@ npm install -g pnpm
 # 后端单元测试
 cd backend && go test -tags=unit ./...
 
+# 后端单元测试（Docker + Go module/build cache）
+cd backend && ../tools/docker/test-backend.sh --unit
+
+# 后端定向单元测试（Docker + cache）
+cd backend && ../tools/docker/test-backend.sh --unit ./internal/service --run TestGetAccountsLoadBatch
+
 # 后端集成测试
 cd backend && go test -tags=integration ./...
+
+# 后端集成测试（Docker + cache）
+cd backend && ../tools/docker/test-backend.sh --integration
 
 # 代码质量检查
 cd backend && golangci-lint run ./...
@@ -193,6 +202,32 @@ go test -tags=unit ./...
 # 代替 make test-integration
 go test -tags=integration ./...
 ```
+
+---
+
+### 坑 8.1：宿主机没装 Go / Node，也要跑完整回归
+
+**问题**：本地没有 Go、Node，或者想直接复用一套接近 CI 的验证流程。
+
+**解决**：直接用仓库内置的 Docker 测试入口：
+```bash
+# 后端 unit
+make docker-test-backend-unit
+
+# 后端 integration（需要 Docker socket 可用）
+make docker-test-backend-integration
+
+# 前端 lint + typecheck
+make docker-test-frontend
+
+# compose smoke
+make docker-smoke
+
+# 全量顺序执行
+make docker-test
+```
+
+`docker-smoke` 会为 `deploy/docker-compose.dev.yml` 注入独立的容器名和临时数据目录，避免污染默认的 `deploy/data`、`deploy/postgres_data`、`deploy/redis_data`。
 
 ---
 

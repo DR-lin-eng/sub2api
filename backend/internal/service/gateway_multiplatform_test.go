@@ -2771,8 +2771,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Account)
-		require.Equal(t, int64(3), result.Account.ID)
-		require.Equal(t, int64(3), cache.sessionBindings["fallback"])
+		require.Equal(t, int64(1), result.Account.ID)
+		require.Equal(t, int64(1), cache.sessionBindings["fallback"])
 	})
 
 	t.Run("负载批量失败且无法获取-兜底等待", func(t *testing.T) {

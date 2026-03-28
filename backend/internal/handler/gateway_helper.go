@@ -211,6 +211,19 @@ func wrapReleaseOnDone(ctx context.Context, releaseFunc func()) func() {
 	return release
 }
 
+func resetHelperTimer(timer *time.Timer, d time.Duration) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(d)
+}
+
 // IncrementWaitCount increments the wait count for a user
 func (h *ConcurrencyHelper) IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error) {
 	return h.concurrencyService.IncrementWaitCount(ctx, userID, maxWait)
@@ -327,6 +340,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 
 	fairWaitEnabled := h.concurrencyService != nil && h.concurrencyService.FairWaitQueueEnabled()
 	ticketID := ""
+	localTurnCh := (<-chan struct{})(nil)
+	releaseLocalTurn := func() {}
+	localTurnActive := true
 	if fairWaitEnabled {
 		ticketID = service.NewConcurrencyTicketID()
 		var ticketErr error
@@ -339,6 +355,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 		if ticketErr != nil {
 			ticketID = ""
 		} else {
+			localTurnCh, releaseLocalTurn = h.concurrencyService.RegisterLocalWaitTurn(slotType, id)
+			localTurnActive = false
+			defer releaseLocalTurn()
 			defer func() {
 				switch slotType {
 				case "user":
@@ -399,7 +418,15 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			}
 			flusher.Flush()
 
+		case <-localTurnCh:
+			localTurnActive = true
+			resetHelperTimer(timer, 0)
+
 		case <-timer.C:
+			if ticketID != "" && !localTurnActive {
+				resetHelperTimer(timer, backoff)
+				continue
+			}
 			if ticketID != "" {
 				var (
 					isTurn bool
@@ -418,7 +445,7 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 					if backoff < fairWaitQueuePollBackoff {
 						backoff = fairWaitQueuePollBackoff
 					}
-					timer.Reset(backoff)
+					resetHelperTimer(timer, backoff)
 					continue
 				}
 			}
@@ -445,7 +472,7 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			if ticketID != "" && backoff < fairWaitQueuePollBackoff {
 				backoff = fairWaitQueuePollBackoff
 			}
-			timer.Reset(backoff)
+			resetHelperTimer(timer, backoff)
 		}
 	}
 }

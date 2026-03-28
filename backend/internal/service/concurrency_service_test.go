@@ -7,13 +7,16 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 // stubConcurrencyCacheForTest 用于并发服务单元测试的缓存桩
 type stubConcurrencyCacheForTest struct {
+	mu             sync.Mutex
 	acquireResult  bool
 	acquireErr     error
 	releaseErr     error
@@ -23,10 +26,15 @@ type stubConcurrencyCacheForTest struct {
 	waitErr        error
 	waitCount      int
 	waitCountErr   error
+	waitCountCalls int
+	loadBatchWait  <-chan struct{}
 	loadBatch      map[int64]*AccountLoadInfo
 	loadBatchErr   error
+	loadBatchCalls int
+	usersLoadWait  <-chan struct{}
 	usersLoadBatch map[int64]*UserLoadInfo
 	usersLoadErr   error
+	usersLoadCalls int
 	cleanupErr     error
 
 	// 记录调用
@@ -64,6 +72,9 @@ func (c *stubConcurrencyCacheForTest) DecrementAccountWaitCount(_ context.Contex
 	return nil
 }
 func (c *stubConcurrencyCacheForTest) GetAccountWaitingCount(_ context.Context, _ int64) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waitCountCalls++
 	return c.waitCount, c.waitCountErr
 }
 func (c *stubConcurrencyCacheForTest) AcquireUserSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
@@ -82,9 +93,21 @@ func (c *stubConcurrencyCacheForTest) DecrementWaitCount(_ context.Context, _ in
 	return nil
 }
 func (c *stubConcurrencyCacheForTest) GetAccountsLoadBatch(_ context.Context, _ []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	if c.loadBatchWait != nil {
+		<-c.loadBatchWait
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.loadBatchCalls++
 	return c.loadBatch, c.loadBatchErr
 }
 func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	if c.usersLoadWait != nil {
+		<-c.usersLoadWait
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.usersLoadCalls++
 	return c.usersLoadBatch, c.usersLoadErr
 }
 func (c *stubConcurrencyCacheForTest) CleanupExpiredAccountSlots(_ context.Context, _ int64) error {
@@ -215,7 +238,7 @@ func TestGenerateRequestID_UsesStablePrefixAndMonotonicCounter(t *testing.T) {
 func TestGetAccountsLoadBatch_ReturnsCorrectData(t *testing.T) {
 	expected := map[int64]*AccountLoadInfo{
 		1: {AccountID: 1, CurrentConcurrency: 3, WaitingCount: 0, LoadRate: 60},
-		2: {AccountID: 2, CurrentConcurrency: 5, WaitingCount: 2, LoadRate: 100},
+		2: {AccountID: 2, CurrentConcurrency: 5, WaitingCount: 2, LoadRate: 140},
 	}
 	cache := &stubConcurrencyCacheForTest{loadBatch: expected}
 	svc := NewConcurrencyService(cache)
@@ -235,6 +258,148 @@ func TestGetAccountsLoadBatch_NilCache(t *testing.T) {
 	result, err := svc.GetAccountsLoadBatch(context.Background(), nil)
 	require.NoError(t, err)
 	require.Empty(t, result)
+}
+
+func TestGetAccountsLoadBatch_UsesRAMCacheWithinTTL(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+	accounts := []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}}
+
+	first, err := svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+	second, err := svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, cache.loadBatchCalls, "second read should hit RAM cache")
+	require.Equal(t, 60, first[1].LoadRate)
+	require.Equal(t, 60, second[1].LoadRate)
+}
+
+func TestGetAccountsLoadBatch_CacheExpiresAndRefreshes(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = 10 * time.Millisecond
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 1, WaitingCount: 0},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+	accounts := []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}}
+
+	_, err := svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+	require.Equal(t, 2, cache.loadBatchCalls, "expired RAM cache should refresh from backing cache")
+}
+
+func TestGetAccountsLoadBatch_RecomputesLoadRateForRequestedCapacity(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	first, err := svc.GetAccountsLoadBatch(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 6}})
+	require.NoError(t, err)
+	second, err := svc.GetAccountsLoadBatch(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 3}})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, cache.loadBatchCalls, "second read should reuse cached raw counters")
+	require.Equal(t, 50, first[1].LoadRate)
+	require.Equal(t, 100, second[1].LoadRate)
+}
+
+func TestGetAccountsLoadBatch_PrimesAccountWaitCountHint(t *testing.T) {
+	oldLoadTTL := accountLoadCacheTTL
+	oldWaitTTL := accountWaitCountCacheTTL
+	accountLoadCacheTTL = time.Second
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldLoadTTL
+		accountWaitCountCacheTTL = oldWaitTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 2, WaitingCount: 3},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	_, err := svc.GetAccountsLoadBatch(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+	require.NoError(t, err)
+
+	count, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+	require.Equal(t, 0, cache.waitCountCalls, "batch load should prime local wait-count hint")
+}
+
+func TestGetAccountsLoadBatch_SingleflightOnConcurrentMiss(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	unblock := make(chan struct{})
+	cache := &stubConcurrencyCacheForTest{
+		loadBatchWait: unblock,
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]map[int64]*AccountLoadInfo, 2)
+	errs := make([]error, 2)
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			results[idx], errs[idx] = svc.GetAccountsLoadBatch(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+		}(i)
+	}
+
+	close(start)
+	time.Sleep(20 * time.Millisecond)
+	close(unblock)
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, 1, cache.loadBatchCalls)
+	require.Equal(t, 60, results[0][1].LoadRate)
+	require.Equal(t, 60, results[1][1].LoadRate)
 }
 
 func TestIncrementWaitCount_Success(t *testing.T) {
@@ -273,6 +438,25 @@ func TestIncrementWaitCount_NilCache(t *testing.T) {
 	require.True(t, allowed, "nil cache 应 fail-open")
 }
 
+func TestIncrementWaitCount_UpdatesLocalHint(t *testing.T) {
+	oldWaitTTL := accountWaitCountCacheTTL
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountWaitCountCacheTTL = oldWaitTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+
+	allowed, err := svc.IncrementWaitCount(context.Background(), 1, 25)
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	count, ok := svc.getCachedUserWaitCount(1, time.Now())
+	require.True(t, ok)
+	require.Equal(t, 1, count)
+}
+
 func TestCalculateMaxWait(t *testing.T) {
 	tests := []struct {
 		concurrency int
@@ -299,12 +483,185 @@ func TestGetAccountWaitingCount(t *testing.T) {
 	require.Equal(t, 5, count)
 }
 
+func TestGetAccountWaitingCount_UsesLocalCacheWithinTTL(t *testing.T) {
+	oldTTL := accountWaitCountCacheTTL
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountWaitCountCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{waitCount: 6}
+	svc := NewConcurrencyService(cache)
+
+	first, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+	second, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+
+	require.Equal(t, 6, first)
+	require.Equal(t, 6, second)
+	require.Equal(t, 1, cache.waitCountCalls)
+}
+
+func TestGetAccountWaitingCount_CacheExpiresAndRefreshes(t *testing.T) {
+	oldTTL := accountWaitCountCacheTTL
+	accountWaitCountCacheTTL = 10 * time.Millisecond
+	defer func() {
+		accountWaitCountCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{waitCount: 4}
+	svc := NewConcurrencyService(cache)
+
+	_, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 2, cache.waitCountCalls)
+}
+
+func TestIncrementAccountWaitCount_UpdatesLocalHint(t *testing.T) {
+	oldTTL := accountWaitCountCacheTTL
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountWaitCountCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+
+	allowed, err := svc.IncrementAccountWaitCount(context.Background(), 1, 10)
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	count, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, 0, cache.waitCountCalls, "local hint should avoid Redis read")
+}
+
+func TestDecrementAccountWaitCount_UpdatesLocalHint(t *testing.T) {
+	oldTTL := accountWaitCountCacheTTL
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountWaitCountCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{waitAllowed: true}
+	svc := NewConcurrencyService(cache)
+
+	allowed, err := svc.IncrementAccountWaitCount(context.Background(), 1, 10)
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	svc.DecrementAccountWaitCount(context.Background(), 1)
+
+	count, err := svc.GetAccountWaitingCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+	require.Equal(t, 0, cache.waitCountCalls, "local hint should reflect decrement without Redis read")
+}
+
 func TestGetAccountWaitingCount_NilCache(t *testing.T) {
 	svc := &ConcurrencyService{cache: nil}
 
 	count, err := svc.GetAccountWaitingCount(context.Background(), 1)
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
+}
+
+func TestGetUsersLoadBatch_UsesRAMCacheWithinTTL(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		usersLoadBatch: map[int64]*UserLoadInfo{
+			1: {UserID: 1, CurrentConcurrency: 1, WaitingCount: 2},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	first, err := svc.GetUsersLoadBatch(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 4}})
+	require.NoError(t, err)
+	second, err := svc.GetUsersLoadBatch(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 4}})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, cache.usersLoadCalls)
+	require.Equal(t, 75, first[1].LoadRate)
+	require.Equal(t, 75, second[1].LoadRate)
+}
+
+func TestGetUsersLoadBatch_PrimesLocalWaitHint(t *testing.T) {
+	oldLoadTTL := accountLoadCacheTTL
+	oldWaitTTL := accountWaitCountCacheTTL
+	accountLoadCacheTTL = time.Second
+	accountWaitCountCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldLoadTTL
+		accountWaitCountCacheTTL = oldWaitTTL
+	}()
+
+	cache := &stubConcurrencyCacheForTest{
+		usersLoadBatch: map[int64]*UserLoadInfo{
+			1: {UserID: 1, CurrentConcurrency: 1, WaitingCount: 3},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	_, err := svc.GetUsersLoadBatch(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 4}})
+	require.NoError(t, err)
+
+	count, ok := svc.getCachedUserWaitCount(1, time.Now())
+	require.True(t, ok)
+	require.Equal(t, 3, count)
+}
+
+func TestGetUsersLoadBatch_SingleflightOnConcurrentMiss(t *testing.T) {
+	oldTTL := accountLoadCacheTTL
+	accountLoadCacheTTL = time.Second
+	defer func() {
+		accountLoadCacheTTL = oldTTL
+	}()
+
+	unblock := make(chan struct{})
+	cache := &stubConcurrencyCacheForTest{
+		usersLoadWait: unblock,
+		usersLoadBatch: map[int64]*UserLoadInfo{
+			1: {UserID: 1, CurrentConcurrency: 1, WaitingCount: 2},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]map[int64]*UserLoadInfo, 2)
+	errs := make([]error, 2)
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			results[idx], errs[idx] = svc.GetUsersLoadBatch(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 4}})
+		}(i)
+	}
+
+	close(start)
+	time.Sleep(20 * time.Millisecond)
+	close(unblock)
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, 1, cache.usersLoadCalls)
+	require.Equal(t, 75, results[0][1].LoadRate)
+	require.Equal(t, 75, results[1][1].LoadRate)
 }
 
 func TestGetAccountConcurrencyBatch(t *testing.T) {

@@ -2159,6 +2159,7 @@ func (s *GatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 		StickySessionWaitTimeout: 45 * time.Second,
 		FallbackWaitTimeout:      30 * time.Second,
 		FallbackMaxWaiting:       100,
+		FairWaitQueueEnabled:     true,
 		LBTopK:                   5,
 		RuntimeStatsAlpha:        0.2,
 		SchedulerScoreWeights: config.GatewaySchedulerScoreWeights{

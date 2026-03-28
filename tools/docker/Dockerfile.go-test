@@ -1,0 +1,10 @@
+ARG GO_IMAGE=golang:1.26.1
+FROM ${GO_IMAGE}
+
+ENV PATH=/usr/local/go/bin:${PATH}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    git \
+    make \
+    && rm -rf /var/lib/apt/lists/*

@@ -126,8 +126,8 @@ func TestAttachOpsRequestBodyToEntry_EarlyReturnBranches(t *testing.T) {
 	require.Nil(t, entry.RequestBodyBytes)
 	require.False(t, entry.RequestBodyTruncated)
 
-	// 错误类型
-	c.Set(opsRequestBodyKey, "not-bytes")
+	// 不支持的类型
+	c.Set(opsRequestBodyKey, 123)
 	attachOpsRequestBodyToEntry(c, entry)
 	require.Nil(t, entry.RequestBodyJSON)
 	require.Nil(t, entry.RequestBodyBytes)

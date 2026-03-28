@@ -452,17 +452,18 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.2
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.1
 
-	concurrencyCache := stubConcurrencyCache{
-		loadMap: map[int64]*AccountLoadInfo{
-			3001: {AccountID: 3001, LoadRate: 95, WaitingCount: 8},
-			3002: {AccountID: 3002, LoadRate: 20, WaitingCount: 1},
-			3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
-		},
-		acquireResults: map[int64]bool{
-			3003: false, // top1 失败，必须回退到 top-K 的下一候选
-			3002: true,
-		},
-	}
+		concurrencyCache := stubConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{
+				3001: {AccountID: 3001, LoadRate: 95, WaitingCount: 8},
+				3002: {AccountID: 3002, LoadRate: 20, WaitingCount: 1},
+				3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
+			},
+			acquireResults: map[int64]bool{
+				3001: false,
+				3003: false, // top1 失败，必须回退到 top-K 的下一候选
+				3002: true,
+			},
+		}
 
 	svc := &OpenAIGatewayService{
 		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
@@ -475,7 +476,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 		ctx,
 		&groupID,
 		"",
-		"",
+		"session_hash_topk_fallback",
 		"gpt-5.1",
 		nil,
 		OpenAIUpstreamTransportAny,
@@ -488,6 +489,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	require.Equal(t, 3, decision.CandidateCount)
 	require.Equal(t, 2, decision.TopK)
 	require.Greater(t, decision.LoadSkew, 0.0)
+	boundID, stickyErr := svc.getStickySessionAccountID(ctx, &groupID, "session_hash_topk_fallback")
+	require.NoError(t, stickyErr)
+	require.Equal(t, selection.Account.ID, boundID)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

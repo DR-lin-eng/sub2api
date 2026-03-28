@@ -54,6 +54,7 @@ func TestAPIContracts(t *testing.T) {
 					"role": "user",
 					"balance": 12.5,
 					"concurrency": 5,
+					"unlimited_concurrency": false,
 					"status": "active",
 					"allowed_groups": null,
 					"created_at": "2025-01-02T03:04:05Z",
@@ -539,6 +540,9 @@ func TestAPIContracts(t *testing.T) {
 					"min_claude_code_version": "",
 					"max_claude_code_version": "",
 					"allow_ungrouped_key_scheduling": false,
+					"auto_delete_401_accounts": false,
+					"auto_delete_429_accounts": false,
+					"auto_delete_useless_proxies": false,
 					"backend_mode_enabled": false,
 					"custom_menu_items": []
 				}
@@ -568,7 +572,7 @@ func TestAPIContracts(t *testing.T) {
 							"enable_grease": false,
 							"cipher_suites": [4866, 4867],
 							"curves": [29, 23],
-							"point_formats": [1],
+							"point_formats": "AQ==",
 							"updated_at": "2026-03-28T08:00:00Z"
 						}
 					]
@@ -597,9 +601,9 @@ func TestAPIContracts(t *testing.T) {
 							"name": "Alpha",
 							"enabled": false,
 							"enable_grease": true,
-							"cipher_suites": [],
-							"curves": [],
-							"point_formats": [],
+							"cipher_suites": null,
+							"curves": null,
+							"point_formats": null,
 							"updated_at": "2026-03-28T08:00:00Z"
 						}
 					]
@@ -764,6 +768,8 @@ func newContractDeps(t *testing.T) *contractDeps {
 	v1Admin := v1.Group("/admin")
 	v1Admin.Use(adminAuth)
 	v1Admin.GET("/settings", adminSettingHandler.GetSettings)
+	v1Admin.GET("/settings/tls-fingerprint", adminSettingHandler.GetTLSFingerprintSettings)
+	v1Admin.GET("/settings/tls-fingerprint/profiles", adminSettingHandler.ListTLSFingerprintProfiles)
 	v1Admin.POST("/accounts/bulk-update", adminAccountHandler.BulkUpdate)
 
 	return &contractDeps{

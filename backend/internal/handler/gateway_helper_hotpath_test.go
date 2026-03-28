@@ -24,6 +24,8 @@ type helperConcurrencyCacheStub struct {
 	userAcquireCalls    int
 	accountReleaseCalls int
 	userReleaseCalls    int
+	accountTurnCalls    int
+	userTurnCalls       int
 }
 
 func (s *helperConcurrencyCacheStub) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -97,6 +99,36 @@ func (s *helperConcurrencyCacheStub) IncrementWaitCount(ctx context.Context, use
 }
 
 func (s *helperConcurrencyCacheStub) DecrementWaitCount(ctx context.Context, userID int64) error {
+	return nil
+}
+
+func (s *helperConcurrencyCacheStub) EnqueueUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
+	return nil
+}
+
+func (s *helperConcurrencyCacheStub) IsUserWaitTicketTurn(ctx context.Context, userID int64, ticketID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.userTurnCalls++
+	return true, nil
+}
+
+func (s *helperConcurrencyCacheStub) RemoveUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
+	return nil
+}
+
+func (s *helperConcurrencyCacheStub) EnqueueAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error {
+	return nil
+}
+
+func (s *helperConcurrencyCacheStub) IsAccountWaitTicketTurn(ctx context.Context, accountID int64, ticketID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accountTurnCalls++
+	return true, nil
+}
+
+func (s *helperConcurrencyCacheStub) RemoveAccountWaitTicket(ctx context.Context, accountID int64, ticketID string) error {
 	return nil
 }
 
@@ -309,6 +341,44 @@ func TestAcquireAccountSlotWithWaitTimeout_ImmediateAttemptBeforeBackoff(t *test
 	require.ErrorAs(t, err, &cErr)
 	require.True(t, cErr.IsTimeout)
 	require.GreaterOrEqual(t, cache.accountAcquireCalls, 1)
+}
+
+func TestWaitForSlotWithPingTimeout_FairWaitSharesSingleLocalPollerPerSlot(t *testing.T) {
+	cache := &helperConcurrencyCacheStub{
+		accountSeq: []bool{false, false, false, false},
+	}
+	concurrency := service.NewConcurrencyService(cache)
+	concurrency.SetFairWaitQueueEnabled(true)
+	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
+
+	var wg sync.WaitGroup
+	runWait := func() {
+		defer wg.Done()
+		c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+		streamStarted := false
+		release, err := helper.waitForSlotWithPingTimeout(c, "account", 501, 1, 220*time.Millisecond, false, &streamStarted, false)
+		require.Nil(t, release)
+		var cErr *ConcurrencyError
+		require.ErrorAs(t, err, &cErr)
+		require.True(t, cErr.IsTimeout)
+	}
+
+	wg.Add(2)
+	go runWait()
+	time.Sleep(20 * time.Millisecond)
+	go runWait()
+
+	time.Sleep(150 * time.Millisecond)
+
+	cache.mu.Lock()
+	accountTurnCalls := cache.accountTurnCalls
+	accountAcquireCalls := cache.accountAcquireCalls
+	cache.mu.Unlock()
+
+	require.Equal(t, 1, accountTurnCalls, "only the local head waiter should poll Redis turn state")
+	require.Equal(t, 1, accountAcquireCalls, "only the local head waiter should attempt Redis acquire while others wait in RAM")
+
+	wg.Wait()
 }
 
 type helperConcurrencyCacheStubWithError struct {

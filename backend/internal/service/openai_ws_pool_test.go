@@ -1063,6 +1063,7 @@ func TestOpenAIWSConnPool_RunBackgroundPingSweep_ConcurrencyLimit(t *testing.T) 
 			maxConcurrent: &maxConcurrent,
 			release:       release,
 		}, nil)
+		conn.lastUsedNano.Store(time.Now().Add(-openAIWSConnHealthCheckIdle - time.Second).UnixNano())
 		ap.mu.Lock()
 		ap.conns[conn.id] = conn
 		ap.mu.Unlock()

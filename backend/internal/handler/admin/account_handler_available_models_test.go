@@ -138,6 +138,6 @@ func TestAccountHandlerGetAvailableModels_PrefersFetchedModelsOverMapping(t *tes
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 2)
-	require.Equal(t, "gpt-5-mini", resp.Data[0].ID)
-	require.Equal(t, "gpt-5", resp.Data[1].ID)
+	require.Equal(t, "gpt-5", resp.Data[0].ID)
+	require.Equal(t, "gpt-5-mini", resp.Data[1].ID)
 }

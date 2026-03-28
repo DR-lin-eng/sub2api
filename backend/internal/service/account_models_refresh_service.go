@@ -72,6 +72,9 @@ func (s *AccountModelsRefreshService) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() {
+		if s.stopCh == nil {
+			return
+		}
 		close(s.stopCh)
 	})
 	s.wg.Wait()

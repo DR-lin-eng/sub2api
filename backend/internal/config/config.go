@@ -1516,7 +1516,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.lb_top_k", 5)
 	viper.SetDefault("gateway.scheduling.runtime_stats_alpha", 0.2)
-	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", false)
+	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", true)
 	viper.SetDefault("gateway.scheduling.runtime_sync_batch_ms", 1000)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.priority", 1.0)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.load", 1.0)

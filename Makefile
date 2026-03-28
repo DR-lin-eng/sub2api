@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-datamanagementd secret-scan docker-test docker-test-backend-unit docker-test-backend-integration docker-test-frontend docker-smoke
 
 # 一键编译前后端
 build: build-backend build-frontend
@@ -30,3 +30,17 @@ test-datamanagementd:
 
 secret-scan:
 	@python3 tools/secret_scan.py
+
+docker-test: docker-test-backend-unit docker-test-backend-integration docker-test-frontend docker-smoke
+
+docker-test-backend-unit:
+	@tools/docker/test-backend-unit.sh
+
+docker-test-backend-integration:
+	@tools/docker/test-backend-integration.sh
+
+docker-test-frontend:
+	@tools/docker/test-frontend.sh
+
+docker-smoke:
+	@tools/docker/smoke-compose.sh
