@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -455,6 +456,16 @@ func (w *opsCaptureWriter) WriteString(s string) (int, error) {
 		}
 	}
 	return w.ResponseWriter.WriteString(s)
+}
+
+func (w *opsCaptureWriter) Unwrap() http.ResponseWriter {
+	if w == nil || w.ResponseWriter == nil {
+		return nil
+	}
+	if unwrapper, ok := any(w.ResponseWriter).(interface{ Unwrap() http.ResponseWriter }); ok {
+		return unwrapper.Unwrap()
+	}
+	return w.ResponseWriter
 }
 
 // OpsErrorLoggerMiddleware records error responses (status >= 400) into ops_error_logs.
