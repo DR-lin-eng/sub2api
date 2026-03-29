@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 )
 
@@ -15,18 +16,28 @@ import (
 // 3. X-Forwarded-For (取第一个非私有 IP)
 // 4. c.ClientIP() (Gin 内置方法)
 func GetClientIP(c *gin.Context) string {
+	return GetClientIPContext(gatewayctx.FromGin(c))
+}
+
+// GetClientIPContext 从 GatewayContext 中提取客户端真实 IP 地址。
+// 语义与 GetClientIP 保持一致。
+func GetClientIPContext(c gatewayctx.GatewayContext) string {
+	if c == nil {
+		return ""
+	}
+
 	// 1. Cloudflare
-	if ip := c.GetHeader("CF-Connecting-IP"); ip != "" {
+	if ip := c.HeaderValue("CF-Connecting-IP"); ip != "" {
 		return normalizeIP(ip)
 	}
 
 	// 2. Nginx X-Real-IP
-	if ip := c.GetHeader("X-Real-IP"); ip != "" {
+	if ip := c.HeaderValue("X-Real-IP"); ip != "" {
 		return normalizeIP(ip)
 	}
 
 	// 3. X-Forwarded-For (多个 IP 时取第一个公网 IP)
-	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+	if xff := c.HeaderValue("X-Forwarded-For"); xff != "" {
 		ips := strings.Split(xff, ",")
 		for _, ip := range ips {
 			ip = strings.TrimSpace(ip)
@@ -40,7 +51,7 @@ func GetClientIP(c *gin.Context) string {
 		}
 	}
 
-	// 4. Gin 内置方法
+	// 4. Context 内置方法
 	return normalizeIP(c.ClientIP())
 }
 
@@ -48,6 +59,11 @@ func GetClientIP(c *gin.Context) string {
 // 该方法依赖 gin.Engine.SetTrustedProxies 配置，不会优先直接信任原始转发头值。
 // 适用于 ACL / 风控等安全敏感场景。
 func GetTrustedClientIP(c *gin.Context) string {
+	return GetTrustedClientIPContext(gatewayctx.FromGin(c))
+}
+
+// GetTrustedClientIPContext 从 GatewayContext 的可信代理解析链提取客户端 IP。
+func GetTrustedClientIPContext(c gatewayctx.GatewayContext) string {
 	if c == nil {
 		return ""
 	}

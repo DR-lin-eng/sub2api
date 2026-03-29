@@ -419,6 +419,10 @@ func openAIMessagesDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
 			}
 			return
 		}
+		if h.Gateway != nil {
+			h.Gateway.MessagesGateway(c)
+			return
+		}
 		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
 	}
 }
@@ -430,6 +434,10 @@ func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFun
 		}
 		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
 		if !ok || apiKey == nil {
+			if h.Gateway != nil {
+				h.Gateway.CountTokensGateway(c)
+				return
+			}
 			c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
 			return
 		}
@@ -441,6 +449,10 @@ func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFun
 					"message": "Token counting is not supported for this platform",
 				},
 			})
+			return
+		}
+		if h.Gateway != nil {
+			h.Gateway.CountTokensGateway(c)
 			return
 		}
 		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)

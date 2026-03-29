@@ -111,6 +111,603 @@ func NewGatewayHandler(
 // Messages handles Claude API compatible messages endpoint
 // POST /v1/messages
 func (h *GatewayHandler) Messages(c *gin.Context) {
+	h.MessagesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext) {
+	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
+	apiKey, ok := middleware2.GetAPIKeyFromGatewayContext(transportCtx)
+	if !ok {
+		h.errorResponseGateway(transportCtx, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		return
+	}
+
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(transportCtx)
+	if !ok {
+		h.errorResponseGateway(transportCtx, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+	reqLog := requestLoggerContext(
+		transportCtx,
+		"handler.gateway.messages",
+		zap.Int64("user_id", subject.UserID),
+		zap.Int64("api_key_id", apiKey.ID),
+		zap.Any("group_id", apiKey.GroupID),
+	)
+	defer h.maybeLogCompatibilityFallbackMetrics(reqLog)
+	requestStart := time.Now()
+
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(transportCtx.Request())
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			h.errorResponseGateway(transportCtx, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+
+	if len(body) == 0 {
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+
+	setOpsRequestContextGateway(transportCtx, "", false, body)
+
+	parsedReq, err := service.ParseGatewayRequest(body, domain.PlatformAnthropic)
+	if err != nil {
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+	reqModel := parsedReq.Model
+	reqStream := parsedReq.Stream
+	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+
+	if isMaxTokensOneHaikuRequest(reqModel, parsedReq.MaxTokens, reqStream) {
+		ctx := service.WithIsMaxTokensOneHaikuRequest(transportCtx.Context(), true, h.metadataBridgeEnabled())
+		transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+	}
+
+	SetClaudeCodeClientContextContext(transportCtx, body, parsedReq)
+	isClaudeCodeClient := service.IsClaudeCodeClient(transportCtx.Context())
+
+	if !h.checkClaudeCodeVersionContext(transportCtx) {
+		return
+	}
+
+	transportCtx.SetRequest(transportCtx.Request().WithContext(service.WithThinkingEnabled(transportCtx.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled())))
+	setOpsRequestContextGateway(transportCtx, reqModel, reqStream, body)
+
+	if reqModel == "" {
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	streamStarted := false
+
+	if h.errorPassthroughService != nil {
+		service.BindErrorPassthroughServiceContext(transportCtx, h.errorPassthroughService)
+	}
+
+	subscription, _ := middleware2.GetSubscriptionFromGatewayContext(transportCtx)
+	service.SetOpsLatencyMsContext(transportCtx, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
+	routingStart := time.Now()
+
+	maxWait := service.CalculateMaxWait(subject.Concurrency)
+	canWait, err := h.concurrencyHelper.IncrementWaitCount(transportCtx.Context(), subject.UserID, maxWait)
+	waitCounted := false
+	if err != nil {
+		reqLog.Warn("gateway.user_wait_counter_increment_failed", zap.Error(err))
+	} else if !canWait {
+		reqLog.Info("gateway.user_wait_queue_full", zap.Int("max_wait", maxWait))
+		h.errorResponseGateway(transportCtx, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+		return
+	}
+	if err == nil && canWait {
+		waitCounted = true
+	}
+	defer func() {
+		if waitCounted {
+			h.concurrencyHelper.DecrementWaitCount(transportCtx.Context(), subject.UserID)
+		}
+	}()
+
+	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWaitContext(transportCtx, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	if err != nil {
+		reqLog.Warn("gateway.user_slot_acquire_failed", zap.Error(err))
+		h.handleConcurrencyErrorContext(transportCtx, err, "user", streamStarted)
+		return
+	}
+	if waitCounted {
+		h.concurrencyHelper.DecrementWaitCount(transportCtx.Context(), subject.UserID)
+		waitCounted = false
+	}
+	userReleaseFunc = wrapReleaseOnDone(transportCtx.Context(), userReleaseFunc)
+	if userReleaseFunc != nil {
+		defer userReleaseFunc()
+	}
+
+	if err := h.billingCacheService.CheckBillingEligibility(transportCtx.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+		reqLog.Info("gateway.billing_eligibility_check_failed", zap.Error(err))
+		status, code, message := billingErrorDetails(err)
+		h.handleStreamingAwareErrorContext(transportCtx, status, code, message, streamStarted)
+		return
+	}
+
+	parsedReq.SessionContext = buildGatewaySessionContextContext(transportCtx, apiKey.ID)
+	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+
+	platform := ""
+	if forcePlatform, ok := middleware2.GetForcePlatformFromGatewayContext(transportCtx); ok {
+		platform = forcePlatform
+	} else if apiKey.Group != nil {
+		platform = apiKey.Group.Platform
+	}
+	sessionKey := sessionHash
+	if platform == service.PlatformGemini && sessionHash != "" {
+		sessionKey = "gemini:" + sessionHash
+	}
+
+	var sessionBoundAccountID int64
+	if sessionKey != "" {
+		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(transportCtx.Context(), apiKey.GroupID, sessionKey)
+		if sessionBoundAccountID > 0 {
+			prefetchedGroupID := int64(0)
+			if apiKey.GroupID != nil {
+				prefetchedGroupID = *apiKey.GroupID
+			}
+			ctx := service.WithPrefetchedStickySession(transportCtx.Context(), sessionBoundAccountID, prefetchedGroupID, h.metadataBridgeEnabled())
+			transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+		}
+	}
+	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
+
+	if platform == service.PlatformGemini {
+		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+
+		if h.gatewayService.IsSingleAntigravityAccountGroup(transportCtx.Context(), apiKey.GroupID) {
+			ctx := service.WithSingleAccountRetry(transportCtx.Context(), true, h.metadataBridgeEnabled())
+			transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+		}
+
+		for {
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "")
+			if err != nil {
+				if len(fs.FailedAccountIDs) == 0 {
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+					return
+				}
+				action := fs.HandleSelectionExhausted(transportCtx.Context())
+				switch action {
+				case FailoverContinue:
+					ctx := service.WithSingleAccountRetry(transportCtx.Context(), true, h.metadataBridgeEnabled())
+					transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if fs.LastFailoverErr != nil {
+						h.handleFailoverExhaustedContext(transportCtx, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimpleContext(transportCtx, 502, streamStarted)
+					}
+					return
+				}
+			}
+			account := selection.Account
+			setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
+
+			if account.IsInterceptWarmupEnabled() {
+				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, reqStream, isClaudeCodeClient)
+				if interceptType != InterceptTypeNone {
+					if selection.Acquired && selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+					if reqStream {
+						sendMockInterceptStreamContext(transportCtx, reqModel, interceptType)
+					} else {
+						sendMockInterceptResponseContext(transportCtx, reqModel, interceptType)
+					}
+					return
+				}
+			}
+
+			accountReleaseFunc := selection.ReleaseFunc
+			if !selection.Acquired {
+				if selection.WaitPlan == nil {
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+					return
+				}
+				accountWaitCounted := false
+				canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(transportCtx.Context(), account.ID, selection.WaitPlan.MaxWaiting)
+				if err != nil {
+					reqLog.Warn("gateway.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				} else if !canWait {
+					reqLog.Info("gateway.account_wait_queue_full", zap.Int64("account_id", account.ID), zap.Int("max_waiting", selection.WaitPlan.MaxWaiting))
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
+					return
+				}
+				if err == nil && canWait {
+					accountWaitCounted = true
+				}
+				releaseWait := func() {
+					if accountWaitCounted {
+						h.concurrencyHelper.DecrementAccountWaitCount(transportCtx.Context(), account.ID)
+						accountWaitCounted = false
+					}
+				}
+
+				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeoutContext(transportCtx, account.ID, selection.WaitPlan.MaxConcurrency, selection.WaitPlan.Timeout, reqStream, &streamStarted)
+				if err != nil {
+					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+					releaseWait()
+					h.handleConcurrencyErrorContext(transportCtx, err, "account", streamStarted)
+					return
+				}
+				releaseWait()
+				if err := h.gatewayService.BindStickySession(transportCtx.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
+					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
+			accountReleaseFunc = wrapReleaseOnDone(transportCtx.Context(), accountReleaseFunc)
+
+			var result *service.ForwardResult
+			requestCtx := transportCtx.Context()
+			if fs.SwitchCount > 0 {
+				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
+			}
+			writerSizeBeforeForward := transportCtx.ResponseSize()
+			service.SetOpsLatencyMsContext(transportCtx, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+			forwardStart := time.Now()
+			if account.Platform == service.PlatformAntigravity {
+				result, err = h.antigravityGatewayService.ForwardGeminiContext(requestCtx, transportCtx, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
+			} else {
+				result, err = h.geminiCompatService.ForwardContext(requestCtx, transportCtx, account, body)
+			}
+			forwardDurationMs := time.Since(forwardStart).Milliseconds()
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			service.SetOpsLatencyMsContext(transportCtx, service.OpsResponseLatencyMsKey, forwardDurationMs)
+			if err == nil && result != nil && result.FirstTokenMs != nil {
+				service.SetOpsLatencyMsContext(transportCtx, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+			}
+			if err != nil {
+				var failoverErr *service.UpstreamFailoverError
+				if errors.As(err, &failoverErr) {
+					h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+					if transportCtx.ResponseSize() != writerSizeBeforeForward {
+						h.handleFailoverExhaustedContext(transportCtx, failoverErr, service.PlatformGemini, true)
+						return
+					}
+					h.gatewayService.RecordGatewayAccountSwitch(account.ID)
+					action := fs.HandleFailoverError(transportCtx.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					switch action {
+					case FailoverContinue:
+						continue
+					case FailoverExhausted:
+						h.handleFailoverExhaustedContext(transportCtx, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+						return
+					case FailoverCanceled:
+						return
+					}
+				}
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+				wroteFallback := h.ensureForwardErrorResponseContext(transportCtx, streamStarted)
+				reqLog.Error("gateway.forward_failed", zap.Int64("account_id", account.ID), zap.Bool("fallback_error_response_written", wroteFallback), zap.Error(err))
+				return
+			}
+			if result != nil && result.FirstTokenMs != nil {
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			} else {
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, nil)
+			}
+
+			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
+				if err := h.gatewayService.IncrementAccountRPM(transportCtx.Context(), account.ID); err != nil {
+					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
+
+			userAgent := transportCtx.HeaderValue("User-Agent")
+			clientIP := ip.GetClientIPContext(transportCtx)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			inboundEndpoint := GetInboundEndpointContext(transportCtx)
+			upstreamEndpoint := GetUpstreamEndpointContext(transportCtx, account.Platform)
+
+			if result.ReasoningEffort == nil {
+				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
+			}
+
+			h.submitUsageRecordTask(func(ctx context.Context) {
+				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+					Result:             result,
+					APIKey:             apiKey,
+					User:               apiKey.User,
+					Account:            account,
+					Subscription:       subscription,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					RequestPayloadHash: requestPayloadHash,
+					ForceCacheBilling:  fs.ForceCacheBilling,
+					APIKeyService:      h.apiKeyService,
+				}); err != nil {
+					logger.L().With(zap.String("component", "handler.gateway.messages"), zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.Any("group_id", apiKey.GroupID), zap.String("model", reqModel), zap.Int64("account_id", account.ID)).Error("gateway.record_usage_failed", zap.Error(err))
+				}
+			})
+			return
+		}
+	}
+
+	currentAPIKey := apiKey
+	currentSubscription := subscription
+	var fallbackGroupID *int64
+	if apiKey.Group != nil {
+		fallbackGroupID = apiKey.Group.FallbackGroupIDOnInvalidRequest
+	}
+	fallbackUsed := false
+
+	if h.gatewayService.IsSingleAntigravityAccountGroup(transportCtx.Context(), currentAPIKey.GroupID) {
+		ctx := service.WithSingleAccountRetry(transportCtx.Context(), true, h.metadataBridgeEnabled())
+		transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+	}
+
+	for {
+		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		retryWithFallback := false
+
+		for {
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID)
+			if err != nil {
+				if len(fs.FailedAccountIDs) == 0 {
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+					return
+				}
+				action := fs.HandleSelectionExhausted(transportCtx.Context())
+				switch action {
+				case FailoverContinue:
+					ctx := service.WithSingleAccountRetry(transportCtx.Context(), true, h.metadataBridgeEnabled())
+					transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if fs.LastFailoverErr != nil {
+						h.handleFailoverExhaustedContext(transportCtx, fs.LastFailoverErr, platform, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimpleContext(transportCtx, 502, streamStarted)
+					}
+					return
+				}
+			}
+			account := selection.Account
+			setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
+
+			if account.IsInterceptWarmupEnabled() {
+				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, reqStream, isClaudeCodeClient)
+				if interceptType != InterceptTypeNone {
+					if selection.Acquired && selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+					if reqStream {
+						sendMockInterceptStreamContext(transportCtx, reqModel, interceptType)
+					} else {
+						sendMockInterceptResponseContext(transportCtx, reqModel, interceptType)
+					}
+					return
+				}
+			}
+
+			accountReleaseFunc := selection.ReleaseFunc
+			if !selection.Acquired {
+				if selection.WaitPlan == nil {
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+					return
+				}
+				accountWaitCounted := false
+				canWait, err := h.concurrencyHelper.IncrementAccountWaitCount(transportCtx.Context(), account.ID, selection.WaitPlan.MaxWaiting)
+				if err != nil {
+					reqLog.Warn("gateway.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				} else if !canWait {
+					reqLog.Info("gateway.account_wait_queue_full", zap.Int64("account_id", account.ID), zap.Int("max_waiting", selection.WaitPlan.MaxWaiting))
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
+					return
+				}
+				if err == nil && canWait {
+					accountWaitCounted = true
+				}
+				releaseWait := func() {
+					if accountWaitCounted {
+						h.concurrencyHelper.DecrementAccountWaitCount(transportCtx.Context(), account.ID)
+						accountWaitCounted = false
+					}
+				}
+
+				accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeoutContext(transportCtx, account.ID, selection.WaitPlan.MaxConcurrency, selection.WaitPlan.Timeout, reqStream, &streamStarted)
+				if err != nil {
+					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+					releaseWait()
+					h.handleConcurrencyErrorContext(transportCtx, err, "account", streamStarted)
+					return
+				}
+				releaseWait()
+				if err := h.gatewayService.BindStickySession(transportCtx.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
+					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
+			accountReleaseFunc = wrapReleaseOnDone(transportCtx.Context(), accountReleaseFunc)
+
+			var queueRelease func()
+			umqMode := h.getUserMsgQueueMode(account, parsedReq)
+
+			switch umqMode {
+			case config.UMQModeSerialize:
+				baseRPM := account.GetBaseRPM()
+				release, qErr := h.userMsgQueueHelper.AcquireWithWaitContext(transportCtx, account.ID, baseRPM, reqStream, &streamStarted, h.cfg.Gateway.UserMessageQueue.WaitTimeout(), reqLog)
+				if qErr != nil {
+					reqLog.Warn("gateway.umq_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(qErr))
+				} else {
+					queueRelease = release
+				}
+			case config.UMQModeThrottle:
+				baseRPM := account.GetBaseRPM()
+				if tErr := h.userMsgQueueHelper.ThrottleWithPingContext(transportCtx, account.ID, baseRPM, reqStream, &streamStarted, h.cfg.Gateway.UserMessageQueue.WaitTimeout(), reqLog); tErr != nil {
+					reqLog.Warn("gateway.umq_throttle_failed", zap.Int64("account_id", account.ID), zap.Error(tErr))
+				}
+			default:
+				if umqMode != "" {
+					reqLog.Warn("gateway.umq_unknown_mode", zap.String("mode", umqMode), zap.Int64("account_id", account.ID))
+				}
+			}
+
+			queueRelease = wrapReleaseOnDone(transportCtx.Context(), queueRelease)
+			parsedReq.OnUpstreamAccepted = queueRelease
+
+			var result *service.ForwardResult
+			requestCtx := transportCtx.Context()
+			if fs.SwitchCount > 0 {
+				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
+			}
+			writerSizeBeforeForward := transportCtx.ResponseSize()
+			service.SetOpsLatencyMsContext(transportCtx, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+			forwardStart := time.Now()
+			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
+				result, err = h.antigravityGatewayService.ForwardContext(requestCtx, transportCtx, account, body, hasBoundSession)
+			} else {
+				result, err = h.gatewayService.ForwardContext(requestCtx, transportCtx, account, parsedReq)
+			}
+			forwardDurationMs := time.Since(forwardStart).Milliseconds()
+
+			if queueRelease != nil {
+				queueRelease()
+			}
+			parsedReq.OnUpstreamAccepted = nil
+
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			service.SetOpsLatencyMsContext(transportCtx, service.OpsResponseLatencyMsKey, forwardDurationMs)
+			if err == nil && result != nil && result.FirstTokenMs != nil {
+				service.SetOpsLatencyMsContext(transportCtx, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+			}
+			if err != nil {
+				var betaBlockedErr *service.BetaBlockedError
+				if errors.As(err, &betaBlockedErr) {
+					h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+					h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", betaBlockedErr.Message)
+					return
+				}
+
+				var promptTooLongErr *service.PromptTooLongError
+				if errors.As(err, &promptTooLongErr) {
+					reqLog.Warn("gateway.prompt_too_long_from_antigravity", zap.Any("current_group_id", currentAPIKey.GroupID), zap.Any("fallback_group_id", fallbackGroupID), zap.Bool("fallback_used", fallbackUsed))
+					if !fallbackUsed && fallbackGroupID != nil && *fallbackGroupID > 0 {
+						fallbackGroup, err := h.gatewayService.ResolveGroupByID(transportCtx.Context(), *fallbackGroupID)
+						if err != nil {
+							reqLog.Warn("gateway.resolve_fallback_group_failed", zap.Int64("fallback_group_id", *fallbackGroupID), zap.Error(err))
+							_ = h.antigravityGatewayService.WriteMappedClaudeErrorContext(transportCtx, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+							return
+						}
+						if fallbackGroup.Platform != service.PlatformAnthropic || fallbackGroup.SubscriptionType == service.SubscriptionTypeSubscription || fallbackGroup.FallbackGroupIDOnInvalidRequest != nil {
+							reqLog.Warn("gateway.fallback_group_invalid", zap.Int64("fallback_group_id", fallbackGroup.ID), zap.String("fallback_platform", fallbackGroup.Platform), zap.String("fallback_subscription_type", fallbackGroup.SubscriptionType))
+							_ = h.antigravityGatewayService.WriteMappedClaudeErrorContext(transportCtx, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+							return
+						}
+						fallbackAPIKey := cloneAPIKeyWithGroup(apiKey, fallbackGroup)
+						if err := h.billingCacheService.CheckBillingEligibility(transportCtx.Context(), fallbackAPIKey.User, fallbackAPIKey, fallbackGroup, nil); err != nil {
+							status, code, message := billingErrorDetails(err)
+							h.handleStreamingAwareErrorContext(transportCtx, status, code, message, streamStarted)
+							return
+						}
+						ctx := context.WithValue(transportCtx.Context(), ctxkey.ForcePlatform, "")
+						transportCtx.SetRequest(transportCtx.Request().WithContext(ctx))
+						currentAPIKey = fallbackAPIKey
+						currentSubscription = nil
+						fallbackUsed = true
+						retryWithFallback = true
+						h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+						break
+					}
+					h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+					_ = h.antigravityGatewayService.WriteMappedClaudeErrorContext(transportCtx, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+					return
+				}
+
+				var failoverErr *service.UpstreamFailoverError
+				if errors.As(err, &failoverErr) {
+					h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+					if transportCtx.ResponseSize() != writerSizeBeforeForward {
+						h.handleFailoverExhaustedContext(transportCtx, failoverErr, account.Platform, true)
+						return
+					}
+					h.gatewayService.RecordGatewayAccountSwitch(account.ID)
+					action := fs.HandleFailoverError(transportCtx.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					switch action {
+					case FailoverContinue:
+						continue
+					case FailoverExhausted:
+						h.handleFailoverExhaustedContext(transportCtx, fs.LastFailoverErr, account.Platform, streamStarted)
+						return
+					case FailoverCanceled:
+						return
+					}
+				}
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, false, nil)
+				wroteFallback := h.ensureForwardErrorResponseContext(transportCtx, streamStarted)
+				reqLog.Error("gateway.forward_failed", zap.Int64("account_id", account.ID), zap.Bool("fallback_error_response_written", wroteFallback), zap.Error(err))
+				return
+			}
+			if result != nil && result.FirstTokenMs != nil {
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			} else {
+				h.gatewayService.ReportGatewayAccountScheduleResult(account.ID, true, nil)
+			}
+
+			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
+				if err := h.gatewayService.IncrementAccountRPM(transportCtx.Context(), account.ID); err != nil {
+					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
+
+			userAgent := transportCtx.HeaderValue("User-Agent")
+			clientIP := ip.GetClientIPContext(transportCtx)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			inboundEndpoint := GetInboundEndpointContext(transportCtx)
+			upstreamEndpoint := GetUpstreamEndpointContext(transportCtx, account.Platform)
+
+			if result.ReasoningEffort == nil {
+				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
+			}
+
+			h.submitUsageRecordTask(func(ctx context.Context) {
+				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+					Result:             result,
+					APIKey:             currentAPIKey,
+					User:               currentAPIKey.User,
+					Account:            account,
+					Subscription:       currentSubscription,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					RequestPayloadHash: requestPayloadHash,
+					ForceCacheBilling:  fs.ForceCacheBilling,
+					APIKeyService:      h.apiKeyService,
+				}); err != nil {
+					logger.L().With(zap.String("component", "handler.gateway.messages"), zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", currentAPIKey.ID), zap.Any("group_id", currentAPIKey.GroupID), zap.String("model", reqModel), zap.Int64("account_id", account.ID)).Error("gateway.record_usage_failed", zap.Error(err))
+				}
+			})
+			return
+		}
+		if !retryWithFallback {
+			return
+		}
+	}
+}
+
+func (h *GatewayHandler) messagesWithGin(c *gin.Context) {
 	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -1411,20 +2008,24 @@ func (h *GatewayHandler) errorResponseGateway(c gatewayctx.GatewayContext, statu
 // POST /v1/messages/count_tokens
 // 特点：校验订阅/余额，但不计算并发、不记录使用量
 func (h *GatewayHandler) CountTokens(c *gin.Context) {
+	h.CountTokensGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GatewayHandler) CountTokensGateway(transportCtx gatewayctx.GatewayContext) {
 	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
-	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	apiKey, ok := middleware2.GetAPIKeyFromGatewayContext(transportCtx)
 	if !ok {
-		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		h.errorResponseGateway(transportCtx, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
 
-	_, ok = middleware2.GetAuthSubjectFromContext(c)
+	_, ok = middleware2.GetAuthSubjectFromGatewayContext(transportCtx)
 	if !ok {
-		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		h.errorResponseGateway(transportCtx, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
-	reqLog := requestLogger(
-		c,
+	reqLog := requestLoggerContext(
+		transportCtx,
 		"handler.gateway.count_tokens",
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
@@ -1432,68 +2033,68 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	defer h.maybeLogCompatibilityFallbackMetrics(reqLog)
 
 	// 读取请求体
-	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(transportCtx.Request())
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			h.errorResponseGateway(transportCtx, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
 		return
 	}
 
 	if len(body) == 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
 
-	setOpsRequestContext(c, "", false, body)
+	setOpsRequestContextGateway(transportCtx, "", false, body)
 
 	parsedReq, err := service.ParseGatewayRequest(body, domain.PlatformAnthropic)
 	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
 	// count_tokens 走 messages 严格校验时，复用已解析请求，避免二次反序列化。
-	SetClaudeCodeClientContext(c, body, parsedReq)
+	SetClaudeCodeClientContextContext(transportCtx, body, parsedReq)
 	reqLog = reqLog.With(zap.String("model", parsedReq.Model), zap.Bool("stream", parsedReq.Stream))
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
-	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
+	transportCtx.SetRequest(transportCtx.Request().WithContext(service.WithThinkingEnabled(transportCtx.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled())))
 
 	// 验证 model 必填
 	if parsedReq.Model == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 
-	setOpsRequestContext(c, parsedReq.Model, parsedReq.Stream, body)
+	setOpsRequestContextGateway(transportCtx, parsedReq.Model, parsedReq.Stream, body)
 
 	// 获取订阅信息（可能为nil）
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	subscription, _ := middleware2.GetSubscriptionFromGatewayContext(transportCtx)
 
 	// 校验 billing eligibility（订阅/余额）
 	// 【注意】不计算并发，但需要校验订阅/余额
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(transportCtx.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
 		status, code, message := billingErrorDetails(err)
-		h.errorResponse(c, status, code, message)
+		h.errorResponseGateway(transportCtx, status, code, message)
 		return
 	}
 
 	// 计算粘性会话 hash
-	parsedReq.SessionContext = buildGatewaySessionContext(c, apiKey.ID)
+	parsedReq.SessionContext = buildGatewaySessionContextContext(transportCtx, apiKey.ID)
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
 	// 选择支持该模型的账号
-	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
+	account, err := h.gatewayService.SelectAccountForModel(transportCtx.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
 	if err != nil {
 		reqLog.Warn("gateway.count_tokens_select_account_failed", zap.Error(err))
-		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+		h.errorResponseGateway(transportCtx, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 		return
 	}
-	setOpsSelectedAccount(c, account.ID, account.Platform)
+	setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
 	// 转发请求（不记录使用量）
-	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {
+	if err := h.gatewayService.ForwardCountTokensContext(transportCtx.Context(), transportCtx, account, parsedReq); err != nil {
 		reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		// 错误响应已在 ForwardCountTokens 中处理
 		return
@@ -1597,10 +2198,11 @@ func detectInterceptType(body []byte, model string, maxTokens int, isStream bool
 
 // sendMockInterceptStream 发送流式 mock 响应（用于请求拦截）
 func sendMockInterceptStream(c *gin.Context, model string, interceptType InterceptType) {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	sendMockInterceptStreamContext(gatewayctx.FromGin(c), model, interceptType)
+}
+
+func sendMockInterceptStreamContext(c gatewayctx.GatewayContext, model string, interceptType InterceptType) {
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{CacheControl: "no-cache"})
 
 	// 根据拦截类型决定响应内容
 	var msgID string
@@ -1643,8 +2245,8 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 	)
 
 	for _, event := range events {
-		_, _ = c.Writer.WriteString(event + "\n\n")
-		c.Writer.Flush()
+		_, _ = c.WriteBytes(http.StatusOK, []byte(event+"\n\n"))
+		_ = c.Flush()
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -1667,6 +2269,10 @@ func generateRealisticMsgID() string {
 
 // sendMockInterceptResponse 发送非流式 mock 响应（用于请求拦截）
 func sendMockInterceptResponse(c *gin.Context, model string, interceptType InterceptType) {
+	sendMockInterceptResponseContext(gatewayctx.FromGin(c), model, interceptType)
+}
+
+func sendMockInterceptResponseContext(c gatewayctx.GatewayContext, model string, interceptType InterceptType) {
 	var msgID, text, stopReason string
 	var outputTokens int
 
@@ -1710,7 +2316,7 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 		},
 	}
 
-	c.JSON(http.StatusOK, response)
+	c.WriteJSON(http.StatusOK, response)
 }
 
 func billingErrorDetails(err error) (status int, code, message string) {

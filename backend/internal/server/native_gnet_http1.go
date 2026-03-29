@@ -388,6 +388,7 @@ type gnetHTTPResponseWriter struct {
 	wroteHead  bool
 	finished   bool
 	chunked    bool
+	size       int
 	writeErr   error
 
 	closeAfterResponse atomic.Bool
@@ -398,6 +399,7 @@ func newGnetHTTPResponseWriter(conn gnet.Conn, req *http.Request) *gnetHTTPRespo
 		conn:    conn,
 		request: req,
 		header:  make(http.Header),
+		size:    -1,
 	}
 }
 
@@ -409,6 +411,12 @@ func (w *gnetHTTPResponseWriter) Written() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.wroteHead
+}
+
+func (w *gnetHTTPResponseWriter) Size() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.size
 }
 
 func (w *gnetHTTPResponseWriter) WriteHeader(statusCode int) {
@@ -438,6 +446,10 @@ func (w *gnetHTTPResponseWriter) Write(p []byte) (int, error) {
 	if err := w.asyncWriteLocked(payload); err != nil {
 		return 0, err
 	}
+	if w.size < 0 {
+		w.size = 0
+	}
+	w.size += len(p)
 	return len(p), nil
 }
 
@@ -530,6 +542,7 @@ type detachedHTTPResponseWriter struct {
 
 	statusCode int
 	wroteHead  bool
+	size       int
 	hijacked   bool
 	readWriter *bufio.ReadWriter
 }
@@ -539,6 +552,7 @@ func newDetachedHTTPResponseWriter(conn net.Conn, req *http.Request) *detachedHT
 		conn:    conn,
 		request: req,
 		header:  make(http.Header),
+		size:    -1,
 	}
 }
 
@@ -550,12 +564,19 @@ func (w *detachedHTTPResponseWriter) Written() bool {
 	return w.wroteHead
 }
 
+func (w *detachedHTTPResponseWriter) Size() int {
+	return w.size
+}
+
 func (w *detachedHTTPResponseWriter) WriteHeader(statusCode int) {
 	if w.wroteHead || w.hijacked {
 		return
 	}
 	w.statusCode = statusCode
 	w.wroteHead = true
+	if w.size < 0 {
+		w.size = 0
+	}
 	_, _ = w.conn.Write(encodeHTTPResponseHead(statusCode, w.header))
 }
 
@@ -566,7 +587,14 @@ func (w *detachedHTTPResponseWriter) Write(p []byte) (int, error) {
 	if !w.wroteHead {
 		w.WriteHeader(http.StatusOK)
 	}
-	return w.conn.Write(p)
+	n, err := w.conn.Write(p)
+	if n > 0 {
+		if w.size < 0 {
+			w.size = 0
+		}
+		w.size += n
+	}
+	return n, err
 }
 
 func (w *detachedHTTPResponseWriter) Flush() {

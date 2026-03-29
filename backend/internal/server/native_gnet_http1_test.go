@@ -430,10 +430,10 @@ func TestNativeGnetHTTPRuntimeServesExecutableMessagesOpenAIDispatchWithoutFallb
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"type":"error","error":{"type":"api_error","message":"User context not found"}}`, string(body))
+	require.JSONEq(t, `{"error":{"type":"api_error","message":"Service temporarily unavailable"}}`, string(body))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

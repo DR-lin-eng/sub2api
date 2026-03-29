@@ -3,10 +3,10 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -48,7 +48,24 @@ func (h *UserMsgQueueHelper) AcquireWithWait(
 	timeout time.Duration,
 	reqLog *zap.Logger,
 ) (releaseFunc func(), err error) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	return h.AcquireWithWaitContext(gatewayctx.FromGin(c), accountID, baseRPM, isStream, streamStarted, timeout, reqLog)
+}
+
+// AcquireWithWaitContext 等待获取串行锁，流式请求期间发送 SSE ping。
+func (h *UserMsgQueueHelper) AcquireWithWaitContext(
+	c gatewayctx.GatewayContext,
+	accountID int64,
+	baseRPM int,
+	isStream bool,
+	streamStarted *bool,
+	timeout time.Duration,
+	reqLog *zap.Logger,
+) (releaseFunc func(), err error) {
+	if c == nil {
+		return nil, fmt.Errorf("gateway context is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), timeout)
 	defer cancel()
 
 	// 先尝试立即获取
@@ -73,7 +90,7 @@ func (h *UserMsgQueueHelper) AcquireWithWait(
 	}
 
 	// 需要等待：指数退避轮询
-	return h.waitForLockWithPing(c, ctx, accountID, baseRPM, isStream, streamStarted, reqLog)
+	return h.waitForLockWithPingContext(c, ctx, accountID, baseRPM, isStream, streamStarted, reqLog)
 }
 
 // waitForLockWithPing 等待获取锁，流式请求期间发送 SSE ping
@@ -86,17 +103,23 @@ func (h *UserMsgQueueHelper) waitForLockWithPing(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 ) (func(), error) {
-	needPing := isStream && h.pingFormat != ""
+	return h.waitForLockWithPingContext(gatewayctx.FromGin(c), ctx, accountID, baseRPM, isStream, streamStarted, reqLog)
+}
 
-	var flusher http.Flusher
-	if needPing {
-		var ok bool
-		flusher, ok = c.Writer.(http.Flusher)
-		if !ok {
-			needPing = false
-		}
+func (h *UserMsgQueueHelper) waitForLockWithPingContext(
+	c gatewayctx.GatewayContext,
+	ctx context.Context,
+	accountID int64,
+	baseRPM int,
+	isStream bool,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+) (func(), error) {
+	if c == nil {
+		return nil, fmt.Errorf("gateway context is nil")
 	}
 
+	needPing := isStream && h.pingFormat != ""
 	var pingCh <-chan time.Time
 	if needPing {
 		pingTicker := time.NewTicker(h.pingInterval)
@@ -114,20 +137,9 @@ func (h *UserMsgQueueHelper) waitForLockWithPing(
 			return nil, fmt.Errorf("umq wait timeout for account %d", accountID)
 
 		case <-pingCh:
-			if !*streamStarted {
-				c.Header("Content-Type", "text/event-stream")
-				c.Header("Cache-Control", "no-cache, no-transform")
-				c.Header("Connection", "keep-alive")
-				c.Header("X-Accel-Buffering", "no")
-				c.Writer.Header().Del("Content-Encoding")
-				c.Writer.Header().Del("Content-Length")
-				c.Writer.Header().Del("Transfer-Encoding")
-				*streamStarted = true
-			}
-			if _, err := fmt.Fprint(c.Writer, string(h.pingFormat)); err != nil {
+			if err := writeConcurrencyPing(c, h.pingFormat, streamStarted); err != nil {
 				return nil, err
 			}
-			flusher.Flush()
 
 		case <-timer.C:
 			result, err := h.queueService.TryAcquire(ctx, accountID)
@@ -183,7 +195,24 @@ func (h *UserMsgQueueHelper) ThrottleWithPing(
 	timeout time.Duration,
 	reqLog *zap.Logger,
 ) error {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	return h.ThrottleWithPingContext(gatewayctx.FromGin(c), accountID, baseRPM, isStream, streamStarted, timeout, reqLog)
+}
+
+// ThrottleWithPingContext 软性限速模式：施加 RPM 自适应延迟，流式期间发送 SSE ping。
+func (h *UserMsgQueueHelper) ThrottleWithPingContext(
+	c gatewayctx.GatewayContext,
+	accountID int64,
+	baseRPM int,
+	isStream bool,
+	streamStarted *bool,
+	timeout time.Duration,
+	reqLog *zap.Logger,
+) error {
+	if c == nil {
+		return fmt.Errorf("gateway context is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), timeout)
 	defer cancel()
 
 	delay := h.queueService.CalculateRPMAwareDelay(ctx, accountID, baseRPM)
@@ -196,16 +225,7 @@ func (h *UserMsgQueueHelper) ThrottleWithPing(
 		zap.Duration("delay", delay),
 	)
 
-	// 延迟期间发送 SSE ping（复用 waitForLockWithPing 的 ping 逻辑）
 	needPing := isStream && h.pingFormat != ""
-	var flusher http.Flusher
-	if needPing {
-		flusher, _ = c.Writer.(http.Flusher)
-		if flusher == nil {
-			needPing = false
-		}
-	}
-
 	var pingCh <-chan time.Time
 	if needPing {
 		pingTicker := time.NewTicker(h.pingInterval)
@@ -221,21 +241,9 @@ func (h *UserMsgQueueHelper) ThrottleWithPing(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-pingCh:
-			// SSE ping 逻辑（与 waitForLockWithPing 一致）
-			if !*streamStarted {
-				c.Header("Content-Type", "text/event-stream")
-				c.Header("Cache-Control", "no-cache, no-transform")
-				c.Header("Connection", "keep-alive")
-				c.Header("X-Accel-Buffering", "no")
-				c.Writer.Header().Del("Content-Encoding")
-				c.Writer.Header().Del("Content-Length")
-				c.Writer.Header().Del("Transfer-Encoding")
-				*streamStarted = true
-			}
-			if _, err := fmt.Fprint(c.Writer, string(h.pingFormat)); err != nil {
+			if err := writeConcurrencyPing(c, h.pingFormat, streamStarted); err != nil {
 				return err
 			}
-			flusher.Flush()
 		case <-timer.C:
 			return nil
 		}

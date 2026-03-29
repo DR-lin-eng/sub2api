@@ -149,6 +149,13 @@ func (c *ginGatewayContext) ResponseWritten() bool {
 	return c.gin.Writer.Written()
 }
 
+func (c *ginGatewayContext) ResponseSize() int {
+	if c == nil || c.gin == nil || c.gin.Writer == nil {
+		return -1
+	}
+	return c.gin.Writer.Size()
+}
+
 func (c *ginGatewayContext) WriteJSON(status int, value any) {
 	if c == nil || c.gin == nil {
 		return

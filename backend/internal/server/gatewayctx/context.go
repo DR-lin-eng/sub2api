@@ -47,6 +47,7 @@ type GatewayContext interface {
 	Header() http.Header
 	SetStatus(status int)
 	ResponseWritten() bool
+	ResponseSize() int
 	WriteJSON(status int, value any)
 	WriteBytes(status int, payload []byte) (int, error)
 	Flush() error

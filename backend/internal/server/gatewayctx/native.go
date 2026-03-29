@@ -30,6 +30,10 @@ type nativeWritten interface {
 	Written() bool
 }
 
+type nativeSizer interface {
+	Size() int
+}
+
 func NewNative(req *http.Request, writer any, params map[string]string, clientIP string) GatewayContext {
 	return &nativeGatewayContext{
 		req:      req,
@@ -172,6 +176,13 @@ func (c *nativeGatewayContext) ResponseWritten() bool {
 		return w.Written()
 	}
 	return false
+}
+
+func (c *nativeGatewayContext) ResponseSize() int {
+	if w, ok := c.writer.(nativeSizer); ok {
+		return w.Size()
+	}
+	return -1
 }
 
 func (c *nativeGatewayContext) WriteJSON(status int, value any) {

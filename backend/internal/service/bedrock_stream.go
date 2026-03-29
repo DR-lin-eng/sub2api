@@ -17,6 +17,7 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 )
 
 // handleBedrockStreamingResponse 处理 Bedrock InvokeModelWithResponseStream 的 EventStream 响应
@@ -30,18 +31,27 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	startTime time.Time,
 	model string,
 ) (*streamingResult, error) {
-	w := c.Writer
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	return s.handleBedrockStreamingResponseContext(ctx, resp, gatewayctx.FromGin(c), account, startTime, model)
+}
+
+func (s *GatewayService) handleBedrockStreamingResponseContext(
+	ctx context.Context,
+	resp *http.Response,
+	c gatewayctx.GatewayContext,
+	account *Account,
+	startTime time.Time,
+	model string,
+) (*streamingResult, error) {
+	if err := c.Flush(); err != nil {
 		return nil, errors.New("streaming not supported")
 	}
 
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	gatewayctx.PrepareSSE(c, gatewayctx.SSEOptions{
+		ContentType:  "text/event-stream",
+		CacheControl: "no-cache",
+	})
 	if v := resp.Header.Get("x-amzn-requestid"); v != "" {
-		c.Header("x-request-id", v)
+		c.SetHeader("x-request-id", v)
 	}
 
 	usage := &ClaudeUsage{}
@@ -109,7 +119,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 		case ev, ok := <-events:
 			if !ok {
 				if !clientDisconnected {
-					flusher.Flush()
+					_ = c.Flush()
 				}
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, nil
 			}
@@ -148,15 +158,15 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 			if !clientDisconnected {
 				var writeErr error
 				if eventType != "" {
-					_, writeErr = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, sseData)
+					_, writeErr = c.WriteBytes(0, []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, sseData)))
 				} else {
-					_, writeErr = fmt.Fprintf(w, "data: %s\n\n", sseData)
+					_, writeErr = c.WriteBytes(0, []byte(fmt.Sprintf("data: %s\n\n", sseData)))
 				}
 				if writeErr != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Bedrock] Client disconnected during streaming, continue draining for usage: account=%d", account.ID)
 				} else {
-					flusher.Flush()
+					_ = c.Flush()
 				}
 			}
 
