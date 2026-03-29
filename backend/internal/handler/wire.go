@@ -8,6 +8,7 @@ import (
 )
 
 type adminTaskStateCacheSetup struct{}
+type adminAccountImportSetup struct{}
 
 // ProvideAdminHandlers creates the AdminHandlers struct
 func ProvideAdminHandlers(
@@ -93,6 +94,7 @@ func ProvideHandlers(
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *adminTaskStateCacheSetup,
+	_ *adminAccountImportSetup,
 ) *Handlers {
 	return &Handlers{
 		Auth:          authHandler,
@@ -118,6 +120,11 @@ func ProvideAdminTaskStateCacheSetup(cache service.TaskStateCache, repo service.
 	return &adminTaskStateCacheSetup{}
 }
 
+func ProvideAdminAccountImportSetup(svc *service.AccountImportService) *adminAccountImportSetup {
+	admin.SetDefaultAccountImportService(svc)
+	return &adminAccountImportSetup{}
+}
+
 // ProviderSet is the Wire provider set for all handlers
 var ProviderSet = wire.NewSet(
 	// Top-level handlers
@@ -134,6 +141,7 @@ var ProviderSet = wire.NewSet(
 	NewTotpHandler,
 	ProvideSettingHandler,
 	ProvideAdminTaskStateCacheSetup,
+	ProvideAdminAccountImportSetup,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

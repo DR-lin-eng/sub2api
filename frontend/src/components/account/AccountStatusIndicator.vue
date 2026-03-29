@@ -29,7 +29,7 @@
     </template>
 
     <!-- Error Info Indicator -->
-    <div v-if="hasError && account.error_message" class="group/error relative">
+    <div v-if="hasError && errorDetail" class="group/error relative">
       <svg
         class="h-4 w-4 cursor-help text-red-500 transition-colors hover:text-red-600 dark:text-red-400 dark:hover:text-red-300"
         fill="none"
@@ -48,7 +48,7 @@
         class="invisible absolute left-0 top-full z-[100] mt-1.5 min-w-[200px] max-w-[300px] rounded-lg bg-gray-800 px-3 py-2 text-xs text-white opacity-0 shadow-xl transition-all duration-200 group-hover/error:visible group-hover/error:opacity-100 dark:bg-gray-900"
       >
         <div class="whitespace-pre-wrap break-words leading-relaxed text-gray-300">
-          {{ account.error_message }}
+          {{ errorDetail }}
         </div>
         <!-- 上方小三角 -->
         <div
@@ -279,9 +279,20 @@ const isTempUnschedulable = computed(() => {
   return new Date(props.account.temp_unschedulable_until) > new Date()
 })
 
+const isSyncing = computed(() => {
+  return props.account.sync_state === 'pending' || props.account.sync_state === 'syncing'
+})
+
+const isSyncFailed = computed(() => props.account.sync_state === 'failed')
+const isDuplicate = computed(() => props.account.sync_state === 'duplicate')
+
 // Computed: has error status
 const hasError = computed(() => {
-  return props.account.status === 'error'
+  return props.account.status === 'error' || isSyncFailed.value || isDuplicate.value
+})
+
+const errorDetail = computed(() => {
+  return props.account.sync_message || props.account.error_message || ''
 })
 
 // Computed: countdown text for rate limit (429)
@@ -301,6 +312,15 @@ const overloadCountdown = computed(() => {
 
 // Computed: status badge class
 const statusClass = computed(() => {
+  if (isDuplicate.value) {
+    return 'badge-gray'
+  }
+  if (isSyncFailed.value) {
+    return 'badge-danger'
+  }
+  if (isSyncing.value) {
+    return 'badge-warning'
+  }
   if (hasError.value) {
     return 'badge-danger'
   }
@@ -324,6 +344,18 @@ const statusClass = computed(() => {
 
 // Computed: status text
 const statusText = computed(() => {
+  if (isDuplicate.value) {
+    return t('admin.accounts.status.duplicate')
+  }
+  if (isSyncFailed.value) {
+    return t('admin.accounts.status.syncFailed')
+  }
+  if (isSyncing.value) {
+    const progress = typeof props.account.sync_progress === 'number' ? Math.max(0, Math.min(100, props.account.sync_progress)) : null
+    return progress != null
+      ? t('admin.accounts.status.syncingWithProgress', { progress })
+      : t('admin.accounts.status.syncing')
+  }
   if (hasError.value) {
     return t('admin.accounts.status.error')
   }

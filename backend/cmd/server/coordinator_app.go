@@ -118,6 +118,9 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		groupRepository,
 		cfg,
 	)
+	accountImportAccountStore := repository.ProvideAccountImportAccountStore(client, db, schedulerCache)
+	accountImportBatchRepository := repository.ProvideAccountImportBatchRepository(redisClient)
+	accountImportService := service.ProvideAccountImportService(accountImportAccountStore, accountImportBatchRepository, proxyRepository, groupRepository, soraAccountRepository, schedulerSnapshotService, cfg)
 
 	antigravityTokenProvider := service.ProvideAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService, oauthRefreshAPI, tempUnschedCache)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, schedulerSnapshotService, antigravityTokenProvider, rateLimitService, httpUpstream, settingService)
@@ -292,6 +295,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		opsSystemLogSink,
 		soraMediaCleanupService,
 		schedulerSnapshotService,
+		accountImportService,
 		tokenRefreshService,
 		accountExpiryService,
 		accountModelsRefreshService,
@@ -300,17 +304,17 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		idempotencyCleanupService,
 		pricingService,
 		emailQueueService,
-	billingCacheService,
-	nil,
-	subscriptionService,
-	oauthService,
-	openAIOAuthService,
-	geminiOAuthService,
-	antigravityOAuthService,
-	nil,
-	openAIGatewayService,
-	scheduledTestRunnerService,
-	proxyMaintenanceRunnerService,
+		billingCacheService,
+		nil,
+		subscriptionService,
+		oauthService,
+		openAIOAuthService,
+		geminiOAuthService,
+		antigravityOAuthService,
+		nil,
+		openAIGatewayService,
+		scheduledTestRunnerService,
+		proxyMaintenanceRunnerService,
 		backupService,
 	)
 

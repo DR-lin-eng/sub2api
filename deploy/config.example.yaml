@@ -425,6 +425,26 @@ gateway:
     #     name: "Custom Profile 2"
 
 # =============================================================================
+# Account Import Configuration
+# 账号导入配置
+# =============================================================================
+account_import:
+  # 后台导入 worker 数量
+  worker_count: 2
+  # 每个 chunk 处理的账号数量
+  chunk_size: 100
+  # Redis 批次元数据保留时间
+  queue_ttl: 24h
+  # 快路径单次最多允许写入的账号数
+  max_fast_path_rows: 5000
+  # worker 领取 chunk 后的租约 TTL
+  claim_ttl: 2m
+  # 过期租约回收扫描周期
+  recovery_interval: 30s
+  # 每个 chunk 最大重试次数
+  max_chunk_attempts: 5
+
+# =============================================================================
 # Logging Configuration
 # 日志配置
 # =============================================================================

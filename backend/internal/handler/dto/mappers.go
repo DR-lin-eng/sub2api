@@ -198,7 +198,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Platform:                a.Platform,
 		Type:                    a.Type,
 		Credentials:             service.MaskSensitiveCredentials(a.Credentials),
-		Extra:                   a.Extra,
+		Extra:                   service.FilterAccountInternalExtra(a.Extra),
 		ProxyID:                 a.ProxyID,
 		Concurrency:             a.Concurrency,
 		LoadFactor:              a.LoadFactor,
@@ -220,6 +220,11 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		SessionWindowStart:      a.SessionWindowStart,
 		SessionWindowEnd:        a.SessionWindowEnd,
 		SessionWindowStatus:     a.SessionWindowStatus,
+		SyncState:               a.SyncState,
+		SyncProgress:            a.SyncProgress,
+		SyncMessage:             a.SyncMessage,
+		SyncBatchID:             a.SyncBatchID,
+		DuplicateOfAccountID:    a.DuplicateOfAccountID,
 		GroupIDs:                a.GroupIDs,
 	}
 

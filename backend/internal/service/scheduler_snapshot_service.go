@@ -160,6 +160,28 @@ func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, acc
 	return s.cache.SetAccount(ctx, account)
 }
 
+// RefreshAccounts updates single-account cache entries and proactively rebuilds
+// the affected scheduler buckets so newly imported placeholder accounts can be
+// selected immediately without waiting for the outbox worker.
+func (s *SchedulerSnapshotService) RefreshAccounts(ctx context.Context, accounts []*Account, reason string) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	var firstErr error
+	for _, account := range accounts {
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		if err := s.cache.SetAccount(ctx, account); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := s.rebuildByAccount(ctx, account, account.GroupIDs, reason); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (s *SchedulerSnapshotService) runInitialRebuild() {
 	if s.cache == nil {
 		return

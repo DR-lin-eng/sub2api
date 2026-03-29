@@ -70,9 +70,12 @@ type DataImportRequest struct {
 }
 
 type DataImportResult struct {
+	BatchID        string            `json:"batch_id,omitempty"`
 	ProxyCreated   int               `json:"proxy_created"`
 	ProxyReused    int               `json:"proxy_reused"`
 	ProxyFailed    int               `json:"proxy_failed"`
+	AccountEnqueued int              `json:"account_enqueued,omitempty"`
+	PlaceholderCreated int           `json:"placeholder_created,omitempty"`
 	AccountCreated int               `json:"account_created"`
 	AccountSkipped int               `json:"account_skipped"`
 	AccountFailed  int               `json:"account_failed"`
@@ -692,6 +695,17 @@ func (h *AccountHandler) importDataWithProgress(
 	req DataImportRequest,
 	progress func(stage string, current, total int, message string),
 ) (DataImportResult, error) {
+	if svc := getDefaultAccountImportService(); svc != nil {
+		return h.importDataWithFastPath(ctx, req, progress, svc)
+	}
+	return h.importDataLegacyWithProgress(ctx, req, progress)
+}
+
+func (h *AccountHandler) importDataLegacyWithProgress(
+	ctx context.Context,
+	req DataImportRequest,
+	progress func(stage string, current, total int, message string),
+) (DataImportResult, error) {
 	skipDefaultGroupBind := true
 	if req.SkipDefaultGroupBind != nil {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
@@ -877,6 +891,26 @@ func (h *AccountHandler) importDataWithProgress(
 	return result, nil
 }
 
+func (h *AccountHandler) importDataWithFastPath(
+	ctx context.Context,
+	req DataImportRequest,
+	progress func(stage string, current, total int, message string),
+	svc *service.AccountImportService,
+) (DataImportResult, error) {
+	if svc == nil {
+		return DataImportResult{}, errors.New("account import service not configured")
+	}
+	payload, err := convertToAccountImportPayload(req)
+	if err != nil {
+		return DataImportResult{}, err
+	}
+	result, err := svc.Import(ctx, payload, progress)
+	if err != nil {
+		return DataImportResult{}, err
+	}
+	return dataImportResultFromService(result), nil
+}
+
 func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, error) {
 	page := 1
 	pageSize := dataPageLimit()
@@ -911,6 +945,100 @@ func (h *AccountHandler) listAllAccounts(ctx context.Context) ([]service.Account
 		page++
 	}
 	return out, nil
+}
+
+func convertToAccountImportPayload(req DataImportRequest) (service.AccountImportPayload, error) {
+	payload := service.AccountImportPayload{
+		GroupIDs:             normalizeInt64IDList(req.GroupIDs),
+		SkipDefaultGroupBind: true,
+		Proxies:              make([]service.AccountImportProxy, 0, len(req.Data.Proxies)),
+		Accounts:             make([]service.AccountImportAccount, 0, len(req.Data.Accounts)),
+	}
+	if req.SkipDefaultGroupBind != nil {
+		payload.SkipDefaultGroupBind = *req.SkipDefaultGroupBind
+	}
+
+	for _, item := range req.Data.Proxies {
+		key := strings.TrimSpace(item.ProxyKey)
+		if key == "" {
+			key = buildProxyKey(item.Protocol, item.Host, item.Port, item.Username, item.Password)
+		}
+		if err := validateDataProxy(item); err != nil {
+			return payload, err
+		}
+		payload.Proxies = append(payload.Proxies, service.AccountImportProxy{
+			ProxyKey: key,
+			Name:     item.Name,
+			Protocol: item.Protocol,
+			Host:     item.Host,
+			Port:     item.Port,
+			Username: item.Username,
+			Password: item.Password,
+			Status:   item.Status,
+		})
+	}
+
+	for _, item := range req.Data.Accounts {
+		if err := validateDataAccount(item); err != nil {
+			return payload, err
+		}
+		enrichCredentialsFromIDToken(&item)
+		spec := service.AccountImportAccount{
+			Name:               item.Name,
+			Notes:              item.Notes,
+			Platform:           item.Platform,
+			Type:               item.Type,
+			Credentials:        copyDataImportMap(item.Credentials),
+			Extra:              copyDataImportMap(item.Extra),
+			GroupIDs:           normalizeInt64IDList(item.GroupIDs),
+			Concurrency:        item.Concurrency,
+			Priority:           item.Priority,
+			RateMultiplier:     item.RateMultiplier,
+			ExpiresAt:          item.ExpiresAt,
+			AutoPauseOnExpired: item.AutoPauseOnExpired,
+		}
+		if item.ProxyKey != nil {
+			spec.ProxyKey = strings.TrimSpace(*item.ProxyKey)
+		}
+		payload.Accounts = append(payload.Accounts, spec)
+	}
+
+	return payload, nil
+}
+
+func dataImportResultFromService(result service.AccountImportResult) DataImportResult {
+	out := DataImportResult{
+		BatchID:            result.BatchID,
+		ProxyCreated:       result.ProxyCreated,
+		ProxyReused:        result.ProxyReused,
+		ProxyFailed:        result.ProxyFailed,
+		AccountEnqueued:    result.AccountEnqueued,
+		PlaceholderCreated: result.PlaceholderCreated,
+		AccountFailed:      result.AccountFailed,
+	}
+	if len(result.Errors) > 0 {
+		out.Errors = make([]DataImportError, 0, len(result.Errors))
+		for _, item := range result.Errors {
+			out.Errors = append(out.Errors, DataImportError{
+				Kind:     item.Kind,
+				Name:     item.Name,
+				ProxyKey: item.ProxyKey,
+				Message:  item.Message,
+			})
+		}
+	}
+	return out
+}
+
+func copyDataImportMap(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func buildExistingAccountDedupKey(account *service.Account) string {

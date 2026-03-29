@@ -56,6 +56,15 @@ type Account struct {
 	GroupIDs      []int64
 	Groups        []*Group
 
+	// Import/sync state is persisted in extra using reserved internal keys,
+	// then hydrated into these explicit fields for API responses and workers.
+	SyncState            string
+	SyncProgress         int
+	SyncMessage          string
+	SyncBatchID          string
+	DuplicateOfAccountID *int64
+	DedupFingerprint     string
+
 	// model_mapping 热路径缓存（非持久化字段）
 	modelMappingCache               map[string]string
 	modelMappingCacheReady          bool
@@ -63,6 +72,32 @@ type Account struct {
 	modelMappingCacheRawPtr         uintptr
 	modelMappingCacheRawLen         int
 	modelMappingCacheRawSig         uint64
+}
+
+const (
+	AccountSyncStatePending   = "pending"
+	AccountSyncStateSyncing   = "syncing"
+	AccountSyncStateCompleted = "completed"
+	AccountSyncStateFailed    = "failed"
+	AccountSyncStateDuplicate = "duplicate"
+)
+
+const (
+	AccountExtraSyncStateKey        = "_import_sync_state"
+	AccountExtraSyncProgressKey     = "_import_sync_progress"
+	AccountExtraSyncMessageKey      = "_import_sync_message"
+	AccountExtraSyncBatchIDKey      = "_import_sync_batch_id"
+	AccountExtraDuplicateOfKey      = "_import_duplicate_of_account_id"
+	AccountExtraDedupFingerprintKey = "_import_dedup_fingerprint"
+)
+
+var accountInternalExtraKeys = map[string]struct{}{
+	AccountExtraSyncStateKey:        {},
+	AccountExtraSyncProgressKey:     {},
+	AccountExtraSyncMessageKey:      {},
+	AccountExtraSyncBatchIDKey:      {},
+	AccountExtraDuplicateOfKey:      {},
+	AccountExtraDedupFingerprintKey: {},
 }
 
 type TempUnschedulableRule struct {
@@ -1831,4 +1866,145 @@ func parseExtraInt(value any) int {
 		}
 	}
 	return 0
+}
+
+func IsAccountInternalExtraKey(key string) bool {
+	_, ok := accountInternalExtraKeys[strings.TrimSpace(key)]
+	return ok
+}
+
+func CopyExtraPreservingInternal(current, next map[string]any) map[string]any {
+	out := make(map[string]any)
+	for k, v := range next {
+		out[k] = v
+	}
+	for k, v := range current {
+		if !IsAccountInternalExtraKey(k) {
+			continue
+		}
+		if _, exists := out[k]; exists {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func FilterAccountInternalExtra(extra map[string]any) map[string]any {
+	if len(extra) == 0 {
+		if extra == nil {
+			return nil
+		}
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(extra))
+	for k, v := range extra {
+		if IsAccountInternalExtraKey(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func (a *Account) ApplySyncMetadataFromExtra() {
+	if a == nil {
+		return
+	}
+	a.SyncState = strings.TrimSpace(a.getExtraString(AccountExtraSyncStateKey))
+	a.SyncProgress = clampAccountSyncProgress(ParseExtraInt(a.getExtraValue(AccountExtraSyncProgressKey)))
+	a.SyncMessage = strings.TrimSpace(a.getExtraString(AccountExtraSyncMessageKey))
+	a.SyncBatchID = strings.TrimSpace(a.getExtraString(AccountExtraSyncBatchIDKey))
+	a.DedupFingerprint = strings.TrimSpace(a.getExtraString(AccountExtraDedupFingerprintKey))
+
+	if raw := strings.TrimSpace(a.getExtraString(AccountExtraDuplicateOfKey)); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			a.DuplicateOfAccountID = &parsed
+		}
+	} else if value, ok := a.getExtraValue(AccountExtraDuplicateOfKey).(float64); ok && value > 0 {
+		parsed := int64(value)
+		a.DuplicateOfAccountID = &parsed
+	}
+}
+
+func (a *Account) SetSyncMetadata(state string, progress int, message, batchID string, duplicateOf *int64) {
+	if a == nil {
+		return
+	}
+	if a.Extra == nil {
+		a.Extra = make(map[string]any)
+	}
+	progress = clampAccountSyncProgress(progress)
+	state = strings.TrimSpace(state)
+	message = strings.TrimSpace(message)
+	batchID = strings.TrimSpace(batchID)
+
+	if state == "" {
+		delete(a.Extra, AccountExtraSyncStateKey)
+		a.SyncState = ""
+	} else {
+		a.Extra[AccountExtraSyncStateKey] = state
+		a.SyncState = state
+	}
+	a.Extra[AccountExtraSyncProgressKey] = progress
+	a.SyncProgress = progress
+
+	if message == "" {
+		delete(a.Extra, AccountExtraSyncMessageKey)
+		a.SyncMessage = ""
+	} else {
+		a.Extra[AccountExtraSyncMessageKey] = message
+		a.SyncMessage = message
+	}
+
+	if batchID == "" {
+		delete(a.Extra, AccountExtraSyncBatchIDKey)
+		a.SyncBatchID = ""
+	} else {
+		a.Extra[AccountExtraSyncBatchIDKey] = batchID
+		a.SyncBatchID = batchID
+	}
+
+	if duplicateOf != nil && *duplicateOf > 0 {
+		a.Extra[AccountExtraDuplicateOfKey] = *duplicateOf
+		id := *duplicateOf
+		a.DuplicateOfAccountID = &id
+	} else {
+		delete(a.Extra, AccountExtraDuplicateOfKey)
+		a.DuplicateOfAccountID = nil
+	}
+}
+
+func (a *Account) SetDedupFingerprint(fingerprint string) {
+	if a == nil {
+		return
+	}
+	fingerprint = strings.TrimSpace(fingerprint)
+	if a.Extra == nil {
+		a.Extra = make(map[string]any)
+	}
+	if fingerprint == "" {
+		delete(a.Extra, AccountExtraDedupFingerprintKey)
+		a.DedupFingerprint = ""
+		return
+	}
+	a.Extra[AccountExtraDedupFingerprintKey] = fingerprint
+	a.DedupFingerprint = fingerprint
+}
+
+func (a *Account) getExtraValue(key string) any {
+	if a == nil || a.Extra == nil {
+		return nil
+	}
+	return a.Extra[key]
+}
+
+func clampAccountSyncProgress(progress int) int {
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
 }

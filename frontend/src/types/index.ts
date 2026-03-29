@@ -747,6 +747,11 @@ export interface Account {
   session_window_start: string | null
   session_window_end: string | null
   session_window_status: 'allowed' | 'allowed_warning' | 'rejected' | null
+  sync_state?: 'pending' | 'syncing' | 'completed' | 'failed' | 'duplicate' | null
+  sync_progress?: number | null
+  sync_message?: string | null
+  sync_batch_id?: string | null
+  duplicate_of_account_id?: number | null
 
   // 5h窗口费用控制（仅 Anthropic OAuth/SetupToken 账号有效）
   window_cost_limit?: number | null
@@ -1012,9 +1017,12 @@ export interface AdminDataImportError {
 }
 
 export interface AdminDataImportResult {
+  batch_id?: string
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
+  account_enqueued?: number
+  placeholder_created?: number
   account_created: number
   account_skipped: number
   account_failed: number

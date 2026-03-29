@@ -260,7 +260,11 @@ func (m *accountImportTaskManager) runTaskNow(task *accountImportTask) {
 		state.Status = accountImportTaskCompleted
 		state.Stage = "completed"
 		state.Result = &result
-		state.Message = fmt.Sprintf("Import completed: created=%d skipped=%d failed=%d", result.AccountCreated, result.AccountSkipped, result.AccountFailed)
+		if result.AccountEnqueued > 0 || result.PlaceholderCreated > 0 {
+			state.Message = fmt.Sprintf("Fast-path import completed: enqueued=%d placeholders=%d failed=%d", result.AccountEnqueued, result.PlaceholderCreated, result.AccountFailed)
+		} else {
+			state.Message = fmt.Sprintf("Import completed: created=%d skipped=%d failed=%d", result.AccountCreated, result.AccountSkipped, result.AccountFailed)
+		}
 		state.Current = state.Total
 		state.Progress = 100
 		state.FinishedAt = &finishedAt

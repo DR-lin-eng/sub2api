@@ -167,6 +167,12 @@ type Account struct {
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`
 
+	SyncState            string `json:"sync_state,omitempty"`
+	SyncProgress         int    `json:"sync_progress,omitempty"`
+	SyncMessage          string `json:"sync_message,omitempty"`
+	SyncBatchID          string `json:"sync_batch_id,omitempty"`
+	DuplicateOfAccountID *int64 `json:"duplicate_of_account_id,omitempty"`
+
 	// 5h窗口费用控制（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 从 extra 字段提取，方便前端显示和编辑
 	WindowCostLimit         *float64 `json:"window_cost_limit,omitempty"`

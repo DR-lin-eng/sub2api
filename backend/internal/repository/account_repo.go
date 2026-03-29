@@ -57,6 +57,7 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 	"codex_5h_",
 	"codex_7d_",
 	"passive_usage_",
+	"_import_",
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
@@ -789,7 +790,13 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 
 	if len(groupIDs) == 0 {
 		if tx != nil {
-			return tx.Commit()
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+		}
+		payload := buildSchedulerGroupPayload(existingGroupIDs)
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue clear groups failed: account=%d err=%v", accountID, err)
 		}
 		return nil
 	}
@@ -1632,7 +1639,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 
 	rateMultiplier := m.RateMultiplier
 
-	return &service.Account{
+	account := &service.Account{
 		ID:                      m.ID,
 		Name:                    m.Name,
 		Notes:                   m.Notes,
@@ -1662,6 +1669,8 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		SessionWindowEnd:        m.SessionWindowEnd,
 		SessionWindowStatus:     derefString(m.SessionWindowStatus),
 	}
+	account.ApplySyncMetadataFromExtra()
+	return account
 }
 
 func normalizeJSONMap(in map[string]any) map[string]any {

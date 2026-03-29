@@ -292,6 +292,22 @@ func ProvideSchedulerSnapshotService(
 	return svc
 }
 
+func ProvideAccountImportService(
+	accountStore AccountImportAccountStore,
+	batchRepo AccountImportBatchRepository,
+	proxyRepo ProxyRepository,
+	groupRepo GroupRepository,
+	soraAccountRepo SoraAccountRepository,
+	schedulerSnapshot *SchedulerSnapshotService,
+	cfg *config.Config,
+) *AccountImportService {
+	svc := NewAccountImportService(accountStore, batchRepo, proxyRepo, groupRepo, soraAccountRepo, schedulerSnapshot, cfg)
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
+	return svc
+}
+
 // ProvideRateLimitService creates RateLimitService with optional dependencies.
 func ProvideRateLimitService(
 	accountRepo AccountRepository,
@@ -651,6 +667,7 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	NewAccountUsageService,
 	NewAccountExportService,
+	ProvideAccountImportService,
 	NewAccountTestService,
 	ProvideAccountModelsRefreshService,
 	ProvideSettingService,

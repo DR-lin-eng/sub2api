@@ -87,6 +87,7 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	AccountImport           AccountImportConfig           `mapstructure:"account_import"`
 }
 
 type LogConfig struct {
@@ -170,6 +171,16 @@ type IdempotencyConfig struct {
 	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
 	// CleanupBatchSize 每次清理的最大记录数。
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
+type AccountImportConfig struct {
+	WorkerCount     int           `mapstructure:"worker_count"`
+	ChunkSize       int           `mapstructure:"chunk_size"`
+	QueueTTL        time.Duration `mapstructure:"queue_ttl"`
+	MaxFastPathRows int           `mapstructure:"max_fast_path_rows"`
+	ClaimTTL        time.Duration `mapstructure:"claim_ttl"`
+	RecoveryInterval time.Duration `mapstructure:"recovery_interval"`
+	MaxChunkAttempts int          `mapstructure:"max_chunk_attempts"`
 }
 
 type LinuxDoConnectConfig struct {
@@ -1623,6 +1634,13 @@ func setDefaults() {
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
 	viper.SetDefault("subscription_maintenance.queue_size", 1024)
+	viper.SetDefault("account_import.worker_count", 2)
+	viper.SetDefault("account_import.chunk_size", 100)
+	viper.SetDefault("account_import.queue_ttl", "24h")
+	viper.SetDefault("account_import.max_fast_path_rows", 5000)
+	viper.SetDefault("account_import.claim_ttl", "2m")
+	viper.SetDefault("account_import.recovery_interval", "30s")
+	viper.SetDefault("account_import.max_chunk_attempts", 5)
 
 }
 
@@ -2466,6 +2484,27 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	if c.AccountImport.WorkerCount <= 0 {
+		return fmt.Errorf("account_import.worker_count must be positive")
+	}
+	if c.AccountImport.ChunkSize <= 0 {
+		return fmt.Errorf("account_import.chunk_size must be positive")
+	}
+	if c.AccountImport.QueueTTL <= 0 {
+		return fmt.Errorf("account_import.queue_ttl must be positive")
+	}
+	if c.AccountImport.MaxFastPathRows <= 0 {
+		return fmt.Errorf("account_import.max_fast_path_rows must be positive")
+	}
+	if c.AccountImport.ClaimTTL <= 0 {
+		return fmt.Errorf("account_import.claim_ttl must be positive")
+	}
+	if c.AccountImport.RecoveryInterval <= 0 {
+		return fmt.Errorf("account_import.recovery_interval must be positive")
+	}
+	if c.AccountImport.MaxChunkAttempts <= 0 {
+		return fmt.Errorf("account_import.max_chunk_attempts must be positive")
 	}
 	return nil
 }
