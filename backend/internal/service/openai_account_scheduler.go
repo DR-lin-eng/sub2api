@@ -3,7 +3,6 @@ package service
 import (
 	"container/heap"
 	"context"
-	"errors"
 	"hash/fnv"
 	"math"
 	"sort"
@@ -678,7 +677,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, err
 	}
 	if len(accounts) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, 0, 0, ErrNoAvailableAccounts
 	}
 
 	filtered := make([]*Account, 0, len(accounts))
@@ -706,7 +705,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, 0, 0, ErrNoAvailableAccounts
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}

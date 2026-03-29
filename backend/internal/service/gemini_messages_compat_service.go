@@ -2756,6 +2756,9 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	if statusCode != 429 {
 		return
 	}
+	if s.rateLimitService != nil && s.rateLimitService.maybeAutoDeleteAccountOn429(ctx, account, body) {
+		return
+	}
 
 	oauthType := account.GeminiOAuthType()
 	tierID := account.GeminiTierID()

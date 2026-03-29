@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/stretchr/testify/require"
 )
@@ -86,6 +87,7 @@ type stubAntigravityAccountRepo struct {
 	rateCalls           []rateLimitCall
 	modelRateLimitCalls []modelRateLimitCall
 	extraUpdateCalls    []extraUpdateCall
+	deletedIDs          []int64
 }
 
 func (s *stubAntigravityAccountRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
@@ -100,6 +102,11 @@ func (s *stubAntigravityAccountRepo) SetModelRateLimit(ctx context.Context, id i
 
 func (s *stubAntigravityAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	s.extraUpdateCalls = append(s.extraUpdateCalls, extraUpdateCall{accountID: id, updates: updates})
+	return nil
+}
+
+func (s *stubAntigravityAccountRepo) Delete(ctx context.Context, id int64) error {
+	s.deletedIDs = append(s.deletedIDs, id)
 	return nil
 }
 
@@ -222,6 +229,30 @@ func TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey(t *testing
 	require.Nil(t, result)
 	require.Len(t, repo.modelRateLimitCalls, 1)
 	require.Equal(t, "claude-opus-4-6-thinking", repo.modelRateLimitCalls[0].modelKey)
+}
+
+func TestHandleUpstreamError_429_AutoDeleteSkipsModelRateLimit(t *testing.T) {
+	repo := &stubAntigravityAccountRepo{}
+	settings := NewSettingService(&hotSettingRepoStub{
+		values: map[string]string{
+			SettingKeyAutoDelete429Accounts: "true",
+		},
+	}, &config.Config{})
+	rateSvc := NewRateLimitService(repo, nil, nil, nil, nil)
+	rateSvc.SetSettingService(settings)
+
+	svc := &AntigravityGatewayService{
+		accountRepo:       repo,
+		rateLimitService: rateSvc,
+	}
+	account := &Account{ID: 21, Name: "acc-21", Platform: PlatformAntigravity}
+
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, buildGeminiRateLimitBody("5s"), "claude-sonnet-4-5", 0, "", false)
+
+	require.Nil(t, result)
+	require.Equal(t, []int64{account.ID}, repo.deletedIDs)
+	require.Empty(t, repo.modelRateLimitCalls)
+	require.Empty(t, repo.rateCalls)
 }
 
 // TestHandleUpstreamError_503_ModelCapacityExhausted 测试 503 模型容量不足场景

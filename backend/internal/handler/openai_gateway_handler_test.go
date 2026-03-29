@@ -269,6 +269,28 @@ func TestHandleRemoteCompactFailure_PreservesUpstreamStatusAndMessage(t *testing
 	require.Equal(t, "remote compact failed for large context", errorObj["message"])
 }
 
+func TestHandleRemoteCompactFailure_MasksTransientUpstream429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleRemoteCompactFailure(c, &service.UpstreamFailoverError{
+		StatusCode:   http.StatusTooManyRequests,
+		ResponseBody: []byte(`{"error":{"message":"upstream rate limited"}}`),
+	}, false)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "api_error", errorObj["type"])
+	require.Equal(t, "Service temporarily unavailable", errorObj["message"])
+}
+
 func TestHandleRemoteCompactFailure_WritesErrorBodyWhenCompactResponseAlreadyStarted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -286,7 +308,7 @@ func TestHandleRemoteCompactFailure_WritesErrorBodyWhenCompactResponseAlreadySta
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.True(t, strings.HasPrefix(w.Body.String(), "\n"))
-	require.Contains(t, w.Body.String(), `"message":"upstream timed out"`)
+	require.Contains(t, w.Body.String(), `"message":"Service temporarily unavailable"`)
 }
 
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
@@ -317,6 +339,15 @@ func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 		c.String(http.StatusForbidden, "already written")
 		require.True(t, shouldLogOpenAIForwardFailureAsWarn(c, false))
 	})
+}
+
+func TestMapUpstreamError_MasksTransient429(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+
+	status, errType, message := h.mapUpstreamError(http.StatusTooManyRequests)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, "api_error", errType)
+	require.Equal(t, "Service temporarily unavailable", message)
 }
 
 func TestOpenAIRecoverResponsesPanic_WritesFallbackResponse(t *testing.T) {

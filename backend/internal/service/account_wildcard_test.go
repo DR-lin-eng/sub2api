@@ -194,6 +194,26 @@ func TestAccountIsModelSupported(t *testing.T) {
 			requestedModel: "gemini-3-flash",
 			expected:       false,
 		},
+		{
+			name: "reasoning suffix falls back to base exact support",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.4": "gpt-5.4-mini",
+				},
+			},
+			requestedModel: "gpt-5.4-xhigh",
+			expected:       true,
+		},
+		{
+			name: "codex alias falls back to normalized support",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.3-codex": "gpt-5.3-codex-spark",
+				},
+			},
+			requestedModel: "gpt-5.3",
+			expected:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -342,6 +362,17 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			requestedModel: "gpt-5.4",
 			expectedModel:  "gpt-5.4",
 			expectedMatch:  false,
+		},
+		{
+			name: "codex alias falls back to normalized exact mapping",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.3-codex": "gpt-5.3-codex-spark",
+				},
+			},
+			requestedModel: "gpt-5.3",
+			expectedModel:  "gpt-5.3-codex-spark",
+			expectedMatch:  true,
 		},
 	}
 

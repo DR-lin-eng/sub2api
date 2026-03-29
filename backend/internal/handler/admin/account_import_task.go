@@ -25,6 +25,7 @@ const (
 const (
 	accountImportTaskCleanupPeriod = 5 * time.Minute
 	accountImportTaskTTL           = 1 * time.Hour
+	accountImportTaskWorkerCount   = 4
 )
 
 type accountImportTaskState struct {
@@ -56,12 +57,15 @@ type accountImportTask struct {
 }
 
 type accountImportTaskManager struct {
-	once    sync.Once
-	stopCh  chan struct{}
-	queue   chan *accountImportTask
-	mu      sync.RWMutex
-	tasks   map[string]*accountImportTask
-	workers sync.WaitGroup
+	once       sync.Once
+	stopCh     chan struct{}
+	queueMu    sync.Mutex
+	queueCond  *sync.Cond
+	pending    []*accountImportTask
+	workerCount int
+	mu         sync.RWMutex
+	tasks      map[string]*accountImportTask
+	workers    sync.WaitGroup
 }
 
 func defaultAccountImportTaskManager() *accountImportTaskManager {
@@ -75,9 +79,13 @@ func accountImportTaskCacheKey(taskID string) string {
 const accountImportTaskKind = "account_import"
 
 var defaultAccountImportTasks = &accountImportTaskManager{
-	stopCh: make(chan struct{}),
-	queue:  make(chan *accountImportTask, 8),
-	tasks:  make(map[string]*accountImportTask),
+	stopCh:      make(chan struct{}),
+	workerCount: accountImportTaskWorkerCount,
+	tasks:       make(map[string]*accountImportTask),
+}
+
+func init() {
+	defaultAccountImportTasks.queueCond = sync.NewCond(&defaultAccountImportTasks.queueMu)
 }
 
 func (m *accountImportTaskManager) ensureStarted() {
@@ -93,18 +101,59 @@ func (m *accountImportTaskManager) ensureStarted() {
 			for {
 				select {
 				case <-m.stopCh:
+					if m.queueCond != nil {
+						m.queueCond.Broadcast()
+					}
 					return
 				case <-ticker.C:
 					m.cleanupExpiredTasks(time.Now().UTC())
-				case task := <-m.queue:
+				}
+			}
+		}()
+
+		workerCount := m.workerCount
+		if workerCount <= 0 {
+			workerCount = accountImportTaskWorkerCount
+		}
+		for i := 0; i < workerCount; i++ {
+			m.workers.Add(1)
+			go func() {
+				defer m.workers.Done()
+				for {
+					task, ok := m.nextTask()
+					if !ok {
+						return
+					}
 					if task == nil {
 						continue
 					}
 					m.runTaskNow(task)
 				}
-			}
-		}()
+			}()
+		}
 	})
+}
+
+func (m *accountImportTaskManager) nextTask() (*accountImportTask, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.queueMu.Lock()
+	defer m.queueMu.Unlock()
+	for len(m.pending) == 0 {
+		select {
+		case <-m.stopCh:
+			return nil, false
+		default:
+		}
+		if m.queueCond == nil {
+			return nil, false
+		}
+		m.queueCond.Wait()
+	}
+	task := m.pending[0]
+	m.pending = m.pending[1:]
+	return task, true
 }
 
 func (m *accountImportTaskManager) createTask(filename string, payload accountImportTaskPayload) *accountImportTask {
@@ -206,12 +255,13 @@ func (m *accountImportTaskManager) submitTask(task *accountImportTask) error {
 		return errors.New("import task manager is not ready")
 	}
 	m.ensureStarted()
-	select {
-	case m.queue <- task:
-		return nil
-	default:
-		return errors.New("import task queue is full")
+	m.queueMu.Lock()
+	m.pending = append(m.pending, task)
+	m.queueMu.Unlock()
+	if m.queueCond != nil {
+		m.queueCond.Signal()
 	}
+	return nil
 }
 
 func (m *accountImportTaskManager) runTaskNow(task *accountImportTask) {

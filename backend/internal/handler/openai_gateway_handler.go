@@ -1791,6 +1791,12 @@ func (h *OpenAIGatewayHandler) handleRemoteCompactFailure(c *gin.Context, failov
 	}
 	service.SetOpsUpstreamError(c, originalStatusCode, upstreamMsg, "")
 
+	if shouldMaskOpenAIUpstreamError(statusCode) {
+		mappedStatus, mappedType, mappedMsg := h.mapUpstreamError(statusCode)
+		h.handleStreamingAwareError(c, mappedStatus, mappedType, mappedMsg, streamStarted)
+		return
+	}
+
 	errType := "upstream_error"
 	switch statusCode {
 	case http.StatusBadRequest:
@@ -1811,6 +1817,15 @@ func (h *OpenAIGatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, sta
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
+func shouldMaskOpenAIUpstreamError(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {
 	switch statusCode {
 	case 401:
@@ -1818,11 +1833,11 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 	case 403:
 		return http.StatusBadGateway, "upstream_error", "Upstream access forbidden, please contact administrator"
 	case 429:
-		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	case 529:
-		return http.StatusServiceUnavailable, "upstream_error", "Upstream service overloaded, please retry later"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	case 500, 502, 503, 504:
-		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
 	}

@@ -542,6 +542,57 @@ func ensureAntigravityDefaultPassthroughs(mapping map[string]string, models []st
 	}
 }
 
+func maybeNormalizeOpenAIModelCandidate(model string) (string, bool) {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if !strings.Contains(lower, "gpt") && !strings.Contains(lower, "codex") {
+		return "", false
+	}
+
+	normalized := strings.TrimSpace(normalizeCodexModel(trimmed))
+	if normalized == "" {
+		return "", false
+	}
+	return normalized, true
+}
+
+func buildOpenAIModelLookupCandidates(requestedModel string) []string {
+	appendUnique := func(out []string, seen map[string]struct{}, value string) []string {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return out
+		}
+		if _, exists := seen[value]; exists {
+			return out
+		}
+		seen[value] = struct{}{}
+		return append(out, value)
+	}
+
+	seen := make(map[string]struct{}, 4)
+	candidates := make([]string, 0, 4)
+	candidates = appendUnique(candidates, seen, requestedModel)
+
+	baseModel := ""
+	if base, _, stripped := splitOpenAIModelReasoningVariant(requestedModel); stripped {
+		baseModel = strings.TrimSpace(base)
+		candidates = appendUnique(candidates, seen, baseModel)
+	}
+
+	if normalized, ok := maybeNormalizeOpenAIModelCandidate(requestedModel); ok {
+		candidates = appendUnique(candidates, seen, normalized)
+	}
+	if normalizedBase, ok := maybeNormalizeOpenAIModelCandidate(baseModel); ok {
+		candidates = appendUnique(candidates, seen, normalizedBase)
+	}
+
+	return candidates
+}
+
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）
 func (a *Account) IsModelSupported(requestedModel string) bool {
@@ -549,14 +600,17 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	if len(mapping) == 0 {
 		return true // 无映射 = 允许所有
 	}
-	// 精确匹配
-	if _, exists := mapping[requestedModel]; exists {
-		return true
-	}
-	// 通配符匹配
-	for pattern := range mapping {
-		if matchWildcard(pattern, requestedModel) {
+
+	for _, candidate := range buildOpenAIModelLookupCandidates(requestedModel) {
+		// 精确匹配
+		if _, exists := mapping[candidate]; exists {
 			return true
+		}
+		// 通配符匹配
+		for pattern := range mapping {
+			if matchWildcard(pattern, candidate) {
+				return true
+			}
 		}
 	}
 	return false
@@ -576,21 +630,13 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	if len(mapping) == 0 {
 		return requestedModel, false
 	}
-	// 精确匹配优先
-	if mappedModel, exists := mapping[requestedModel]; exists {
-		return mappedModel, true
-	}
-	// 通配符匹配（最长优先）
-	if mappedModel, matched = matchWildcardMappingResult(mapping, requestedModel); matched {
-		return mappedModel, true
-	}
-	// 对 OpenAI/Codex 风格的 "模型-推理强度" 变体做一次基础模型回退匹配，
-	// 让诸如 gpt-5.4-xhigh 可以命中已配置的 gpt-5.4 映射规则。
-	if baseModel, _, stripped := splitOpenAIModelReasoningVariant(requestedModel); stripped && baseModel != "" && baseModel != requestedModel {
-		if mappedModel, exists := mapping[baseModel]; exists {
+	for _, candidate := range buildOpenAIModelLookupCandidates(requestedModel) {
+		// 精确匹配优先
+		if mappedModel, exists := mapping[candidate]; exists {
 			return mappedModel, true
 		}
-		if mappedModel, matched = matchWildcardMappingResult(mapping, baseModel); matched {
+		// 通配符匹配（最长优先）
+		if mappedModel, matched = matchWildcardMappingResult(mapping, candidate); matched {
 			return mappedModel, true
 		}
 	}
