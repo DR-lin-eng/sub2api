@@ -128,7 +128,7 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 	if c.skipDefaultLoad && c.loadMap != nil {
 		for _, acc := range accounts {
 			if load, ok := c.loadMap[acc.ID]; ok {
-				out[acc.ID] = load
+				out[acc.ID] = normalizeMockAccountLoadInfo(load, acc.MaxConcurrency)
 			}
 		}
 		return out, nil
@@ -136,7 +136,7 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 	for _, acc := range accounts {
 		if c.loadMap != nil {
 			if load, ok := c.loadMap[acc.ID]; ok {
-				out[acc.ID] = load
+				out[acc.ID] = normalizeMockAccountLoadInfo(load, acc.MaxConcurrency)
 				continue
 			}
 		}
@@ -607,8 +607,8 @@ func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
-			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 10, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 10, Priority: 1},
 		},
 	}
 	cache := &stubGatewayCache{}

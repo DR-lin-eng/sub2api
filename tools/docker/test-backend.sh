@@ -154,7 +154,9 @@ docker_cmd+=(
   /usr/local/go/bin/go test
   "-tags=${tags}"
 )
-docker_cmd+=("${go_test_args[@]}")
+if [[ ${#go_test_args[@]} -gt 0 ]]; then
+  docker_cmd+=("${go_test_args[@]}")
+fi
 docker_cmd+=("${packages[@]}")
 
 log_step "Running backend ${mode} tests in Docker"

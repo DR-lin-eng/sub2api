@@ -434,6 +434,8 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		msg = truncateString(msg, 2048)
 		out.Message = msg
 
+		out.UpstreamURL = truncateString(safeUpstreamURL(out.UpstreamURL), 512)
+
 		detail := strings.TrimSpace(out.Detail)
 		if detail != "" {
 			// Keep upstream detail small; request bodies are not stored here, only upstream error payloads.

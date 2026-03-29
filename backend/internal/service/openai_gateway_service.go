@@ -2019,6 +2019,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 	}
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
+	}
 
 	// 规范化 reasoning.effort 参数（minimal -> none），与上游允许值对齐。
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
@@ -2439,9 +2442,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					AccountName:        account.Name,
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					Kind:               "failover",
-					Message:            upstreamMsg,
-					Detail:             upstreamDetail,
+					UpstreamURL: func() string {
+						if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+							return safeUpstreamURL(resp.Request.URL.String())
+						}
+						return ""
+					}(),
+					Kind:    "failover",
+					Message: upstreamMsg,
+					Detail:  upstreamDetail,
 				})
 
 				s.handleFailoverSideEffects(ctx, resp, account)

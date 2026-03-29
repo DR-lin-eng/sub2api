@@ -87,6 +87,20 @@ func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
 }
 
+func TestSetOpsEndpointContext_StoresUpstreamModelAndRequestType(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	setOpsEndpointContext(c, "gpt-5.4-mini", int16(service.RequestTypeStream))
+
+	require.Equal(t, "gpt-5.4-mini", getOpsUpstreamModelFromContext(c))
+	require.NotNil(t, getOpsRequestTypeFromContext(c))
+	require.Equal(t, int16(service.RequestTypeStream), *getOpsRequestTypeFromContext(c))
+}
+
 func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	resetOpsErrorLoggerStateForTest(t)
 

@@ -33,9 +33,14 @@ type OpsErrorLog struct {
 
 	Severity string `json:"severity"`
 
-	StatusCode int    `json:"status_code"`
-	Platform   string `json:"platform"`
-	Model      string `json:"model"`
+	StatusCode       int    `json:"status_code"`
+	Platform         string `json:"platform"`
+	Model            string `json:"model"`
+	InboundEndpoint  string `json:"inbound_endpoint"`
+	UpstreamEndpoint string `json:"upstream_endpoint"`
+	RequestedModel   string `json:"requested_model"`
+	UpstreamModel    string `json:"upstream_model"`
+	RequestType      *int16 `json:"request_type"`
 
 	IsRetryable bool `json:"is_retryable"`
 	RetryCount  int  `json:"retry_count"`

@@ -15,11 +15,13 @@ const (
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
+	OpsUpstreamModelKey        = "ops_upstream_model"
+	OpsRequestTypeKey          = "ops_request_type"
 
 	// Best-effort capture of the current upstream request body so ops can
 	// retry the specific upstream attempt (not just the client request).
 	// This value is sanitized+trimmed before being persisted.
-	OpsUpstreamRequestBodyKey = "ops_upstream_request_body"
+	OpsUpstreamRequestBodyKey     = "ops_upstream_request_body"
 	OpsUpstreamRequestBodyHashKey = "ops_upstream_request_body_hash"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
@@ -55,6 +57,24 @@ func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 		return
 	}
 	c.Set(key, value)
+}
+
+func SetOpsUpstreamModel(c *gin.Context, upstreamModel string) {
+	if c == nil {
+		return
+	}
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return
+	}
+	c.Set(OpsUpstreamModelKey, upstreamModel)
+}
+
+func SetOpsRequestType(c *gin.Context, requestType RequestType) {
+	if c == nil {
+		return
+	}
+	c.Set(OpsRequestTypeKey, int16(requestType.Normalize()))
 }
 
 // SetOpsUpstreamError is the exported wrapper for setOpsUpstreamError, used by
@@ -96,6 +116,7 @@ type OpsUpstreamErrorEvent struct {
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
 	UpstreamRequestID  string `json:"upstream_request_id,omitempty"`
+	UpstreamURL        string `json:"upstream_url,omitempty"`
 
 	// Best-effort upstream request capture (sanitized+trimmed).
 	// Required for retrying a specific upstream attempt.
@@ -120,6 +141,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
+	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.UpstreamRequestBody = strings.TrimSpace(ev.UpstreamRequestBody)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
@@ -232,4 +254,18 @@ func ParseOpsUpstreamErrors(raw string) ([]*OpsUpstreamErrorEvent, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func safeUpstreamURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(rawURL, '?'); idx >= 0 {
+		rawURL = rawURL[:idx]
+	}
+	if idx := strings.IndexByte(rawURL, '#'); idx >= 0 {
+		rawURL = rawURL[:idx]
+	}
+	return rawURL
 }

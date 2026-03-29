@@ -3687,6 +3687,7 @@ export default {
         },
         time: '时间',
         type: '类型',
+        endpoint: '端点',
         context: '上下文',
         platform: '平台',
         model: '模型',
@@ -3709,7 +3710,11 @@ export default {
         typeRequest: '请求',
         typeAuth: '认证',
         typeRouting: '路由',
-        typeInternal: '内部'
+        typeInternal: '内部',
+        requestType: '类型',
+        requestTypeSync: '同步',
+        requestTypeStream: '流式',
+        requestTypeWs: 'WS'
       },
       // Error Details Modal
       errorDetails: {
@@ -3789,6 +3794,15 @@ export default {
         basicInfo: '基本信息',
         platform: '平台',
         model: '模型',
+        requestedModel: '请求模型',
+        upstreamModel: '上游模型',
+        inboundEndpoint: '入站端点',
+        upstreamEndpoint: '上游端点',
+        requestType: '请求类型',
+        requestTypeUnknown: '未知',
+        requestTypeSync: '同步',
+        requestTypeStream: '流式',
+        requestTypeWs: 'WebSocket',
         group: '分组',
         user: '用户',
         account: '账号',

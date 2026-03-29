@@ -1351,6 +1351,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 应用 thinking 模式自动后缀：如果 thinking 开启且目标是 claude-sonnet-4-5，自动改为 thinking 版本
 	thinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
+	}
 	billingModel := mappedModel
 
 	// 获取 access_token
@@ -1442,9 +1445,15 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "signature_error",
-				Message:            upstreamMsg,
-				Detail:             upstreamDetail,
+				UpstreamURL: func() string {
+					if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+						return safeUpstreamURL(resp.Request.URL.String())
+					}
+					return ""
+				}(),
+				Kind:    "signature_error",
+				Message: upstreamMsg,
+				Detail:  upstreamDetail,
 			})
 
 			// Conservative two-stage fallback:
@@ -2096,6 +2105,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	mappedModel := s.getMappedModel(account, originalModel)
 	if mappedModel == "" {
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
+	}
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
 	}
 	billingModel := mappedModel
 

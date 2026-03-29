@@ -61,6 +61,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// 3. Model mapping
 	mappedModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	responsesReq.Model = mappedModel
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
+	}
 
 	logger.L().Debug("openai messages: model mapping applied",
 		zap.Int64("account_id", account.ID),
@@ -170,9 +173,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-				Detail:             upstreamDetail,
+				UpstreamURL: func() string {
+					if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+						return safeUpstreamURL(resp.Request.URL.String())
+					}
+					return ""
+				}(),
+				Kind:    "failover",
+				Message: upstreamMsg,
+				Detail:  upstreamDetail,
 			})
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)

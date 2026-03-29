@@ -3522,6 +3522,7 @@ export default {
         },
         time: 'Time',
         type: 'Type',
+        endpoint: 'Endpoint',
         context: 'Context',
         platform: 'Platform',
         model: 'Model',
@@ -3544,7 +3545,11 @@ export default {
         typeRequest: 'Request',
         typeAuth: 'Auth',
         typeRouting: 'Routing',
-        typeInternal: 'Internal'
+        typeInternal: 'Internal',
+        requestType: 'Type',
+        requestTypeSync: 'Sync',
+        requestTypeStream: 'Stream',
+        requestTypeWs: 'WS'
       },
       // Error Details Modal
       errorDetails: {
@@ -3624,6 +3629,15 @@ export default {
         basicInfo: 'Basic Info',
         platform: 'Platform',
         model: 'Model',
+        requestedModel: 'Requested Model',
+        upstreamModel: 'Upstream Model',
+        inboundEndpoint: 'Inbound Endpoint',
+        upstreamEndpoint: 'Upstream Endpoint',
+        requestType: 'Request Type',
+        requestTypeUnknown: 'Unknown',
+        requestTypeSync: 'Sync',
+        requestTypeStream: 'Stream',
+        requestTypeWs: 'WebSocket',
         group: 'Group',
         user: 'User',
         account: 'Account',

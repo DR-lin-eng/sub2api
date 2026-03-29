@@ -4613,6 +4613,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		reqModel = mappedModel
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
+	}
 
 	// 获取凭证
 	token, tokenType, err := s.GetAccessToken(ctx, account)
@@ -4681,8 +4684,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						AccountName:        account.Name,
 						UpstreamStatusCode: resp.StatusCode,
 						UpstreamRequestID:  resp.Header.Get("x-request-id"),
-						Kind:               "signature_error",
-						Message:            extractUpstreamErrorMessage(respBody),
+						UpstreamURL: func() string {
+							if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+								return safeUpstreamURL(resp.Request.URL.String())
+							}
+							return ""
+						}(),
+						Kind:    "signature_error",
+						Message: extractUpstreamErrorMessage(respBody),
 						Detail: func() string {
 							if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 								return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)

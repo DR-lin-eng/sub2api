@@ -346,6 +346,41 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody
 	}
 }
 
+// setOpsEndpointContext stores upstream model and request type for ops error logging.
+func setOpsEndpointContext(c *gin.Context, upstreamModel string, requestType int16) {
+	service.SetOpsUpstreamModel(c, upstreamModel)
+	service.SetOpsRequestType(c, service.RequestTypeFromInt16(requestType))
+}
+
+func getOpsRequestTypeFromContext(c *gin.Context) *int16 {
+	if c == nil {
+		return nil
+	}
+	if v, ok := c.Get(service.OpsRequestTypeKey); ok {
+		switch t := v.(type) {
+		case int16:
+			value := int16(service.RequestTypeFromInt16(t))
+			return &value
+		case int:
+			value := int16(service.RequestTypeFromInt16(int16(t)))
+			return &value
+		}
+	}
+	return nil
+}
+
+func getOpsUpstreamModelFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.Get(service.OpsUpstreamModelKey); ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
 func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
 	if c == nil || entry == nil {
 		return
@@ -659,8 +694,13 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 					}
 					return ""
 				}(),
-				Stream:    stream,
-				UserAgent: c.GetHeader("User-Agent"),
+				Stream:           stream,
+				InboundEndpoint:  GetInboundEndpoint(c),
+				UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
+				RequestedModel:   modelName,
+				UpstreamModel:    getOpsUpstreamModelFromContext(c),
+				RequestType:      getOpsRequestTypeFromContext(c),
+				UserAgent:        c.GetHeader("User-Agent"),
 
 				ErrorPhase: "upstream",
 				ErrorType:  "upstream_error",
@@ -787,8 +827,13 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				}
 				return ""
 			}(),
-			Stream:    stream,
-			UserAgent: c.GetHeader("User-Agent"),
+			Stream:           stream,
+			InboundEndpoint:  GetInboundEndpoint(c),
+			UpstreamEndpoint: GetUpstreamEndpoint(c, platform),
+			RequestedModel:   modelName,
+			UpstreamModel:    getOpsUpstreamModelFromContext(c),
+			RequestType:      getOpsRequestTypeFromContext(c),
+			UserAgent:        c.GetHeader("User-Agent"),
 
 			ErrorPhase:        phase,
 			ErrorType:         normalizedType,

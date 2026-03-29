@@ -46,6 +46,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// 2. Resolve model mapping early so compat prompt_cache_key injection can
 	// derive a stable seed from the final upstream model family.
 	mappedModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+	if mappedModel != "" && mappedModel != originalModel {
+		SetOpsUpstreamModel(c, mappedModel)
+	}
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
@@ -171,9 +174,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-				Detail:             upstreamDetail,
+				UpstreamURL: func() string {
+					if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+						return safeUpstreamURL(resp.Request.URL.String())
+					}
+					return ""
+				}(),
+				Kind:    "failover",
+				Message: upstreamMsg,
+				Detail:  upstreamDetail,
 			})
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)

@@ -1079,6 +1079,11 @@ export interface OpsErrorLog {
   status_code: number
   platform: string
   model: string
+  inbound_endpoint?: string
+  upstream_endpoint?: string
+  requested_model?: string
+  upstream_model?: string
+  request_type?: number | null
 
   is_retryable: boolean
   retry_count: number
