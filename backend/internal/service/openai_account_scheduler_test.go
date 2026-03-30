@@ -452,18 +452,18 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.2
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.1
 
-		concurrencyCache := stubConcurrencyCache{
-			loadMap: map[int64]*AccountLoadInfo{
-				3001: {AccountID: 3001, LoadRate: 95, WaitingCount: 8},
-				3002: {AccountID: 3002, LoadRate: 20, WaitingCount: 1},
-				3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
-			},
-			acquireResults: map[int64]bool{
-				3001: false,
-				3003: false, // top1 失败，必须回退到 top-K 的下一候选
-				3002: true,
-			},
-		}
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			3001: {AccountID: 3001, LoadRate: 95, WaitingCount: 8},
+			3002: {AccountID: 3002, LoadRate: 20, WaitingCount: 1},
+			3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			3001: false,
+			3003: false, // top1 失败，必须回退到 top-K 的下一候选
+			3002: true,
+		},
+	}
 
 	svc := &OpenAIGatewayService{
 		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
@@ -605,8 +605,8 @@ func TestOpenAIGatewayService_HealthPrefetchCooldownSuppressesDuplicateEnqueue(t
 	cfg.Gateway.OpenAI.HealthPrefetch.CooldownSeconds = 60
 
 	svc := &OpenAIGatewayService{
-		cfg:              cfg,
-		healthPrefetchCh: make(chan openAIHealthPrefetchJob, 4),
+		cfg:                cfg,
+		healthPrefetchCh:   make(chan openAIHealthPrefetchJob, 4),
 		healthPrefetchStop: make(chan struct{}),
 	}
 
@@ -777,7 +777,9 @@ func TestAdaptiveOpenAISelectionTopK(t *testing.T) {
 	require.Equal(t, 3, adaptiveOpenAISelectionTopK(3, 3, 20))
 	require.Equal(t, 7, adaptiveOpenAISelectionTopK(4, 24, 20))
 	require.Equal(t, 9, adaptiveOpenAISelectionTopK(4, 24, 4))
-	require.Equal(t, 16, adaptiveOpenAISelectionTopK(12, 64, 3))
+	require.Equal(t, 18, adaptiveOpenAISelectionTopK(12, 64, 3))
+	require.Equal(t, 32, adaptiveOpenAISelectionTopK(7, 256, 12))
+	require.Equal(t, 51, adaptiveOpenAISelectionTopK(7, 2048, 3))
 }
 
 func TestSelectTopKOpenAICandidates_TieBreakPrefersMoreHeadroom(t *testing.T) {
@@ -951,6 +953,75 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 
 	// 多 session 应该能打散到多个账号，避免“恒定单账号命中”。
 	require.GreaterOrEqual(t, len(selected), 2)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LargePoolEscapesInitialHotset(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(1500)
+	accounts := make([]Account, 0, 256)
+	loadMap := make(map[int64]*AccountLoadInfo, 256)
+	for i := 0; i < 256; i++ {
+		accountID := int64(9000 + i)
+		accounts = append(accounts, Account{
+			ID:          accountID,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		})
+		loadMap[accountID] = &AccountLoadInfo{
+			AccountID:          accountID,
+			CurrentConcurrency: 0,
+			WaitingCount:       0,
+			LoadRate:           0,
+		}
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 7
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 1
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{sessionBindings: map[string]int64{}},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{loadMap: loadMap}),
+	}
+
+	selected := make(map[int64]int)
+	var maxSelectedID int64
+	for i := 0; i < 256; i++ {
+		sessionHash := fmt.Sprintf("large_pool_session_%03d", i)
+		selection, decision, err := svc.SelectAccountWithScheduler(
+			ctx,
+			&groupID,
+			"",
+			sessionHash,
+			"gpt-5.1",
+			nil,
+			OpenAIUpstreamTransportAny,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+		selected[selection.Account.ID]++
+		if selection.Account.ID > maxSelectedID {
+			maxSelectedID = selection.Account.ID
+		}
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	}
+
+	require.Greater(t, len(selected), 8, "large pool scheduling should still fan out inside the expanded old-account window")
+	require.Greater(t, maxSelectedID, int64(9016), "selection should reach beyond the old fixed 16-account hotset")
 }
 
 func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {

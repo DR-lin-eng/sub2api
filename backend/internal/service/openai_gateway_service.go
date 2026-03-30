@@ -1855,7 +1855,7 @@ func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context,
 }
 
 // Forward forwards request to OpenAI API
-func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, defaultMappedModel ...string) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
 	restrictionResult := s.detectCodexClientRestriction(c, account)
@@ -1874,6 +1874,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
+	resolvedDefaultMappedModel := ""
+	if len(defaultMappedModel) > 0 {
+		resolvedDefaultMappedModel = strings.TrimSpace(defaultMappedModel[0])
+	}
+	requestForwardModel := resolveOpenAIForwardModel(account, reqModel, resolvedDefaultMappedModel)
+	if requestForwardModel != "" && requestForwardModel != reqModel {
+		SetOpsUpstreamModel(c, requestForwardModel)
+	}
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
@@ -1909,9 +1917,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
+		if requestForwardModel != "" && requestForwardModel != reqModel {
+			patchedBody, patchErr := sjson.SetBytes(body, "model", requestForwardModel)
+			if patchErr != nil {
+				return nil, fmt.Errorf("set passthrough model: %w", patchErr)
+			}
+			body = patchedBody
+		}
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
-		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
-		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		reasoningEffort := extractOpenAIReasoningEffortFromBody(originalBody, originalModel)
+		return s.forwardOpenAIPassthrough(ctx, c, account, body, originalModel, reasoningEffort, reqStream, startTime)
 	}
 
 	reqBody, err := getOpenAIRequestBodyMap(c, body)
@@ -1991,7 +2006,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
-	mappedModel := account.GetMappedModel(reqModel)
+	mappedModel := resolveOpenAIForwardModel(account, reqModel, resolvedDefaultMappedModel)
 	if mappedModel != reqModel {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, mappedModel, account.Name, isCodexCLI)
 		reqBody["model"] = mappedModel

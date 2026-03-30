@@ -126,20 +126,31 @@ func (s *FailoverState) HandleFailoverError(
 	return FailoverContinue
 }
 
+func shouldRetrySelectionExhausted(failoverErr *service.UpstreamFailoverError) bool {
+	if failoverErr == nil {
+		return false
+	}
+	switch failoverErr.StatusCode {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+		return true
+	default:
+		return false
+	}
+}
+
 // HandleSelectionExhausted 处理选号失败（所有候选账号都在排除列表中）时的退避重试决策。
-// 针对 Antigravity 单账号分组的 503 (MODEL_CAPACITY_EXHAUSTED) 场景：
-// 清除排除列表、等待退避后重新选号。
+// 对最近一次上游临时错误（429/5xx/529）执行一次池级退避后重试：
+// 清除排除列表、等待短暂退避后重新选号。
 //
 // 返回 FailoverContinue 时，调用方应设置 SingleAccountRetry context 并 continue。
 // 返回 FailoverExhausted 时，调用方应返回错误响应。
 // 返回 FailoverCanceled 时，调用方应直接 return。
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
-	if s.LastFailoverErr != nil &&
-		s.LastFailoverErr.StatusCode == http.StatusServiceUnavailable &&
-		s.SwitchCount <= s.MaxSwitches {
+	if shouldRetrySelectionExhausted(s.LastFailoverErr) && s.SwitchCount <= s.MaxSwitches {
 
 		logger.FromContext(ctx).Warn("gateway.failover_single_account_backoff",
 			zap.Duration("backoff_delay", singleAccountBackoffDelay),
+			zap.Int("upstream_status", s.LastFailoverErr.StatusCode),
 			zap.Int("switch_count", s.SwitchCount),
 			zap.Int("max_switches", s.MaxSwitches),
 		)

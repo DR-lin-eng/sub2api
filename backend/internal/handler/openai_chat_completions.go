@@ -139,10 +139,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				defaultModel := ""
-				if apiKey.Group != nil {
-					defaultModel = apiKey.Group.DefaultMappedModel
-				}
+				defaultModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
 				if defaultModel != "" && defaultModel != reqModel {
 					reqLog.Info("openai_chat_completions.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
@@ -165,12 +162,27 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					return
 				}
 			} else {
-				if lastFailoverErr != nil {
-					h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
-				} else {
-					h.handleStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					c.Request.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+					} else {
+						h.handleStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+					}
+					return
 				}
-				return
 			}
 		}
 		if selection == nil || selection.Account == nil {

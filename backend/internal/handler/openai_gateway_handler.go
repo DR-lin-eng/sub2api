@@ -110,6 +110,28 @@ func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackMode
 	return strings.TrimSpace(apiKey.Group.DefaultMappedModel)
 }
 
+func resolveOpenAISelectionFallbackModel(apiKey *service.APIKey, requestedModel string) string {
+	fallbackModel := resolveOpenAIForwardDefaultMappedModel(apiKey, "")
+	if fallbackModel == "" || strings.EqualFold(strings.TrimSpace(fallbackModel), strings.TrimSpace(requestedModel)) {
+		return ""
+	}
+	return fallbackModel
+}
+
+func handleOpenAISelectionExhausted(
+	ctx context.Context,
+	failedAccountIDs map[int64]struct{},
+	lastFailoverErr *service.UpstreamFailoverError,
+	switchCount int,
+	maxSwitches int,
+) (map[int64]struct{}, FailoverAction) {
+	fs := NewFailoverState(maxSwitches, false)
+	fs.FailedAccountIDs = failedAccountIDs
+	fs.LastFailoverErr = lastFailoverErr
+	fs.SwitchCount = switchCount
+	return fs.FailedAccountIDs, fs.HandleSelectionExhausted(ctx)
+}
+
 func clampOpenAIMaxSwitches(limit, cap int) int {
 	if limit < 0 {
 		limit = 0
@@ -472,6 +494,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
+		c.Set("openai_responses_fallback_model", "")
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
@@ -489,15 +512,51 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
-				return
-			}
-			if lastFailoverErr != nil {
-				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+				fallbackModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
+				if fallbackModel != "" {
+					reqLog.Info("openai.fallback_to_default_model",
+						zap.String("default_mapped_model", fallbackModel),
+					)
+					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+						c.Request.Context(),
+						apiKey.GroupID,
+						previousResponseID,
+						sessionHash,
+						fallbackModel,
+						failedAccountIDs,
+						service.OpenAIUpstreamTransportAny,
+					)
+					if err == nil && selection != nil {
+						c.Set("openai_responses_fallback_model", fallbackModel)
+					}
+				}
+				if err != nil {
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+					return
+				}
 			} else {
-				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					c.Request.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimple(c, 502, streamStarted)
+					}
+					return
+				}
 			}
-			return
 		}
 		if selection == nil || selection.Account == nil {
 			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
@@ -528,7 +587,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, body)
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, c.GetString("openai_responses_fallback_model"))
+		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, body, defaultMappedModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -898,10 +958,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			)
 			// 首次调度失败 + 有默认映射模型 → 用默认模型重试
 			if len(failedAccountIDs) == 0 {
-				defaultModel := ""
-				if apiKey.Group != nil {
-					defaultModel = apiKey.Group.DefaultMappedModel
-				}
+				defaultModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
 				if defaultModel != "" && defaultModel != reqModel {
 					reqLog.Info("openai_messages.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
@@ -924,12 +981,27 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 			} else {
-				if lastFailoverErr != nil {
-					h.handleAnthropicFailoverExhausted(c, lastFailoverErr, streamStarted)
-				} else {
-					h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					c.Request.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleAnthropicFailoverExhausted(c, lastFailoverErr, streamStarted)
+					} else {
+						h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+					}
+					return
 				}
-				return
 			}
 		}
 		if selection == nil || selection.Account == nil {

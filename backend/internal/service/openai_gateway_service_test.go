@@ -35,6 +35,20 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+func normalizeOpenAIServiceTestLoadInfo(load *AccountLoadInfo, maxConcurrency int) *AccountLoadInfo {
+	if load == nil {
+		return nil
+	}
+	normalized := *load
+	if normalized.LoadRate > 0 && normalized.CurrentConcurrency == 0 && normalized.WaitingCount == 0 && maxConcurrency > 0 {
+		normalized.CurrentConcurrency = (normalized.LoadRate*maxConcurrency + 99) / 100
+		if normalized.CurrentConcurrency <= 0 {
+			normalized.CurrentConcurrency = 1
+		}
+	}
+	return &normalized
+}
+
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
@@ -128,7 +142,7 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 	if c.skipDefaultLoad && c.loadMap != nil {
 		for _, acc := range accounts {
 			if load, ok := c.loadMap[acc.ID]; ok {
-				out[acc.ID] = normalizeMockAccountLoadInfo(load, acc.MaxConcurrency)
+				out[acc.ID] = normalizeOpenAIServiceTestLoadInfo(load, acc.MaxConcurrency)
 			}
 		}
 		return out, nil
@@ -136,7 +150,7 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 	for _, acc := range accounts {
 		if c.loadMap != nil {
 			if load, ok := c.loadMap[acc.ID]; ok {
-				out[acc.ID] = normalizeMockAccountLoadInfo(load, acc.MaxConcurrency)
+				out[acc.ID] = normalizeOpenAIServiceTestLoadInfo(load, acc.MaxConcurrency)
 				continue
 			}
 		}

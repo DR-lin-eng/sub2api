@@ -639,33 +639,7 @@ func buildOpenAITieredSelectionOrder(
 }
 
 func adaptiveOpenAISelectionTopK(baseTopK int, candidateCount int, loadSkew float64) int {
-	if candidateCount <= 0 {
-		return 1
-	}
-	if baseTopK <= 0 {
-		baseTopK = 1
-	}
-	if baseTopK > candidateCount {
-		baseTopK = candidateCount
-	}
-
-	adaptive := baseTopK
-	if candidateCount >= 16 {
-		adaptive += candidateCount / 8
-	}
-	switch {
-	case loadSkew <= 5:
-		adaptive += 2
-	case loadSkew <= 10:
-		adaptive++
-	}
-	if adaptive > 16 {
-		adaptive = 16
-	}
-	if adaptive > candidateCount {
-		adaptive = candidateCount
-	}
-	return adaptive
+	return adaptiveSchedulerSelectionTopK(baseTopK, candidateCount, loadSkew)
 }
 
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
