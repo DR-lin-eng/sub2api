@@ -11,7 +11,7 @@ import (
 
 var defaultNonstreamKeepaliveInterval = 10 * time.Second
 
-const openAICompactKeepaliveContextKey = "openai_compact_nonstream_keepalive"
+const requestNonstreamKeepaliveContextKey = "request_nonstream_keepalive"
 
 type nonstreamKeepaliveController struct {
 	writer  gin.ResponseWriter
@@ -29,6 +29,7 @@ func startNonstreamKeepalive(c *gin.Context, interval time.Duration) *nonstreamK
 	if !ok {
 		return nil
 	}
+	state := getRequestOutputState(c)
 
 	ctrl := &nonstreamKeepaliveController{
 		writer:  c.Writer,
@@ -55,6 +56,10 @@ func startNonstreamKeepalive(c *gin.Context, interval time.Duration) *nonstreamK
 				}
 				ctrl.flusher.Flush()
 				ctrl.emitted.Store(true)
+				if state != nil {
+					state.protocol.CompareAndSwap(int32(gatewayResponseProtocolUnknown), int32(gatewayResponseProtocolBufferedJSON))
+					state.protocolBegan.Store(true)
+				}
 			}
 		}
 	}(c.Request)
@@ -78,11 +83,11 @@ func (c *nonstreamKeepaliveController) emittedAny() bool {
 	return c != nil && c.emitted.Load()
 }
 
-func getOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+func getRequestNonstreamKeepalive(c *gin.Context) *nonstreamKeepaliveController {
 	if c == nil {
 		return nil
 	}
-	raw, ok := c.Get(openAICompactKeepaliveContextKey)
+	raw, ok := c.Get(requestNonstreamKeepaliveContextKey)
 	if !ok {
 		return nil
 	}
@@ -90,48 +95,107 @@ func getOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
 	return ctrl
 }
 
-func startOpenAICompactKeepalive(c *gin.Context, account *Account, reqStream bool) *nonstreamKeepaliveController {
-	if c == nil || c.Writer == nil || reqStream || account == nil || account.Type != AccountTypeOAuth || !isOpenAIResponsesCompactPath(c) {
-		return nil
+func ensureBufferedJSONResponseHeaders(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
 	}
-	if existing := getOpenAICompactKeepalive(c); existing != nil {
-		return existing
-	}
-
 	c.Writer.Header().Set("Cache-Control", "no-cache, no-transform")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
+}
 
+func startBufferedJSONKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	if c == nil || c.Writer == nil {
+		return nil
+	}
+	if existing := getRequestNonstreamKeepalive(c); existing != nil {
+		return existing
+	}
+	ensureBufferedJSONResponseHeaders(c)
 	ctrl := startNonstreamKeepalive(c, defaultNonstreamKeepaliveInterval)
 	if ctrl != nil {
-		c.Set(openAICompactKeepaliveContextKey, ctrl)
+		c.Set(requestNonstreamKeepaliveContextKey, ctrl)
 	}
 	return ctrl
 }
 
+func startOpenAINonstreamKeepalive(c *gin.Context, reqStream bool) *nonstreamKeepaliveController {
+	if c == nil || c.Writer == nil || reqStream {
+		return nil
+	}
+	return startBufferedJSONKeepalive(c)
+}
+
+func startAnthropicBufferedKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	if c == nil || c.Writer == nil {
+		return nil
+	}
+	return startBufferedJSONKeepalive(c)
+}
+
+func getOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	return getRequestNonstreamKeepalive(c)
+}
+
+func startOpenAICompactKeepalive(c *gin.Context, account *Account, reqStream bool) *nonstreamKeepaliveController {
+	if c == nil || c.Writer == nil || reqStream || account == nil || account.Type != AccountTypeOAuth || !isOpenAIResponsesCompactPath(c) {
+		return nil
+	}
+	return startBufferedJSONKeepalive(c)
+}
+
 func stopOpenAICompactKeepalive(c *gin.Context) *nonstreamKeepaliveController {
-	ctrl := getOpenAICompactKeepalive(c)
+	return stopRequestNonstreamKeepalive(c)
+}
+
+func stopRequestNonstreamKeepalive(c *gin.Context) *nonstreamKeepaliveController {
+	ctrl := getRequestNonstreamKeepalive(c)
 	if ctrl != nil {
 		ctrl.stop()
 	}
 	return ctrl
 }
 
-func WriteOpenAICompactErrorAfterResponseStarted(c *gin.Context, errType, message string) bool {
-	if c == nil || c.Writer == nil || !c.Writer.Written() || !isOpenAIResponsesCompactPath(c) {
+func writeBufferedJSONAfterResponseStarted(c *gin.Context, body []byte) bool {
+	if c == nil || c.Writer == nil || !c.Writer.Written() || len(body) == 0 || requestPayloadStarted(c) {
 		return false
 	}
-	ctrl := stopOpenAICompactKeepalive(c)
+	ctrl := stopRequestNonstreamKeepalive(c)
+	if ctrl == nil && !RequestUsesBufferedJSON(c) {
+		return false
+	}
 	if ctrl != nil && !ctrl.emittedAny() {
 		return false
 	}
+	markRequestPayloadStarted(c, gatewayResponseProtocolBufferedJSON)
+	_, err := c.Writer.Write(body)
+	return err == nil
+}
+
+func WriteOpenAIErrorAfterResponseStarted(c *gin.Context, errType, message string) bool {
 	if errType == "" {
 		errType = "upstream_error"
 	}
 	if message == "" {
 		message = "Upstream request failed"
 	}
-	_, err := c.Writer.Write([]byte(`{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}`))
-	return err == nil
+	return writeBufferedJSONAfterResponseStarted(c, []byte(`{"error":{"type":`+strconv.Quote(errType)+`,"message":`+strconv.Quote(message)+`}}`))
+}
+
+func WriteAnthropicBufferedErrorAfterResponseStarted(c *gin.Context, errType, message string) bool {
+	if errType == "" {
+		errType = "api_error"
+	}
+	if message == "" {
+		message = "Upstream request failed"
+	}
+	return writeBufferedJSONAfterResponseStarted(c, []byte(`{"type":"error","error":{"type":`+strconv.Quote(errType)+`,"message":`+strconv.Quote(message)+`}}`))
+}
+
+func WriteOpenAICompactErrorAfterResponseStarted(c *gin.Context, errType, message string) bool {
+	if !isOpenAIResponsesCompactPath(c) {
+		return false
+	}
+	return WriteOpenAIErrorAfterResponseStarted(c, errType, message)
 }

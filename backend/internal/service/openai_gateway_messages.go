@@ -127,6 +127,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		upstreamReq = s.applyOpenAITransportOverride(upstreamReq, responsesBody, true)
 	} else {
 		upstreamReq, cancelQuickFail = withProxyQuickFailRequest(upstreamReq, proxyURL)
+		startAnthropicBufferedKeepalive(c)
 	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
@@ -198,10 +199,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, account, originalModel, mappedModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, account, originalModel, mappedModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -245,11 +246,16 @@ func (s *OpenAIGatewayService) handleAnthropicErrorResponse(
 func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	keepalive := getRequestNonstreamKeepalive(c)
+	if keepalive == nil {
+		keepalive = startAnthropicBufferedKeepalive(c)
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -303,6 +309,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		if !partial.hasUsefulOutput() && account != nil {
+			stopRequestNonstreamKeepalive(c)
+			return nil, buildOpenAICompactBufferedFailoverError(account, err)
+		}
 	}
 
 	if finalResponse == nil {
@@ -312,17 +322,29 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			)
 			finalResponse = partial.responseSnapshot()
 		} else {
-			writeAnthropicError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
+			stopRequestNonstreamKeepalive(c)
+			if account != nil {
+				return nil, buildOpenAICompactBufferedFailoverError(account, io.ErrUnexpectedEOF)
+			}
 			return nil, fmt.Errorf("upstream stream ended without terminal event")
 		}
 	}
 
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
-	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	keepalive = stopRequestNonstreamKeepalive(c)
+	if keepalive == nil || !keepalive.emittedAny() {
+		if s.responseHeaderFilter != nil {
+			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		}
+		ensureBufferedJSONResponseHeaders(c)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	markRequestPayloadStarted(c, gatewayResponseProtocolBufferedJSON)
+	if keepalive == nil || !keepalive.emittedAny() {
+		c.JSON(http.StatusOK, anthropicResp)
+	} else if err := json.NewEncoder(c.Writer).Encode(anthropicResp); err != nil {
+		return nil, fmt.Errorf("write anthropic buffered response: %w", err)
+	}
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
@@ -343,6 +365,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 	startTime time.Time,
@@ -356,13 +379,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewResponsesEventToAnthropicState()
 	state.Model = originalModel
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	firstChunk := true
+	payloadStarted := false
+	sawTerminalEvent := false
 	flushController := s.newOpenAIHTTPStreamFlushController()
 	flusher, _ := c.Writer.(http.Flusher)
 	flushClient := func() {
@@ -423,6 +447,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				usage.CacheReadInputTokens = event.Response.Usage.InputTokensDetails.CachedTokens
 			}
 		}
+		switch event.Type {
+		case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			sawTerminalEvent = true
+		}
 
 		// Convert to Anthropic events
 		events := apicompat.ResponsesEventToAnthropicEvents(&event, state)
@@ -441,6 +469,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				)
 				return true
 			}
+			payloadStarted = true
+			markRequestPayloadStarted(c, gatewayResponseProtocolAnthropicSSE)
 		}
 		if len(events) > 0 && flushController.shouldFlush(isFirstTokenEvent || event.Type == "response.completed" || event.Type == "response.done" || event.Type == "response.failed") {
 			flushClient()
@@ -451,6 +481,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	// finalizeStream sends any remaining Anthropic events and returns the result.
 	finalizeStream := func() (*OpenAIForwardResult, error) {
 		if finalEvents := apicompat.FinalizeResponsesAnthropicStream(state); len(finalEvents) > 0 {
+			payloadStarted = true
+			markRequestPayloadStarted(c, gatewayResponseProtocolAnthropicSSE)
 			for _, evt := range finalEvents {
 				sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
 				if err != nil {
@@ -464,13 +496,24 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	}
 
 	// handleScanErr logs scanner errors if meaningful.
-	handleScanErr := func(err error) {
+	handleScanErr := func(err error) (*OpenAIForwardResult, error, bool) {
+		if err == nil {
+			return nil, nil, false
+		}
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai messages stream: read error",
 				zap.Error(err),
 				zap.String("request_id", requestID),
 			)
 		}
+		if payloadStarted || requestPayloadStarted(c) {
+			result, finalizeErr := finalizeStream()
+			return result, finalizeErr, true
+		}
+		if account != nil {
+			return nil, buildOpenAICompactBufferedFailoverError(account, err), true
+		}
+		return nil, err, true
 	}
 
 	// ── Determine keepalive interval ──
@@ -490,7 +533,12 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				return resultWithUsage(), nil
 			}
 		}
-		handleScanErr(scanner.Err())
+		if result, err, done := handleScanErr(scanner.Err()); done {
+			return result, err
+		}
+		if !payloadStarted && !sawTerminalEvent && account != nil {
+			return nil, buildOpenAICompactBufferedFailoverError(account, io.ErrUnexpectedEOF)
+		}
 		return finalizeStream()
 	}
 
@@ -530,12 +578,13 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				// Upstream closed
+				if !payloadStarted && !sawTerminalEvent && account != nil {
+					return nil, buildOpenAICompactBufferedFailoverError(account, io.ErrUnexpectedEOF)
+				}
 				return finalizeStream()
 			}
-			if ev.err != nil {
-				handleScanErr(ev.err)
-				return finalizeStream()
+			if result, err, done := handleScanErr(ev.err); done {
+				return result, err
 			}
 			lastDataAt = time.Now()
 			line := ev.line
@@ -558,6 +607,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				)
 				return resultWithUsage(), nil
 			}
+			markRequestProtocolStarted(c, gatewayResponseProtocolAnthropicSSE)
 			flushClient()
 		}
 	}
@@ -565,6 +615,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 // writeAnthropicError writes an error response in Anthropic Messages API format.
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
+	if WriteAnthropicBufferedErrorAfterResponseStarted(c, errType, message) {
+		return
+	}
 	c.JSON(statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{

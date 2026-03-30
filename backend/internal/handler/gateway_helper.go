@@ -416,6 +416,12 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			if _, err := fmt.Fprint(c.Writer, string(h.pingFormat)); err != nil {
 				return nil, err
 			}
+			switch h.pingFormat {
+			case SSEPingFormatComment:
+				service.MarkRequestOpenAISSEStarted(c)
+			case SSEPingFormatClaude:
+				service.MarkRequestAnthropicSSEStarted(c)
+			}
 			flusher.Flush()
 
 		case <-localTurnCh:

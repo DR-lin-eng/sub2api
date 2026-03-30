@@ -927,9 +927,9 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	_ = pw.Close()
 	_ = pr.Close()
 
-	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
-		t.Fatalf("expected stream timeout error, got %v", err)
-	}
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Contains(t, string(failoverErr.ResponseBody), "stream data interval timeout")
 	if rec.Body.Len() != 0 {
 		t.Fatalf("expected no downstream bytes before bootstrap timeout, got %q", rec.Body.String())
 	}
@@ -1085,7 +1085,7 @@ func TestOpenAIStreamingSendsKeepaliveBeforeFirstEventWhenIntervalEnabled(t *tes
 	require.Contains(t, rec.Body.String(), `"type":"response.completed"`)
 }
 
-func TestOpenAIStreamingMissingTerminalAfterKeepaliveAppendsFailureAndDone(t *testing.T) {
+func TestOpenAIStreamingMissingTerminalAfterKeepaliveReturnsFailoverError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1114,12 +1114,12 @@ func TestOpenAIStreamingMissingTerminalAfterKeepaliveAppendsFailureAndDone(t *te
 
 	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
 	_ = pr.Close()
-	require.NoError(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
 	require.NotNil(t, result)
 	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
-	require.Contains(t, rec.Body.String(), `"type":"response.failed"`)
-	require.Contains(t, rec.Body.String(), `"code":"stream_disconnected"`)
-	require.Contains(t, rec.Body.String(), "data: [DONE]")
+	require.NotContains(t, rec.Body.String(), `"type":"response.failed"`)
+	require.NotContains(t, rec.Body.String(), "data: [DONE]")
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventAfterContentReturnsSuccess(t *testing.T) {
@@ -1285,7 +1285,7 @@ func TestHandleAnthropicBufferedStreamingResponse_MissingTerminalAfterContentRet
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
 	}()
 
-	result, err := svc.handleAnthropicBufferedStreamingResponse(resp, c, "claude-opus-4-6", "gpt-5.4", time.Now())
+	result, err := svc.handleAnthropicBufferedStreamingResponse(resp, c, &Account{ID: 1}, "claude-opus-4-6", "gpt-5.4", time.Now())
 	_ = pr.Close()
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -1300,6 +1300,115 @@ func TestHandleAnthropicBufferedStreamingResponse_MissingTerminalAfterContentRet
 	require.True(t, ok)
 	require.Equal(t, "text", firstBlock["type"])
 	require.Equal(t, "hello", firstBlock["text"])
+}
+
+func TestHandleAnthropicBufferedStreamingResponse_KeepaliveBeforeFinalJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	previousInterval := defaultNonstreamKeepaliveInterval
+	defaultNonstreamKeepaliveInterval = 15 * time.Millisecond
+	defer func() { defaultNonstreamKeepaliveInterval = previousInterval }()
+
+	keepalive := startAnthropicBufferedKeepalive(c)
+	require.NotNil(t, keepalive)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-anth-keepalive"}},
+	}
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = pw.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_anth_keepalive","model":"gpt-5.4","output":[{"id":"out_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}`,
+			`data: [DONE]`,
+		}, "\n")))
+		_ = pw.Close()
+	}()
+
+	result, err := svc.handleAnthropicBufferedStreamingResponse(resp, c, &Account{ID: 1}, "claude-opus-4-6", "gpt-5.4", time.Now())
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"))
+	require.Contains(t, rec.Body.String(), `"type":"message"`)
+	require.Contains(t, rec.Body.String(), `"hello"`)
+}
+
+func TestHandleAnthropicBufferedStreamingResponse_KeepaliveThenEOFReturnsFailoverError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	previousInterval := defaultNonstreamKeepaliveInterval
+	defaultNonstreamKeepaliveInterval = 15 * time.Millisecond
+	defer func() { defaultNonstreamKeepaliveInterval = previousInterval }()
+
+	keepalive := startAnthropicBufferedKeepalive(c)
+	require.NotNil(t, keepalive)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-anth-eof"}},
+	}
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	result, err := svc.handleAnthropicBufferedStreamingResponse(resp, c, &Account{ID: 1}, "claude-opus-4-6", "gpt-5.4", time.Now())
+	_ = pr.Close()
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Nil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), "\n"))
+}
+
+func TestHandleAnthropicStreamingResponse_KeepaliveThenEOFReturnsFailoverError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamKeepaliveInterval: 1,
+			MaxLineSize:             defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"x-request-id": []string{"rid-anth-stream-eof"}},
+	}
+
+	go func() {
+		time.Sleep(1200 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	result, err := svc.handleAnthropicStreamingResponse(resp, c, &Account{ID: 1}, "claude-opus-4-6", "gpt-5.4", time.Now())
+	_ = pr.Close()
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Nil(t, result)
+	require.True(t, strings.HasPrefix(rec.Body.String(), "event: ping\n"))
 }
 
 func TestOpenAIStreamingTooLong(t *testing.T) {

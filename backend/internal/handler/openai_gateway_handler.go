@@ -1153,7 +1153,7 @@ func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int
 // anthropicStreamingAwareError handles errors that may occur during streaming,
 // using Anthropic SSE error format.
 func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
+	if streamStarted || service.RequestUsesAnthropicSSE(c) {
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
 			errPayload, _ := json.Marshal(gin.H{
@@ -1179,7 +1179,10 @@ func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, 
 
 // ensureAnthropicErrorResponse writes a fallback Anthropic error if no response was written.
 func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, streamStarted bool) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	if c == nil || c.Writer == nil || service.RequestPayloadStarted(c) {
+		return false
+	}
+	if c.Writer.Written() && !streamStarted && !service.RequestUsesAnthropicSSE(c) && !service.RequestUsesBufferedJSON(c) {
 		return false
 	}
 	h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
@@ -1917,7 +1920,7 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
+	if streamStarted || service.RequestUsesOpenAISSE(c) {
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
@@ -1931,7 +1934,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		return
 	}
 
-	if service.WriteOpenAICompactErrorAfterResponseStarted(c, errType, message) {
+	if service.WriteOpenAIErrorAfterResponseStarted(c, errType, message) {
 		return
 	}
 
@@ -1941,7 +1944,10 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
 func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarted bool) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	if c == nil || c.Writer == nil || service.RequestPayloadStarted(c) {
+		return false
+	}
+	if c.Writer.Written() && !streamStarted && !service.RequestUsesOpenAISSE(c) && !service.RequestUsesBufferedJSON(c) {
 		return false
 	}
 	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
