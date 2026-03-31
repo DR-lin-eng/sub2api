@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -175,90 +176,102 @@ func (m *accountImportUploadSessionManager) updateSession(sessionID string, muta
 }
 
 func (h *AccountHandler) CreateImportUploadSession(c *gin.Context) {
+	h.CreateImportUploadSessionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) CreateImportUploadSessionGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.uploadSessionManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import upload session manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import upload session manager not available")
 		return
 	}
 	var req createAccountImportUploadSessionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	state, _, err := h.uploadSessionManager.createSession(req)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	response.Created(c, state)
+	response.CreatedContext(c, state)
 }
 
 func (h *AccountHandler) GetImportUploadSession(c *gin.Context) {
+	h.GetImportUploadSessionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetImportUploadSessionGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.uploadSessionManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import upload session manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import upload session manager not available")
 		return
 	}
-	sessionID := strings.TrimSpace(c.Param("session_id"))
+	sessionID := strings.TrimSpace(c.PathParam("session_id"))
 	session, ok := h.uploadSessionManager.getSession(sessionID)
 	if !ok || session == nil {
-		if cached, hit := loadTaskStateJSON[accountImportUploadSessionState](c.Request.Context(), accountImportUploadSessionCacheKey(sessionID)); hit && cached != nil {
-			response.Success(c, cached)
+		if cached, hit := loadTaskStateJSON[accountImportUploadSessionState](c.Request().Context(), accountImportUploadSessionCacheKey(sessionID)); hit && cached != nil {
+			response.SuccessContext(c, cached)
 			return
 		}
-		response.NotFound(c, "Upload session not found")
+		response.ErrorContext(c, http.StatusNotFound, "Upload session not found")
 		return
 	}
 	state := session.state
-	response.Success(c, state)
+	response.SuccessContext(c, state)
 }
 
 func (h *AccountHandler) UploadImportChunk(c *gin.Context) {
+	h.UploadImportChunkGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) UploadImportChunkGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.uploadSessionManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import upload session manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import upload session manager not available")
 		return
 	}
-	sessionID := strings.TrimSpace(c.Param("session_id"))
+	sessionID := strings.TrimSpace(c.PathParam("session_id"))
 	session, ok := h.uploadSessionManager.getSession(sessionID)
 	if !ok || session == nil {
-		response.NotFound(c, "Upload session not found")
+		response.ErrorContext(c, http.StatusNotFound, "Upload session not found")
 		return
 	}
 
-	offset, err := strconv.ParseInt(strings.TrimSpace(c.Query("offset")), 10, 64)
+	offset, err := strconv.ParseInt(strings.TrimSpace(c.QueryValue("offset")), 10, 64)
 	if err != nil || offset < 0 {
-		response.BadRequest(c, "invalid offset")
+		response.ErrorContext(c, http.StatusBadRequest, "invalid offset")
 		return
 	}
 	if offset != session.state.ReceivedBytes {
-		response.Error(c, http.StatusConflict, fmt.Sprintf("offset mismatch: expected=%d got=%d", session.state.ReceivedBytes, offset))
+		response.ErrorContext(c, http.StatusConflict, fmt.Sprintf("offset mismatch: expected=%d got=%d", session.state.ReceivedBytes, offset))
 		return
 	}
 	if session.state.Status == accountImportUploadStatusFinalized {
-		response.Error(c, http.StatusConflict, "upload session already finalized")
+		response.ErrorContext(c, http.StatusConflict, "upload session already finalized")
 		return
 	}
 
 	file, err := os.OpenFile(filepath.Clean(session.filepath), os.O_WRONLY, 0o600)
 	if err != nil {
-		response.InternalError(c, "failed to open upload file")
+		response.ErrorContext(c, http.StatusInternalServerError, "failed to open upload file")
 		return
 	}
 	defer func() { _ = file.Close() }()
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		response.InternalError(c, "failed to seek upload file")
+		response.ErrorContext(c, http.StatusInternalServerError, "failed to seek upload file")
 		return
 	}
-	written, err := io.Copy(file, c.Request.Body)
+	written, err := io.Copy(file, c.Request().Body)
 	if err != nil {
-		response.InternalError(c, "failed to write upload chunk")
+		response.ErrorContext(c, http.StatusInternalServerError, "failed to write upload chunk")
 		return
 	}
 	if written <= 0 {
-		response.BadRequest(c, "chunk body is empty")
+		response.ErrorContext(c, http.StatusBadRequest, "chunk body is empty")
 		return
 	}
 	nextReceived := offset + written
 	if nextReceived > session.state.TotalBytes {
-		response.BadRequest(c, "uploaded bytes exceed declared total_bytes")
+		response.ErrorContext(c, http.StatusBadRequest, "uploaded bytes exceed declared total_bytes")
 		return
 	}
 	state, err := h.uploadSessionManager.updateSession(sessionID, func(s *accountImportUploadSession) {
@@ -272,30 +285,34 @@ func (h *AccountHandler) UploadImportChunk(c *gin.Context) {
 		}
 	})
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorContext(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	response.Success(c, state)
+	response.SuccessContext(c, state)
 }
 
 func (h *AccountHandler) FinalizeImportUploadSession(c *gin.Context) {
+	h.FinalizeImportUploadSessionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) FinalizeImportUploadSessionGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.uploadSessionManager == nil || h.importTaskManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import upload session manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import upload session manager not available")
 		return
 	}
-	sessionID := strings.TrimSpace(c.Param("session_id"))
+	sessionID := strings.TrimSpace(c.PathParam("session_id"))
 	session, ok := h.uploadSessionManager.getSession(sessionID)
 	if !ok || session == nil {
-		response.NotFound(c, "Upload session not found")
+		response.ErrorContext(c, http.StatusNotFound, "Upload session not found")
 		return
 	}
 	if session.state.ReceivedBytes < session.state.TotalBytes {
-		response.Error(c, http.StatusConflict, fmt.Sprintf("upload incomplete: received=%d total=%d", session.state.ReceivedBytes, session.state.TotalBytes))
+		response.ErrorContext(c, http.StatusConflict, fmt.Sprintf("upload incomplete: received=%d total=%d", session.state.ReceivedBytes, session.state.TotalBytes))
 		return
 	}
 	if session.state.TaskID != "" {
 		if task, ok := h.importTaskManager.getTask(session.state.TaskID); ok && task != nil {
-			response.Accepted(c, task)
+			response.AcceptedContext(c, task)
 			return
 		}
 	}
@@ -307,7 +324,7 @@ func (h *AccountHandler) FinalizeImportUploadSession(c *gin.Context) {
 		SkipDefaultGroupBind: session.state.SkipDefaultGroupBind,
 	})
 	if task == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Failed to create import task")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Failed to create import task")
 		return
 	}
 	task.execute = func(ctx context.Context, task *accountImportTask, progress func(stage string, current, total int, message string)) (DataImportResult, error) {
@@ -326,7 +343,7 @@ func (h *AccountHandler) FinalizeImportUploadSession(c *gin.Context) {
 		return h.importDataWithProgress(ctx, req, progress)
 	}
 	if err := h.importTaskManager.submitTask(task); err != nil {
-		response.Error(c, http.StatusTooManyRequests, err.Error())
+		response.ErrorContext(c, http.StatusTooManyRequests, err.Error())
 		return
 	}
 
@@ -337,5 +354,5 @@ func (h *AccountHandler) FinalizeImportUploadSession(c *gin.Context) {
 		s.filepath = ""
 	})
 
-	response.Accepted(c, task.state)
+	response.AcceptedContext(c, task.state)
 }

@@ -108,6 +108,7 @@ func ProvideTokenRefreshService(
 	privacyClientFactory PrivacyClientFactory,
 	proxyRepo ProxyRepository,
 	refreshAPI *OAuthRefreshAPI,
+	rateLimitService *RateLimitService,
 ) *TokenRefreshService {
 	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache)
 	// 注入 Sora 账号扩展表仓储，用于 OpenAI Token 刷新时同步 sora_accounts 表
@@ -118,6 +119,7 @@ func ProvideTokenRefreshService(
 	svc.SetRefreshAPI(refreshAPI)
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
+	svc.SetRateLimitService(rateLimitService)
 	if singletonBackgroundServicesEnabled() {
 		svc.Start()
 	}
@@ -179,6 +181,20 @@ func ProvideAntigravityTokenProvider(
 	p.SetRefreshAPI(refreshAPI, executor)
 	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
+	return p
+}
+
+// ProvideKiroTokenProvider creates KiroTokenProvider with OAuthRefreshAPI injection
+func ProvideKiroTokenProvider(
+	accountRepo AccountRepository,
+	tokenCache GeminiTokenCache,
+	kiroUsageService *KiroUsageService,
+	refreshAPI *OAuthRefreshAPI,
+) *KiroTokenProvider {
+	p := NewKiroTokenProvider(accountRepo, tokenCache, kiroUsageService)
+	executor := NewKiroTokenRefresher()
+	p.SetRefreshAPI(refreshAPI, executor)
+	p.SetRefreshPolicy(ClaudeProviderRefreshPolicy())
 	return p
 }
 
@@ -274,6 +290,16 @@ func ProvideSchedulerSnapshotService(
 	svc := NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
 	if singletonBackgroundServicesEnabled() {
 		svc.Start()
+	}
+	return svc
+}
+
+func ProvideSchedulerSnapshotAdmissionBinding(
+	svc *SchedulerSnapshotService,
+	tokenRefreshService *TokenRefreshService,
+) *SchedulerSnapshotService {
+	if svc != nil {
+		svc.SetAdmissionTester(tokenRefreshService)
 	}
 	return svc
 }
@@ -532,6 +558,22 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	return svc
 }
 
+func ProvideAccountImportService(
+	accountStore AccountImportAccountStore,
+	batchRepo AccountImportBatchRepository,
+	proxyRepo ProxyRepository,
+	groupRepo GroupRepository,
+	soraAccountRepo SoraAccountRepository,
+	schedulerSnapshot *SchedulerSnapshotService,
+	cfg *config.Config,
+) *AccountImportService {
+	svc := NewAccountImportService(accountStore, batchRepo, proxyRepo, groupRepo, soraAccountRepo, schedulerSnapshot, cfg)
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
+	return svc
+}
+
 // ProvideGatewayService wires optional proxy failover dependencies onto GatewayService
 // without forcing every unit test to pass them through the raw constructor.
 func ProvideGatewayService(
@@ -559,6 +601,8 @@ func ProvideGatewayService(
 	settingService *SettingService,
 	proxyRepo ProxyRepository,
 	proxyLatencyCache ProxyLatencyCache,
+	kiroTokenProvider *KiroTokenProvider,
+	kiroGatewayService *KiroGatewayService,
 ) *GatewayService {
 	svc := NewGatewayService(
 		accountRepo,
@@ -585,6 +629,7 @@ func ProvideGatewayService(
 		settingService,
 	)
 	svc.SetProxyFailoverDeps(proxyRepo, proxyLatencyCache)
+	svc.SetKiroDeps(kiroTokenProvider, kiroGatewayService)
 	return svc
 }
 
@@ -625,12 +670,16 @@ var ProviderSet = wire.NewSet(
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
+	ProvideKiroTokenProvider,
+	NewKiroUsageService,
+	NewKiroGatewayService,
 	ProvideOpenAITokenProvider,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
 	NewAccountUsageService,
 	NewAccountExportService,
+	ProvideAccountImportService,
 	NewAccountTestService,
 	ProvideAccountModelsRefreshService,
 	ProvideSettingService,
@@ -656,6 +705,7 @@ var ProviderSet = wire.NewSet(
 	NewCRSSyncService,
 	ProvideUpdateService,
 	ProvideTokenRefreshService,
+	ProvideSchedulerSnapshotAdmissionBinding,
 	ProvideAccountExpiryService,
 	ProvideSubscriptionExpiryService,
 	ProvideTimingWheelService,

@@ -41,7 +41,7 @@ func newNativeGnetHTTPRuntime(cfg *config.Config, base *http.Server) IngressRunt
 	}
 	execRuntime := executableRuntimeForHTTPServer(base)
 	if execRuntime == nil {
-		execRuntime = buildExecutableRuntimeConfig(cfg, nil, nil, nil, nil)
+		execRuntime = buildExecutableRuntimeConfig(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	}
 	return &nativeGnetHTTPRuntime{
 		addr:        serverAddr(base),
@@ -272,7 +272,9 @@ func (s *nativeGnetConnState) handleDetachedRequest(req *http.Request, dupConn n
 	}()
 
 	writer := newDetachedHTTPResponseWriter(dupConn, req)
-	s.runtime.handler.ServeHTTP(writer, req)
+	if !dispatchExecutableRoute(s.runtime.execRuntime, req, writer, req.RemoteAddr) {
+		s.runtime.handler.ServeHTTP(writer, req)
+	}
 	_ = writer.finish()
 }
 

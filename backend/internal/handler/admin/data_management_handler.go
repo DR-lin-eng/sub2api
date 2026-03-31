@@ -2,11 +2,14 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -103,63 +106,79 @@ type UpdateS3ProfileRequest struct {
 }
 
 func (h *DataManagementHandler) GetAgentHealth(c *gin.Context) {
-	health := h.getAgentHealth(c)
-	payload := gin.H{
+	h.GetAgentHealthGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) GetAgentHealthGateway(c gatewayctx.GatewayContext) {
+	health := h.getAgentHealthGateway(c)
+	payload := map[string]any{
 		"enabled":     health.Enabled,
 		"reason":      health.Reason,
 		"socket_path": health.SocketPath,
 	}
 	if health.Agent != nil {
-		payload["agent"] = gin.H{
+		payload["agent"] = map[string]any{
 			"status":         health.Agent.Status,
 			"version":        health.Agent.Version,
 			"uptime_seconds": health.Agent.UptimeSeconds,
 		}
 	}
-	response.Success(c, payload)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 func (h *DataManagementHandler) GetConfig(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
+	h.GetConfigGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) GetConfigGateway(c gatewayctx.GatewayContext) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	cfg, err := h.dataManagementService.GetConfig(c.Request.Context())
+	cfg, err := h.dataManagementService.GetConfig(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, cfg)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, cfg)
 }
 
 func (h *DataManagementHandler) UpdateConfig(c *gin.Context) {
+	h.UpdateConfigGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) UpdateConfigGateway(c gatewayctx.GatewayContext) {
 	var req service.DataManagementConfig
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	cfg, err := h.dataManagementService.UpdateConfig(c.Request.Context(), req)
+	cfg, err := h.dataManagementService.UpdateConfig(c.Request().Context(), req)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, cfg)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, cfg)
 }
 
 func (h *DataManagementHandler) TestS3(c *gin.Context) {
+	h.TestS3Gateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) TestS3Gateway(c gatewayctx.GatewayContext) {
 	var req TestS3ConnectionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	result, err := h.dataManagementService.ValidateS3(c.Request.Context(), service.DataManagementS3Config{
+	result, err := h.dataManagementService.ValidateS3(c.Request().Context(), service.DataManagementS3Config{
 		Enabled:         true,
 		Endpoint:        req.Endpoint,
 		Region:          req.Region,
@@ -171,29 +190,33 @@ func (h *DataManagementHandler) TestS3(c *gin.Context) {
 		UseSSL:          req.UseSSL,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"ok": result.OK, "message": result.Message})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"ok": result.OK, "message": result.Message})
 }
 
 func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
+	h.CreateBackupJobGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) CreateBackupJobGateway(c gatewayctx.GatewayContext) {
 	var req CreateBackupJobRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	req.IdempotencyKey = normalizeBackupIdempotencyKey(c.GetHeader("X-Idempotency-Key"), req.IdempotencyKey)
-	if !h.requireAgentEnabled(c) {
+	req.IdempotencyKey = normalizeBackupIdempotencyKey(c.HeaderValue("X-Idempotency-Key"), req.IdempotencyKey)
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
 
 	triggeredBy := "admin:unknown"
-	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok {
+	if subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c); ok {
 		triggeredBy = "admin:" + strconv.FormatInt(subject.UserID, 10)
 	}
-	job, err := h.dataManagementService.CreateBackupJob(c.Request.Context(), service.DataManagementCreateBackupJobInput{
+	job, err := h.dataManagementService.CreateBackupJob(c.Request().Context(), service.DataManagementCreateBackupJobInput{
 		BackupType:     req.BackupType,
 		UploadToS3:     req.UploadToS3,
 		S3ProfileID:    req.S3ProfileID,
@@ -203,51 +226,59 @@ func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"job_id": job.JobID, "status": job.Status})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"job_id": job.JobID, "status": job.Status})
 }
 
 func (h *DataManagementHandler) ListSourceProfiles(c *gin.Context) {
-	sourceType := strings.TrimSpace(c.Param("source_type"))
+	h.ListSourceProfilesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) ListSourceProfilesGateway(c gatewayctx.GatewayContext) {
+	sourceType := strings.TrimSpace(c.PathParam("source_type"))
 	if sourceType == "" {
-		response.BadRequest(c, "Invalid source_type")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid source_type")
 		return
 	}
 	if sourceType != "postgres" && sourceType != "redis" {
-		response.BadRequest(c, "source_type must be postgres or redis")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "source_type must be postgres or redis")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	items, err := h.dataManagementService.ListSourceProfiles(c.Request.Context(), sourceType)
+	items, err := h.dataManagementService.ListSourceProfiles(c.Request().Context(), sourceType)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"items": items})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"items": items})
 }
 
 func (h *DataManagementHandler) CreateSourceProfile(c *gin.Context) {
-	sourceType := strings.TrimSpace(c.Param("source_type"))
+	h.CreateSourceProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) CreateSourceProfileGateway(c gatewayctx.GatewayContext) {
+	sourceType := strings.TrimSpace(c.PathParam("source_type"))
 	if sourceType != "postgres" && sourceType != "redis" {
-		response.BadRequest(c, "source_type must be postgres or redis")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "source_type must be postgres or redis")
 		return
 	}
 
 	var req CreateSourceProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	profile, err := h.dataManagementService.CreateSourceProfile(c.Request.Context(), service.DataManagementCreateSourceProfileInput{
+	profile, err := h.dataManagementService.CreateSourceProfile(c.Request().Context(), service.DataManagementCreateSourceProfileInput{
 		SourceType: sourceType,
 		ProfileID:  req.ProfileID,
 		Name:       req.Name,
@@ -255,116 +286,136 @@ func (h *DataManagementHandler) CreateSourceProfile(c *gin.Context) {
 		SetActive:  req.SetActive,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) UpdateSourceProfile(c *gin.Context) {
-	sourceType := strings.TrimSpace(c.Param("source_type"))
+	h.UpdateSourceProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) UpdateSourceProfileGateway(c gatewayctx.GatewayContext) {
+	sourceType := strings.TrimSpace(c.PathParam("source_type"))
 	if sourceType != "postgres" && sourceType != "redis" {
-		response.BadRequest(c, "source_type must be postgres or redis")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "source_type must be postgres or redis")
 		return
 	}
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
 	var req UpdateSourceProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	profile, err := h.dataManagementService.UpdateSourceProfile(c.Request.Context(), service.DataManagementUpdateSourceProfileInput{
+	profile, err := h.dataManagementService.UpdateSourceProfile(c.Request().Context(), service.DataManagementUpdateSourceProfileInput{
 		SourceType: sourceType,
 		ProfileID:  profileID,
 		Name:       req.Name,
 		Config:     req.Config,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) DeleteSourceProfile(c *gin.Context) {
-	sourceType := strings.TrimSpace(c.Param("source_type"))
+	h.DeleteSourceProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) DeleteSourceProfileGateway(c gatewayctx.GatewayContext) {
+	sourceType := strings.TrimSpace(c.PathParam("source_type"))
 	if sourceType != "postgres" && sourceType != "redis" {
-		response.BadRequest(c, "source_type must be postgres or redis")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "source_type must be postgres or redis")
 		return
 	}
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	if err := h.dataManagementService.DeleteSourceProfile(c.Request.Context(), sourceType, profileID); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.dataManagementService.DeleteSourceProfile(c.Request().Context(), sourceType, profileID); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"deleted": true})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"deleted": true})
 }
 
 func (h *DataManagementHandler) SetActiveSourceProfile(c *gin.Context) {
-	sourceType := strings.TrimSpace(c.Param("source_type"))
+	h.SetActiveSourceProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) SetActiveSourceProfileGateway(c gatewayctx.GatewayContext) {
+	sourceType := strings.TrimSpace(c.PathParam("source_type"))
 	if sourceType != "postgres" && sourceType != "redis" {
-		response.BadRequest(c, "source_type must be postgres or redis")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "source_type must be postgres or redis")
 		return
 	}
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	profile, err := h.dataManagementService.SetActiveSourceProfile(c.Request.Context(), sourceType, profileID)
+	profile, err := h.dataManagementService.SetActiveSourceProfile(c.Request().Context(), sourceType, profileID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) ListS3Profiles(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
+	h.ListS3ProfilesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) ListS3ProfilesGateway(c gatewayctx.GatewayContext) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
 
-	items, err := h.dataManagementService.ListS3Profiles(c.Request.Context())
+	items, err := h.dataManagementService.ListS3Profiles(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"items": items})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"items": items})
 }
 
 func (h *DataManagementHandler) CreateS3Profile(c *gin.Context) {
+	h.CreateS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) CreateS3ProfileGateway(c gatewayctx.GatewayContext) {
 	var req CreateS3ProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
 
-	profile, err := h.dataManagementService.CreateS3Profile(c.Request.Context(), service.DataManagementCreateS3ProfileInput{
+	profile, err := h.dataManagementService.CreateS3Profile(c.Request().Context(), service.DataManagementCreateS3ProfileInput{
 		ProfileID: req.ProfileID,
 		Name:      req.Name,
 		SetActive: req.SetActive,
@@ -381,30 +432,34 @@ func (h *DataManagementHandler) CreateS3Profile(c *gin.Context) {
 		},
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) UpdateS3Profile(c *gin.Context) {
+	h.UpdateS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) UpdateS3ProfileGateway(c gatewayctx.GatewayContext) {
 	var req UpdateS3ProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
 
-	profile, err := h.dataManagementService.UpdateS3Profile(c.Request.Context(), service.DataManagementUpdateS3ProfileInput{
+	profile, err := h.dataManagementService.UpdateS3Profile(c.Request().Context(), service.DataManagementUpdateS3ProfileInput{
 		ProfileID: profileID,
 		Name:      req.Name,
 		S3: service.DataManagementS3Config{
@@ -420,105 +475,125 @@ func (h *DataManagementHandler) UpdateS3Profile(c *gin.Context) {
 		},
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) DeleteS3Profile(c *gin.Context) {
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	h.DeleteS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) DeleteS3ProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	if err := h.dataManagementService.DeleteS3Profile(c.Request.Context(), profileID); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.dataManagementService.DeleteS3Profile(c.Request().Context(), profileID); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"deleted": true})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"deleted": true})
 }
 
 func (h *DataManagementHandler) SetActiveS3Profile(c *gin.Context) {
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	h.SetActiveS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) SetActiveS3ProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Invalid profile_id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile_id")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	profile, err := h.dataManagementService.SetActiveS3Profile(c.Request.Context(), profileID)
+	profile, err := h.dataManagementService.SetActiveS3Profile(c.Request().Context(), profileID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 func (h *DataManagementHandler) ListBackupJobs(c *gin.Context) {
-	if !h.requireAgentEnabled(c) {
+	h.ListBackupJobsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) ListBackupJobsGateway(c gatewayctx.GatewayContext) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
 
 	pageSize := int32(20)
-	if raw := strings.TrimSpace(c.Query("page_size")); raw != "" {
+	if raw := strings.TrimSpace(c.QueryValue("page_size")); raw != "" {
 		v, err := strconv.Atoi(raw)
 		if err != nil || v <= 0 {
-			response.BadRequest(c, "Invalid page_size")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid page_size")
 			return
 		}
 		pageSize = int32(v)
 	}
 
-	result, err := h.dataManagementService.ListBackupJobs(c.Request.Context(), service.DataManagementListBackupJobsInput{
+	result, err := h.dataManagementService.ListBackupJobs(c.Request().Context(), service.DataManagementListBackupJobsInput{
 		PageSize:   pageSize,
-		PageToken:  c.Query("page_token"),
-		Status:     c.Query("status"),
-		BackupType: c.Query("backup_type"),
+		PageToken:  c.QueryValue("page_token"),
+		Status:     c.QueryValue("status"),
+		BackupType: c.QueryValue("backup_type"),
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 func (h *DataManagementHandler) GetBackupJob(c *gin.Context) {
-	jobID := strings.TrimSpace(c.Param("job_id"))
+	h.GetBackupJobGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) GetBackupJobGateway(c gatewayctx.GatewayContext) {
+	jobID := strings.TrimSpace(c.PathParam("job_id"))
 	if jobID == "" {
-		response.BadRequest(c, "Invalid backup job ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid backup job ID")
 		return
 	}
 
-	if !h.requireAgentEnabled(c) {
+	if !h.requireAgentEnabledGateway(c) {
 		return
 	}
-	job, err := h.dataManagementService.GetBackupJob(c.Request.Context(), jobID)
+	job, err := h.dataManagementService.GetBackupJob(c.Request().Context(), jobID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, job)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, job)
 }
 
 func (h *DataManagementHandler) requireAgentEnabled(c *gin.Context) bool {
+	return h.requireAgentEnabledGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) requireAgentEnabledGateway(c gatewayctx.GatewayContext) bool {
 	if h.dataManagementService == nil {
 		err := infraerrors.ServiceUnavailable(
 			service.DataManagementAgentUnavailableReason,
 			"data management agent service is not configured",
 		).WithMetadata(map[string]string{"socket_path": service.DefaultDataManagementAgentSocketPath})
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return false
 	}
 
-	if err := h.dataManagementService.EnsureAgentEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.dataManagementService.EnsureAgentEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return false
 	}
 
@@ -526,6 +601,10 @@ func (h *DataManagementHandler) requireAgentEnabled(c *gin.Context) bool {
 }
 
 func (h *DataManagementHandler) getAgentHealth(c *gin.Context) service.DataManagementAgentHealth {
+	return h.getAgentHealthGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DataManagementHandler) getAgentHealthGateway(c gatewayctx.GatewayContext) service.DataManagementAgentHealth {
 	if h.dataManagementService == nil {
 		return service.DataManagementAgentHealth{
 			Enabled:    false,
@@ -533,7 +612,7 @@ func (h *DataManagementHandler) getAgentHealth(c *gin.Context) service.DataManag
 			SocketPath: service.DefaultDataManagementAgentSocketPath,
 		}
 	}
-	return h.dataManagementService.GetAgentHealth(c.Request.Context())
+	return h.dataManagementService.GetAgentHealth(c.Request().Context())
 }
 
 func normalizeBackupIdempotencyKey(headerValue, bodyValue string) string {

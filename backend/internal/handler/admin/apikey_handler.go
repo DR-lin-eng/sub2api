@@ -1,10 +1,13 @@
 package admin
 
 import (
+	"encoding/json"
+	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -30,21 +33,25 @@ type AdminUpdateAPIKeyGroupRequest struct {
 // UpdateGroup handles updating an API key's group binding
 // PUT /api/v1/admin/api-keys/:id
 func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
-	keyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGroupGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AdminAPIKeyHandler) UpdateGroupGateway(c gatewayctx.GatewayContext) {
+	keyID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid API key ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid API key ID")
 		return
 	}
 
 	var req AdminUpdateAPIKeyGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.adminService.AdminUpdateAPIKeyGroupID(c.Request.Context(), keyID, req.GroupID)
+	result, err := h.adminService.AdminUpdateAPIKeyGroupID(c.Request().Context(), keyID, req.GroupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -59,5 +66,5 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		GrantedGroupID:         result.GrantedGroupID,
 		GrantedGroupName:       result.GrantedGroupName,
 	}
-	response.Success(c, resp)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, resp)
 }

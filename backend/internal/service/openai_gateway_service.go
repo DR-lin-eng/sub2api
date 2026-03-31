@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	ffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
 	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -1912,11 +1913,11 @@ func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context,
 }
 
 // Forward forwards request to OpenAI API
-func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
-	return s.ForwardContext(ctx, gatewayctx.FromGin(c), account, body)
+func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, defaultMappedModel ...string) (*OpenAIForwardResult, error) {
+	return s.ForwardContext(ctx, gatewayctx.FromGin(c), account, body, defaultMappedModel...)
 }
 
-func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte, defaultMappedModel ...string) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
 	restrictionResult := s.detectCodexClientRestrictionContext(c, account)
@@ -1932,9 +1933,13 @@ func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
 
-	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
+	resolvedDefaultMappedModel := ""
+	if len(defaultMappedModel) > 0 {
+		resolvedDefaultMappedModel = strings.TrimSpace(defaultMappedModel[0])
+	}
+	requestForwardModel := resolveOpenAIForwardModel(account, reqModel, resolvedDefaultMappedModel)
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.HeaderValue("User-Agent"), c.HeaderValue("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	_ = promptCacheKey
@@ -1969,7 +1974,15 @@ func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.
 	}
 	if account.IsOpenAIPassthroughEnabled() {
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
-		return s.forwardOpenAIPassthroughContext(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		if requestForwardModel != "" && requestForwardModel != reqModel {
+			patchedBody, patchErr := sjson.SetBytes(body, "model", requestForwardModel)
+			if patchErr != nil {
+				return nil, fmt.Errorf("set passthrough model: %w", patchErr)
+			}
+			body = patchedBody
+		}
+		SetOpsUpstreamModelContext(c, requestForwardModel)
+		return s.forwardOpenAIPassthroughContext(ctx, c, account, body, originalModel, reasoningEffort, reqStream, startTime)
 	}
 
 	reqBody, err := getOpenAIRequestBodyMapContext(c, body)
@@ -1978,10 +1991,10 @@ func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.
 	}
 	_ = reqBody
 
-	return s.forwardWithContext(ctx, c, account, body)
+	return s.forwardWithContext(ctx, c, account, body, resolvedDefaultMappedModel)
 }
 
-func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte, defaultMappedModel string) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
 	restrictionResult := s.detectCodexClientRestrictionContext(c, account)
@@ -2117,7 +2130,7 @@ func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gateway
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
-	mappedModel := account.GetMappedModel(reqModel)
+	mappedModel := resolveOpenAIForwardModel(account, reqModel, defaultMappedModel)
 	if mappedModel != reqModel {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, mappedModel, account.Name, isCodexCLI)
 		reqBody["model"] = mappedModel
@@ -2145,6 +2158,7 @@ func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gateway
 			}
 		}
 	}
+	SetOpsUpstreamModelContext(c, mappedModel)
 
 	// 规范化 reasoning.effort 参数（minimal -> none），与上游允许值对齐。
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
@@ -3515,6 +3529,52 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthroughContext(
 	resp *http.Response,
 	c gatewayctx.GatewayContext,
 ) (*OpenAIUsage, error) {
+	if isOpenAIResponsesCompactPathContext(c) {
+		keepalive := getOpenAICompactKeepaliveContext(c)
+		if keepalive == nil || !keepalive.emittedAny() {
+			writeOpenAIPassthroughResponseHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
+			c.SetHeader("Cache-Control", "no-cache, no-transform")
+			c.SetHeader("X-Accel-Buffering", "no")
+			c.SetHeader("Content-Type", "application/json; charset=utf-8")
+			c.SetStatus(resp.StatusCode)
+		}
+		if keepalive == nil {
+			keepalive = startOpenAICompactKeepaliveContext(c, nil, false)
+		}
+		result, err := s.readOpenAICompactBufferedResponseContext(ctx, resp, c, nil)
+		stopOpenAICompactKeepaliveContext(c)
+		if err != nil {
+			if keepalive != nil && keepalive.emittedAny() {
+				var protocolErr *openAICompactProtocolError
+				msg := "Upstream compact response failed"
+				if errors.As(err, &protocolErr) {
+					msg = protocolErr.Message()
+				} else if trimmed := strings.TrimSpace(err.Error()); trimmed != "" {
+					msg = sanitizeUpstreamErrorMessage(trimmed)
+				}
+				_, _ = c.WriteBytes(0, []byte(`{"error":{"type":"upstream_error","message":`+strconv.Quote(msg)+`}}`))
+				return nil, fmt.Errorf("compact passthrough failed after keepalive write: %w", err)
+			}
+			var protocolErr *openAICompactProtocolError
+			if errors.As(err, &protocolErr) {
+				return nil, s.writeOpenAINonStreamingProtocolErrorContext(resp, c, protocolErr.Message())
+			}
+			return nil, err
+		}
+		if result == nil {
+			return nil, fmt.Errorf("compact response is empty")
+		}
+		writeOpenAICompactProgressHeaders(c.Header(), result.meta)
+		c.SetHeader("Content-Type", "application/json; charset=utf-8")
+		if keepalive == nil || !keepalive.emittedAny() {
+			_, _ = c.WriteBytes(resp.StatusCode, result.body)
+		} else {
+			_, _ = c.WriteBytes(0, result.body)
+		}
+		usage := result.usage
+		return &usage, nil
+	}
+
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
@@ -4217,24 +4277,36 @@ func (s *OpenAIGatewayService) handleStreamingResponseContext(ctx context.Contex
 
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
-
-			// Replace model in response if needed.
-			// Fast path: most events do not contain model field values.
-			if needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel) {
-				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
-			}
-
 			dataBytes := []byte(data)
+			shouldTryModelReplace := needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel)
+			shouldTryToolCorrection := ffi.OpenAIWSMessageLikelyContainsToolCalls(dataBytes)
+			if shouldTryModelReplace || shouldTryToolCorrection {
+				if rewrittenLine, ok := ffi.RewriteOpenAISSELineForClient([]byte(line), mappedModel, originalModel, shouldTryToolCorrection); ok {
+					line = string(rewrittenLine)
+					if nextData, ok := extractOpenAISSEDataLine(line); ok {
+						data = nextData
+						dataBytes = []byte(nextData)
+					}
+				} else {
+					if shouldTryModelReplace {
+						line = s.replaceModelInSSELine(line, mappedModel, originalModel)
+						if nextData, ok := extractOpenAISSEDataLine(line); ok {
+							data = nextData
+							dataBytes = []byte(nextData)
+						}
+					}
+					if shouldTryToolCorrection {
+						if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytesFast(dataBytes); corrected {
+							dataBytes = correctedData
+							data = string(correctedData)
+							line = "data: " + data
+						}
+					}
+				}
+			}
 			isFirstTokenEvent := firstTokenMs == nil && data != "" && data != "[DONE]"
 			if openAIStreamEventIsTerminal(data) {
 				sawTerminalEvent = true
-			}
-
-			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
-				dataBytes = correctedData
-				data = string(correctedData)
-				line = "data: " + data
 			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -4413,6 +4485,9 @@ func extractOpenAISSEDataLine(line string) (string, bool) {
 }
 
 func (s *OpenAIGatewayService) replaceModelInSSELine(line, fromModel, toModel string) string {
+	if rewritten, ok := ffi.RewriteOpenAISSELineForClient([]byte(line), fromModel, toModel, false); ok {
+		return string(rewritten)
+	}
 	data, ok := extractOpenAISSEDataLine(line)
 	if !ok {
 		return line
@@ -4442,17 +4517,65 @@ func (s *OpenAIGatewayService) replaceModelInSSELine(line, fromModel, toModel st
 	return line
 }
 
+func (s *OpenAIGatewayService) rewriteOpenAIResponseBody(body []byte, fromModel, toModel string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	if rewritten, ok := ffi.RewriteOpenAIWSMessageForClient(body, fromModel, toModel, true); ok {
+		return rewritten
+	}
+	if fromModel != "" && toModel != "" && fromModel != toModel {
+		body = s.replaceModelInResponseBody(body, fromModel, toModel)
+	}
+	return s.correctToolCallsInResponseBody(body)
+}
+
+func (s *OpenAIGatewayService) rewriteOpenAISSEBody(body string, fromModel, toModel string) string {
+	if body == "" {
+		return body
+	}
+	if rewritten, ok := ffi.RewriteOpenAISSEBodyForClient([]byte(body), fromModel, toModel, true); ok {
+		return string(rewritten)
+	}
+	if fromModel != "" && toModel != "" && fromModel != toModel {
+		body = s.replaceModelInSSEBody(body, fromModel, toModel)
+	}
+	return s.correctToolCallsInSSEBody(body)
+}
+
 // correctToolCallsInResponseBody 修正响应体中的工具调用
 func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
 
-	corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(body)
+	corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytesFast(body)
 	if changed {
 		return corrected
 	}
 	return body
+}
+
+func (s *OpenAIGatewayService) correctToolCallsInSSEBody(body string) string {
+	if body == "" || s == nil || s.toolCorrector == nil {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	changed := false
+	for i, line := range lines {
+		data, ok := extractOpenAISSEDataLine(line)
+		if !ok || data == "" || data == "[DONE]" {
+			continue
+		}
+		if corrected, correctedOK := s.toolCorrector.CorrectToolCallsInSSEBytesFast([]byte(data)); correctedOK {
+			lines[i] = "data: " + string(corrected)
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {
@@ -4463,20 +4586,13 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 	if usage == nil || len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 		return
 	}
-	// 选择性解析：仅在数据中包含终止事件标识时才进入字段提取。
-	if len(data) < 72 {
+	summary := ffi.ParseOpenAIWSFrameSummary(data)
+	if !summary.IsTerminalEvent {
 		return
 	}
-	eventType := gjson.GetBytes(data, "type").String()
-	switch eventType {
-	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
-	default:
-		return
-	}
-
-	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
+	usage.InputTokens = summary.InputTokens
+	usage.OutputTokens = summary.OutputTokens
+	usage.CacheReadInputTokens = summary.CachedInputTokens
 }
 
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
@@ -4501,6 +4617,56 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
+	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPathContext(c) {
+		keepalive := getOpenAICompactKeepaliveContext(c)
+		if keepalive == nil || !keepalive.emittedAny() {
+			responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)
+			c.SetHeader("Cache-Control", "no-cache, no-transform")
+			c.SetHeader("X-Accel-Buffering", "no")
+			c.SetHeader("Content-Type", "application/json; charset=utf-8")
+			c.SetStatus(resp.StatusCode)
+		}
+		if keepalive == nil {
+			keepalive = startOpenAICompactKeepaliveContext(c, account, false)
+		}
+		result, err := s.readOpenAICompactBufferedResponseContext(ctx, resp, c, account)
+		stopOpenAICompactKeepaliveContext(c)
+		if err != nil {
+			if keepalive != nil && keepalive.emittedAny() {
+				var protocolErr *openAICompactProtocolError
+				msg := "Upstream compact request failed"
+				if errors.As(err, &protocolErr) {
+					msg = protocolErr.Message()
+				} else if trimmed := strings.TrimSpace(err.Error()); trimmed != "" {
+					msg = sanitizeUpstreamErrorMessage(trimmed)
+				}
+				_, _ = c.WriteBytes(0, []byte(`{"error":{"type":"upstream_error","message":`+strconv.Quote(msg)+`}}`))
+				return nil, fmt.Errorf("compact failed after keepalive write: %w", err)
+			}
+			var protocolErr *openAICompactProtocolError
+			if errors.As(err, &protocolErr) {
+				return nil, s.writeOpenAINonStreamingProtocolErrorContext(resp, c, protocolErr.Message())
+			}
+			return nil, err
+		}
+		if result == nil {
+			return nil, fmt.Errorf("compact response is empty")
+		}
+
+		body := s.rewriteOpenAIResponseBody(result.body, mappedModel, originalModel)
+
+		if keepalive == nil || !keepalive.emittedAny() {
+			writeOpenAICompactProgressHeaders(c.Header(), result.meta)
+			c.SetHeader("Content-Type", "application/json; charset=utf-8")
+			_, _ = c.WriteBytes(resp.StatusCode, body)
+		} else {
+			_, _ = c.WriteBytes(0, body)
+		}
+
+		usage := result.usage
+		return &usage, nil
+	}
+
 	maxBytes := resolveUpstreamResponseReadLimit(s.cfg)
 	body, err := readUpstreamResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
@@ -4560,21 +4726,30 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSON(resp *http.Response, c *gin.
 
 func (s *OpenAIGatewayService) handleOAuthSSEToJSONContext(resp *http.Response, c gatewayctx.GatewayContext, body []byte, originalModel, mappedModel string) (*OpenAIUsage, error) {
 	bodyText := string(body)
+	sseSummary := ffi.ParseOpenAISSEBodySummary(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
+	if sseSummary.HasFinalResponse && sseSummary.FinalResponseRaw != "" {
+		finalResponse = []byte(sseSummary.FinalResponseRaw)
+		ok = true
+	}
 
 	usage := &OpenAIUsage{}
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if sseSummary.HasTerminalEvent {
+			usage.InputTokens = sseSummary.InputTokens
+			usage.OutputTokens = sseSummary.OutputTokens
+			usage.CacheReadInputTokens = sseSummary.CachedInputTokens
+		} else if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
 			*usage = parsedUsage
 		}
-		body = finalResponse
-		if originalModel != mappedModel {
-			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
-		}
-		// Correct tool calls in final response
-		body = s.correctToolCallsInResponseBody(body)
+		body = s.rewriteOpenAIResponseBody(finalResponse, mappedModel, originalModel)
 	} else {
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
+		if sseSummary.HasTerminalEvent {
+			terminalType = sseSummary.TerminalEventType
+			terminalPayload = []byte(sseSummary.TerminalPayload)
+			terminalOK = true
+		}
 		if terminalOK && terminalType == "response.failed" {
 			msg := extractOpenAISSEErrorMessage(terminalPayload)
 			if msg == "" {
@@ -4582,10 +4757,14 @@ func (s *OpenAIGatewayService) handleOAuthSSEToJSONContext(resp *http.Response, 
 			}
 			return nil, s.writeOpenAINonStreamingProtocolErrorContext(resp, c, msg)
 		}
-		usage = s.parseSSEUsageFromBody(bodyText)
-		if originalModel != mappedModel {
-			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)
+		if sseSummary.HasTerminalEvent {
+			usage.InputTokens = sseSummary.InputTokens
+			usage.OutputTokens = sseSummary.OutputTokens
+			usage.CacheReadInputTokens = sseSummary.CachedInputTokens
+		} else {
+			usage = s.parseSSEUsageFromBody(bodyText)
 		}
+		bodyText = s.rewriteOpenAISSEBody(bodyText, mappedModel, originalModel)
 		body = []byte(bodyText)
 	}
 
@@ -4611,10 +4790,9 @@ func extractOpenAISSETerminalEvent(body string) (string, []byte, bool) {
 		if !ok || data == "" || data == "[DONE]" {
 			continue
 		}
-		eventType := strings.TrimSpace(gjson.Get(data, "type").String())
-		switch eventType {
-		case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
-			return eventType, []byte(data), true
+		summary := ffi.ParseOpenAIWSFrameSummary([]byte(data))
+		if summary.IsTerminalEvent {
+			return summary.EventType, []byte(data), true
 		}
 	}
 	return "", nil, false
@@ -4663,10 +4841,10 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 		if data == "" || data == "[DONE]" {
 			continue
 		}
-		eventType := gjson.Get(data, "type").String()
-		if eventType == "response.done" || eventType == "response.completed" {
-			if response := gjson.Get(data, "response"); response.Exists() && response.Type == gjson.JSON && response.Raw != "" {
-				return []byte(response.Raw), true
+		summary := ffi.ParseOpenAIWSFrameSummary([]byte(data))
+		if summary.EventType == "response.done" || summary.EventType == "response.completed" {
+			if summary.ResponseRaw != "" {
+				return []byte(summary.ResponseRaw), true
 			}
 		}
 	}
@@ -4690,6 +4868,9 @@ func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
 }
 
 func (s *OpenAIGatewayService) replaceModelInSSEBody(body, fromModel, toModel string) string {
+	if rewritten, ok := ffi.RewriteOpenAISSEBodyForClient([]byte(body), fromModel, toModel, false); ok {
+		return string(rewritten)
+	}
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
 		if _, ok := extractOpenAISSEDataLine(line); !ok {

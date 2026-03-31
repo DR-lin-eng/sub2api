@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +93,7 @@ func TestAccountTestService_testSoraAccountConnection_WithSubscription(t *testin
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 4)
@@ -136,7 +137,7 @@ func TestAccountTestService_testSoraAccountConnection_SubscriptionFailedStillSuc
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.NoError(t, err)
 	require.Len(t, upstream.requests, 4)
@@ -167,7 +168,7 @@ func TestAccountTestService_testSoraAccountConnection_CloudflareChallenge(t *tes
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Cloudflare challenge")
@@ -196,7 +197,7 @@ func TestAccountTestService_testSoraAccountConnection_CloudflareChallenge429With
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Cloudflare challenge")
@@ -223,7 +224,7 @@ func TestAccountTestService_testSoraAccountConnection_TokenInvalidated(t *testin
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "token_invalidated")
@@ -255,11 +256,11 @@ func TestAccountTestService_testSoraAccountConnection_RateLimited(t *testing.T) 
 	}
 
 	c1, _ := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c1, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c1), account)
 	require.NoError(t, err)
 
 	c2, rec2 := newSoraTestContext()
-	err = svc.testSoraAccountConnection(c2, account)
+	err = svc.testSoraAccountConnection(gatewayctx.FromGin(c2), account)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "测试过于频繁")
 	body := rec2.Body.String()
@@ -289,7 +290,7 @@ func TestAccountTestService_testSoraAccountConnection_SubscriptionCloudflareChal
 	}
 
 	c, rec := newSoraTestContext()
-	err := svc.testSoraAccountConnection(c, account)
+	err := svc.testSoraAccountConnection(gatewayctx.FromGin(c), account)
 
 	require.NoError(t, err)
 	body := rec.Body.String()

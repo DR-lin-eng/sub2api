@@ -222,7 +222,11 @@ func writeConcurrencyPing(ctx gatewayctx.GatewayContext, pingFormat SSEPingForma
 	}
 
 	if pingFormat == SSEPingFormatComment {
+		service.MarkRequestOpenAISSEStarted(ctx)
 		return ctx.WriteSSEComment("")
+	}
+	if pingFormat == SSEPingFormatClaude {
+		service.MarkRequestAnthropicSSEStarted(ctx)
 	}
 	if _, err := ctx.WriteBytes(http.StatusOK, []byte(string(pingFormat))); err != nil {
 		return err
@@ -252,6 +256,19 @@ func wrapReleaseOnDone(ctx context.Context, releaseFunc func()) func() {
 	stop = context.AfterFunc(ctx, release)
 
 	return release
+}
+
+func resetHelperTimer(timer *time.Timer, d time.Duration) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(d)
 }
 
 // IncrementWaitCount increments the wait count for a user
@@ -385,6 +402,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.Ga
 
 	fairWaitEnabled := h.concurrencyService != nil && h.concurrencyService.FairWaitQueueEnabled()
 	ticketID := ""
+	localTurnCh := (<-chan struct{})(nil)
+	releaseLocalTurn := func() {}
+	localTurnActive := true
 	if fairWaitEnabled {
 		ticketID = service.NewConcurrencyTicketID()
 		var ticketErr error
@@ -397,6 +417,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.Ga
 		if ticketErr != nil {
 			ticketID = ""
 		} else {
+			localTurnCh, releaseLocalTurn = h.concurrencyService.RegisterLocalWaitTurn(slotType, id)
+			localTurnActive = false
+			defer releaseLocalTurn()
 			defer func() {
 				switch slotType {
 				case "user":
@@ -437,7 +460,15 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.Ga
 				return nil, err
 			}
 
+		case <-localTurnCh:
+			localTurnActive = true
+			resetHelperTimer(timer, 0)
+
 		case <-timer.C:
+			if ticketID != "" && !localTurnActive {
+				resetHelperTimer(timer, backoff)
+				continue
+			}
 			if ticketID != "" {
 				var (
 					isTurn bool
@@ -456,7 +487,7 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.Ga
 					if backoff < fairWaitQueuePollBackoff {
 						backoff = fairWaitQueuePollBackoff
 					}
-					timer.Reset(backoff)
+					resetHelperTimer(timer, backoff)
 					continue
 				}
 			}
@@ -483,7 +514,7 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(gctx gatewayctx.Ga
 			if ticketID != "" && backoff < fairWaitQueuePollBackoff {
 				backoff = fairWaitQueuePollBackoff
 			}
-			timer.Reset(backoff)
+			resetHelperTimer(timer, backoff)
 		}
 	}
 }

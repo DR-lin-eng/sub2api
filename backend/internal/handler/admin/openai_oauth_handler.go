@@ -1,12 +1,15 @@
 package admin
 
 import (
+	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +23,13 @@ type OpenAIOAuthHandler struct {
 
 func oauthPlatformFromPath(c *gin.Context) string {
 	if strings.Contains(c.FullPath(), "/admin/sora/") {
+		return service.PlatformSora
+	}
+	return service.PlatformOpenAI
+}
+
+func oauthPlatformFromGatewayPath(c gatewayctx.GatewayContext) string {
+	if c != nil && strings.Contains(c.Path(), "/admin/sora/") {
 		return service.PlatformSora
 	}
 	return service.PlatformOpenAI
@@ -42,24 +52,28 @@ type OpenAIGenerateAuthURLRequest struct {
 // GenerateAuthURL generates OpenAI OAuth authorization URL
 // POST /api/v1/admin/openai/generate-auth-url
 func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
+	h.GenerateAuthURLGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) GenerateAuthURLGateway(c gatewayctx.GatewayContext) {
 	var req OpenAIGenerateAuthURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		// Allow empty body
 		req = OpenAIGenerateAuthURLRequest{}
 	}
 
 	result, err := h.openaiOAuthService.GenerateAuthURL(
-		c.Request.Context(),
+		c.Request().Context(),
 		req.ProxyID,
 		req.RedirectURI,
-		oauthPlatformFromPath(c),
+		oauthPlatformFromGatewayPath(c),
 	)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // OpenAIExchangeCodeRequest represents the request for exchanging OpenAI auth code
@@ -74,13 +88,17 @@ type OpenAIExchangeCodeRequest struct {
 // ExchangeCode exchanges OpenAI authorization code for tokens
 // POST /api/v1/admin/openai/exchange-code
 func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
+	h.ExchangeCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) ExchangeCodeGateway(c gatewayctx.GatewayContext) {
 	var req OpenAIExchangeCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
+	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request().Context(), &service.OpenAIExchangeCodeInput{
 		SessionID:   req.SessionID,
 		Code:        req.Code,
 		State:       req.State,
@@ -88,11 +106,11 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 		ProxyID:     req.ProxyID,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // OpenAIRefreshTokenRequest represents the request for refreshing OpenAI token
@@ -107,9 +125,13 @@ type OpenAIRefreshTokenRequest struct {
 // POST /api/v1/admin/openai/refresh-token
 // POST /api/v1/admin/sora/rt2at
 func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
+	h.RefreshTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) RefreshTokenGateway(c gatewayctx.GatewayContext) {
 	var req OpenAIRefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	refreshToken := strings.TrimSpace(req.RefreshToken)
@@ -117,13 +139,13 @@ func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
 		refreshToken = strings.TrimSpace(req.RT)
 	}
 	if refreshToken == "" {
-		response.BadRequest(c, "refresh_token is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "refresh_token is required")
 		return
 	}
 
 	var proxyURL string
 	if req.ProxyID != nil {
-		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
+		proxy, err := h.adminService.GetProxy(c.Request().Context(), *req.ProxyID)
 		if err == nil && proxy != nil {
 			proxyURL = proxy.URL()
 		}
@@ -132,29 +154,33 @@ func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
 	// 未指定 client_id 时，根据请求路径平台自动设置默认值，避免 repository 层盲猜
 	clientID := strings.TrimSpace(req.ClientID)
 	if clientID == "" {
-		platform := oauthPlatformFromPath(c)
+		platform := oauthPlatformFromGatewayPath(c)
 		clientID, _ = openai.OAuthClientConfigByPlatform(platform)
 	}
 
-	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientID(c.Request.Context(), refreshToken, proxyURL, clientID)
+	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientID(c.Request().Context(), refreshToken, proxyURL, clientID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // ExchangeSoraSessionToken exchanges Sora session token to access token
 // POST /api/v1/admin/sora/st2at
 func (h *OpenAIOAuthHandler) ExchangeSoraSessionToken(c *gin.Context) {
+	h.ExchangeSoraSessionTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) ExchangeSoraSessionTokenGateway(c gatewayctx.GatewayContext) {
 	var req struct {
 		SessionToken string `json:"session_token"`
 		ST           string `json:"st"`
 		ProxyID      *int64 `json:"proxy_id"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -163,51 +189,55 @@ func (h *OpenAIOAuthHandler) ExchangeSoraSessionToken(c *gin.Context) {
 		sessionToken = strings.TrimSpace(req.ST)
 	}
 	if sessionToken == "" {
-		response.BadRequest(c, "session_token is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "session_token is required")
 		return
 	}
 
-	tokenInfo, err := h.openaiOAuthService.ExchangeSoraSessionToken(c.Request.Context(), sessionToken, req.ProxyID)
+	tokenInfo, err := h.openaiOAuthService.ExchangeSoraSessionToken(c.Request().Context(), sessionToken, req.ProxyID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // RefreshAccountToken refreshes token for a specific OpenAI/Sora account
 // POST /api/v1/admin/openai/accounts/:id/refresh
 // POST /api/v1/admin/sora/accounts/:id/refresh
 func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.RefreshAccountTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) RefreshAccountTokenGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	// Get account
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	platform := oauthPlatformFromPath(c)
+	platform := oauthPlatformFromGatewayPath(c)
 	if account.Platform != platform {
-		response.BadRequest(c, "Account platform does not match OAuth endpoint")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Account platform does not match OAuth endpoint")
 		return
 	}
 
 	// Only refresh OAuth-based accounts
 	if !account.IsOAuth() {
-		response.BadRequest(c, "Cannot refresh non-OAuth account credentials")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Cannot refresh non-OAuth account credentials")
 		return
 	}
 
 	// Use OpenAI OAuth service to refresh token
-	tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(c.Request.Context(), account)
+	tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(c.Request().Context(), account)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -221,21 +251,25 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		}
 	}
 
-	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+	updatedAccount, err := h.adminService.UpdateAccount(c.Request().Context(), accountID, &service.UpdateAccountInput{
 		Credentials: newCredentials,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(updatedAccount))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.AccountFromService(updatedAccount))
 }
 
 // CreateAccountFromOAuth creates a new OpenAI/Sora OAuth account from token info
 // POST /api/v1/admin/openai/create-from-oauth
 // POST /api/v1/admin/sora/create-from-oauth
 func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
+	h.CreateAccountFromOAuthGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) CreateAccountFromOAuthGateway(c gatewayctx.GatewayContext) {
 	var req struct {
 		SessionID   string  `json:"session_id" binding:"required"`
 		Code        string  `json:"code" binding:"required"`
@@ -247,13 +281,13 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Priority    int     `json:"priority"`
 		GroupIDs    []int64 `json:"group_ids"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Exchange code for tokens
-	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
+	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request().Context(), &service.OpenAIExchangeCodeInput{
 		SessionID:   req.SessionID,
 		Code:        req.Code,
 		State:       req.State,
@@ -261,14 +295,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		ProxyID:     req.ProxyID,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// Build credentials from token info
 	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
 
-	platform := oauthPlatformFromPath(c)
+	platform := oauthPlatformFromGatewayPath(c)
 
 	// Use email as default name if not provided
 	name := req.Name
@@ -284,7 +318,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	// Create account
-	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+	account, err := h.adminService.CreateAccount(c.Request().Context(), &service.CreateAccountInput{
 		Name:        name,
 		Platform:    platform,
 		Type:        "oauth",
@@ -296,9 +330,9 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		GroupIDs:    req.GroupIDs,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.AccountFromService(account))
 }

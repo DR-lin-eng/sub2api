@@ -17,6 +17,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -70,47 +71,51 @@ func (e *linuxDoTokenExchangeError) Error() string {
 // LinuxDoOAuthStart 启动 LinuxDo Connect OAuth 登录流程。
 // GET /api/v1/auth/oauth/linuxdo/start?redirect=/dashboard
 func (h *AuthHandler) LinuxDoOAuthStart(c *gin.Context) {
-	cfg, err := h.getLinuxDoOAuthConfig(c.Request.Context())
+	h.LinuxDoOAuthStartGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) LinuxDoOAuthStartGateway(c gatewayctx.GatewayContext) {
+	cfg, err := h.getLinuxDoOAuthConfig(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
 	state, err := oauth.GenerateState()
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_STATE_GEN_FAILED", "failed to generate oauth state").WithCause(err))
+		response.ErrorFromContext(authJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_STATE_GEN_FAILED", "failed to generate oauth state").WithCause(err))
 		return
 	}
 
-	redirectTo := sanitizeFrontendRedirectPath(c.Query("redirect"))
+	redirectTo := sanitizeFrontendRedirectPath(c.QueryValue("redirect"))
 	if redirectTo == "" {
 		redirectTo = linuxDoOAuthDefaultRedirectTo
 	}
 
-	secureCookie := isRequestHTTPS(c)
-	setCookie(c, linuxDoOAuthStateCookieName, encodeCookieValue(state), linuxDoOAuthCookieMaxAgeSec, secureCookie)
-	setCookie(c, linuxDoOAuthRedirectCookie, encodeCookieValue(redirectTo), linuxDoOAuthCookieMaxAgeSec, secureCookie)
+	secureCookie := isRequestHTTPSContext(c)
+	setCookieContext(c, linuxDoOAuthStateCookieName, encodeCookieValue(state), linuxDoOAuthCookieMaxAgeSec, secureCookie)
+	setCookieContext(c, linuxDoOAuthRedirectCookie, encodeCookieValue(redirectTo), linuxDoOAuthCookieMaxAgeSec, secureCookie)
 
 	codeChallenge := ""
 	if cfg.UsePKCE {
 		verifier, err := oauth.GenerateCodeVerifier()
 		if err != nil {
-			response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_PKCE_GEN_FAILED", "failed to generate pkce verifier").WithCause(err))
+			response.ErrorFromContext(authJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_PKCE_GEN_FAILED", "failed to generate pkce verifier").WithCause(err))
 			return
 		}
 		codeChallenge = oauth.GenerateCodeChallenge(verifier)
-		setCookie(c, linuxDoOAuthVerifierCookie, encodeCookieValue(verifier), linuxDoOAuthCookieMaxAgeSec, secureCookie)
+		setCookieContext(c, linuxDoOAuthVerifierCookie, encodeCookieValue(verifier), linuxDoOAuthCookieMaxAgeSec, secureCookie)
 	}
 
 	redirectURI := strings.TrimSpace(cfg.RedirectURL)
 	if redirectURI == "" {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth redirect url not configured"))
+		response.ErrorFromContext(authJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth redirect url not configured"))
 		return
 	}
 
 	authURL, err := buildLinuxDoAuthorizeURL(cfg, state, codeChallenge, redirectURI)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_BUILD_URL_FAILED", "failed to build oauth authorization url").WithCause(err))
+		response.ErrorFromContext(authJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_BUILD_URL_FAILED", "failed to build oauth authorization url").WithCause(err))
 		return
 	}
 
@@ -120,9 +125,13 @@ func (h *AuthHandler) LinuxDoOAuthStart(c *gin.Context) {
 // LinuxDoOAuthCallback 处理 OAuth 回调：创建/登录用户，然后重定向到前端。
 // GET /api/v1/auth/oauth/linuxdo/callback?code=...&state=...
 func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
-	cfg, cfgErr := h.getLinuxDoOAuthConfig(c.Request.Context())
+	h.LinuxDoOAuthCallbackGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) LinuxDoOAuthCallbackGateway(c gatewayctx.GatewayContext) {
+	cfg, cfgErr := h.getLinuxDoOAuthConfig(c.Request().Context())
 	if cfgErr != nil {
-		response.ErrorFrom(c, cfgErr)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, cfgErr)
 		return
 	}
 
@@ -131,32 +140,32 @@ func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
 		frontendCallback = linuxDoOAuthDefaultFrontendCB
 	}
 
-	if providerErr := strings.TrimSpace(c.Query("error")); providerErr != "" {
-		redirectOAuthError(c, frontendCallback, "provider_error", providerErr, c.Query("error_description"))
+	if providerErr := strings.TrimSpace(c.QueryValue("error")); providerErr != "" {
+		redirectOAuthErrorContext(c, frontendCallback, "provider_error", providerErr, c.QueryValue("error_description"))
 		return
 	}
 
-	code := strings.TrimSpace(c.Query("code"))
-	state := strings.TrimSpace(c.Query("state"))
+	code := strings.TrimSpace(c.QueryValue("code"))
+	state := strings.TrimSpace(c.QueryValue("state"))
 	if code == "" || state == "" {
-		redirectOAuthError(c, frontendCallback, "missing_params", "missing code/state", "")
+		redirectOAuthErrorContext(c, frontendCallback, "missing_params", "missing code/state", "")
 		return
 	}
 
-	secureCookie := isRequestHTTPS(c)
+	secureCookie := isRequestHTTPSContext(c)
 	defer func() {
-		clearCookie(c, linuxDoOAuthStateCookieName, secureCookie)
-		clearCookie(c, linuxDoOAuthVerifierCookie, secureCookie)
-		clearCookie(c, linuxDoOAuthRedirectCookie, secureCookie)
+		clearCookieContext(c, linuxDoOAuthStateCookieName, secureCookie)
+		clearCookieContext(c, linuxDoOAuthVerifierCookie, secureCookie)
+		clearCookieContext(c, linuxDoOAuthRedirectCookie, secureCookie)
 	}()
 
-	expectedState, err := readCookieDecoded(c, linuxDoOAuthStateCookieName)
+	expectedState, err := readCookieDecodedContext(c, linuxDoOAuthStateCookieName)
 	if err != nil || expectedState == "" || state != expectedState {
-		redirectOAuthError(c, frontendCallback, "invalid_state", "invalid oauth state", "")
+		redirectOAuthErrorContext(c, frontendCallback, "invalid_state", "invalid oauth state", "")
 		return
 	}
 
-	redirectTo, _ := readCookieDecoded(c, linuxDoOAuthRedirectCookie)
+	redirectTo, _ := readCookieDecodedContext(c, linuxDoOAuthRedirectCookie)
 	redirectTo = sanitizeFrontendRedirectPath(redirectTo)
 	if redirectTo == "" {
 		redirectTo = linuxDoOAuthDefaultRedirectTo
@@ -164,20 +173,20 @@ func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
 
 	codeVerifier := ""
 	if cfg.UsePKCE {
-		codeVerifier, _ = readCookieDecoded(c, linuxDoOAuthVerifierCookie)
+		codeVerifier, _ = readCookieDecodedContext(c, linuxDoOAuthVerifierCookie)
 		if codeVerifier == "" {
-			redirectOAuthError(c, frontendCallback, "missing_verifier", "missing pkce verifier", "")
+			redirectOAuthErrorContext(c, frontendCallback, "missing_verifier", "missing pkce verifier", "")
 			return
 		}
 	}
 
 	redirectURI := strings.TrimSpace(cfg.RedirectURL)
 	if redirectURI == "" {
-		redirectOAuthError(c, frontendCallback, "config_error", "oauth redirect url not configured", "")
+		redirectOAuthErrorContext(c, frontendCallback, "config_error", "oauth redirect url not configured", "")
 		return
 	}
 
-	tokenResp, err := linuxDoExchangeCode(c.Request.Context(), cfg, code, redirectURI, codeVerifier)
+	tokenResp, err := linuxDoExchangeCode(c.Request().Context(), cfg, code, redirectURI, codeVerifier)
 	if err != nil {
 		description := ""
 		var exchangeErr *linuxDoTokenExchangeError
@@ -194,14 +203,14 @@ func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
 			log.Printf("[LinuxDo OAuth] token exchange failed: %v", err)
 			description = err.Error()
 		}
-		redirectOAuthError(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(description))
+		redirectOAuthErrorContext(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(description))
 		return
 	}
 
-	email, username, subject, err := linuxDoFetchUserInfo(c.Request.Context(), cfg, tokenResp)
+	email, username, subject, err := linuxDoFetchUserInfo(c.Request().Context(), cfg, tokenResp)
 	if err != nil {
 		log.Printf("[LinuxDo OAuth] userinfo fetch failed: %v", err)
-		redirectOAuthError(c, frontendCallback, "userinfo_failed", "failed to fetch user info", "")
+		redirectOAuthErrorContext(c, frontendCallback, "userinfo_failed", "failed to fetch user info", "")
 		return
 	}
 
@@ -212,23 +221,23 @@ func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
 	}
 
 	// 传入空邀请码；如果需要邀请码，服务层返回 ErrOAuthInvitationRequired
-	tokenPair, _, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request.Context(), email, username, "")
+	tokenPair, _, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request().Context(), email, username, "")
 	if err != nil {
 		if errors.Is(err, service.ErrOAuthInvitationRequired) {
 			pendingToken, tokenErr := h.authService.CreatePendingOAuthToken(email, username)
 			if tokenErr != nil {
-				redirectOAuthError(c, frontendCallback, "login_failed", "service_error", "")
+				redirectOAuthErrorContext(c, frontendCallback, "login_failed", "service_error", "")
 				return
 			}
 			fragment := url.Values{}
 			fragment.Set("error", "invitation_required")
 			fragment.Set("pending_oauth_token", pendingToken)
 			fragment.Set("redirect", redirectTo)
-			redirectWithFragment(c, frontendCallback, fragment)
+			redirectWithFragmentContext(c, frontendCallback, fragment)
 			return
 		}
 		// 避免把内部细节泄露给客户端；给前端保留结构化原因与提示信息即可。
-		redirectOAuthError(c, frontendCallback, "login_failed", infraerrors.Reason(err), infraerrors.Message(err))
+		redirectOAuthErrorContext(c, frontendCallback, "login_failed", infraerrors.Reason(err), infraerrors.Message(err))
 		return
 	}
 
@@ -238,7 +247,7 @@ func (h *AuthHandler) LinuxDoOAuthCallback(c *gin.Context) {
 	fragment.Set("expires_in", fmt.Sprintf("%d", tokenPair.ExpiresIn))
 	fragment.Set("token_type", "Bearer")
 	fragment.Set("redirect", redirectTo)
-	redirectWithFragment(c, frontendCallback, fragment)
+	redirectWithFragmentContext(c, frontendCallback, fragment)
 }
 
 type completeLinuxDoOAuthRequest struct {
@@ -250,25 +259,29 @@ type completeLinuxDoOAuthRequest struct {
 // the invitation code and creating the user account.
 // POST /api/v1/auth/oauth/linuxdo/complete-registration
 func (h *AuthHandler) CompleteLinuxDoOAuthRegistration(c *gin.Context) {
+	h.CompleteLinuxDoOAuthRegistrationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) CompleteLinuxDoOAuthRegistrationGateway(c gatewayctx.GatewayContext) {
 	var req completeLinuxDoOAuthRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+	if err := c.BindJSON(&req); err != nil {
+		c.WriteJSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
 		return
 	}
 
 	email, username, err := h.authService.VerifyPendingOAuthToken(req.PendingOAuthToken)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "INVALID_TOKEN", "message": "invalid or expired registration token"})
+		c.WriteJSON(http.StatusUnauthorized, gin.H{"error": "INVALID_TOKEN", "message": "invalid or expired registration token"})
 		return
 	}
 
-	tokenPair, _, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request.Context(), email, username, req.InvitationCode)
+	tokenPair, _, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request().Context(), email, username, req.InvitationCode)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.WriteJSON(http.StatusOK, gin.H{
 		"access_token":  tokenPair.AccessToken,
 		"refresh_token": tokenPair.RefreshToken,
 		"expires_in":    tokenPair.ExpiresIn,
@@ -446,6 +459,10 @@ func buildLinuxDoAuthorizeURL(cfg config.LinuxDoConnectConfig, state string, cod
 }
 
 func redirectOAuthError(c *gin.Context, frontendCallback string, code string, message string, description string) {
+	redirectOAuthErrorContext(gatewayctx.FromGin(c), frontendCallback, code, message, description)
+}
+
+func redirectOAuthErrorContext(c gatewayctx.GatewayContext, frontendCallback string, code string, message string, description string) {
 	fragment := url.Values{}
 	fragment.Set("error", truncateFragmentValue(code))
 	if strings.TrimSpace(message) != "" {
@@ -454,10 +471,14 @@ func redirectOAuthError(c *gin.Context, frontendCallback string, code string, me
 	if strings.TrimSpace(description) != "" {
 		fragment.Set("error_description", truncateFragmentValue(description))
 	}
-	redirectWithFragment(c, frontendCallback, fragment)
+	redirectWithFragmentContext(c, frontendCallback, fragment)
 }
 
 func redirectWithFragment(c *gin.Context, frontendCallback string, fragment url.Values) {
+	redirectWithFragmentContext(gatewayctx.FromGin(c), frontendCallback, fragment)
+}
+
+func redirectWithFragmentContext(c gatewayctx.GatewayContext, frontendCallback string, fragment url.Values) {
 	u, err := url.Parse(frontendCallback)
 	if err != nil {
 		// 兜底：尽力跳转到默认页面，避免卡死在回调页。
@@ -469,8 +490,8 @@ func redirectWithFragment(c *gin.Context, frontendCallback string, fragment url.
 		return
 	}
 	u.Fragment = fragment.Encode()
-	c.Header("Cache-Control", "no-store")
-	c.Header("Pragma", "no-cache")
+	c.SetHeader("Cache-Control", "no-store")
+	c.SetHeader("Pragma", "no-cache")
 	c.Redirect(http.StatusFound, u.String())
 }
 
@@ -619,10 +640,14 @@ func sanitizeFrontendRedirectPath(path string) string {
 }
 
 func isRequestHTTPS(c *gin.Context) bool {
-	if c.Request.TLS != nil {
+	return isRequestHTTPSContext(gatewayctx.FromGin(c))
+}
+
+func isRequestHTTPSContext(c gatewayctx.GatewayContext) bool {
+	if c.Request().TLS != nil {
 		return true
 	}
-	proto := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")))
+	proto := strings.ToLower(strings.TrimSpace(c.HeaderValue("X-Forwarded-Proto")))
 	return proto == "https"
 }
 
@@ -639,15 +664,23 @@ func decodeCookieValue(value string) (string, error) {
 }
 
 func readCookieDecoded(c *gin.Context, name string) (string, error) {
-	ck, err := c.Request.Cookie(name)
+	return readCookieDecodedContext(gatewayctx.FromGin(c), name)
+}
+
+func readCookieDecodedContext(c gatewayctx.GatewayContext, name string) (string, error) {
+	value, err := c.CookieValue(name)
 	if err != nil {
 		return "", err
 	}
-	return decodeCookieValue(ck.Value)
+	return decodeCookieValue(value)
 }
 
 func setCookie(c *gin.Context, name string, value string, maxAgeSec int, secure bool) {
-	http.SetCookie(c.Writer, &http.Cookie{
+	setCookieContext(gatewayctx.FromGin(c), name, value, maxAgeSec, secure)
+}
+
+func setCookieContext(c gatewayctx.GatewayContext, name string, value string, maxAgeSec int, secure bool) {
+	c.SetCookie(&http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     linuxDoOAuthCookiePath,
@@ -659,7 +692,11 @@ func setCookie(c *gin.Context, name string, value string, maxAgeSec int, secure 
 }
 
 func clearCookie(c *gin.Context, name string, secure bool) {
-	http.SetCookie(c.Writer, &http.Cookie{
+	clearCookieContext(gatewayctx.FromGin(c), name, secure)
+}
+
+func clearCookieContext(c gatewayctx.GatewayContext, name string, secure bool) {
+	c.SetCookie(&http.Cookie{
 		Name:     name,
 		Value:    "",
 		Path:     linuxDoOAuthCookiePath,

@@ -1612,7 +1612,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				input.Extra[key] = v
 			}
 		}
-		account.Extra = input.Extra
+		account.Extra = CopyExtraPreservingInternal(account.Extra, input.Extra)
 		if account.Platform == PlatformAntigravity && wasOveragesEnabled && !account.IsOveragesEnabled() {
 			delete(account.Extra, "antigravity_credits_overages") // 清理旧版 overages 运行态
 			// 清除 AICredits 限流 key

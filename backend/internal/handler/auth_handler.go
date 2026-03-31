@@ -2,12 +2,14 @@ package handler
 
 import (
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -76,26 +78,48 @@ type AuthResponse struct {
 	User         *dto.User `json:"user"`
 }
 
+type authJSONResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g authJSONResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g authJSONResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
+}
+
 // respondWithTokenPair 生成 Token 对并返回认证响应
 // 如果 Token 对生成失败，回退到只返回 Access Token（向后兼容）
 func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
-	tokenPair, err := h.authService.GenerateTokenPair(c.Request.Context(), user, "")
+	h.respondWithTokenPairGateway(gatewayctx.FromGin(c), user)
+}
+
+func (h *AuthHandler) respondWithTokenPairGateway(c gatewayctx.GatewayContext, user *service.User) {
+	tokenPair, err := h.authService.GenerateTokenPair(c.Request().Context(), user, "")
 	if err != nil {
 		slog.Error("failed to generate token pair", "error", err, "user_id", user.ID)
 		// 回退到只返回Access Token
 		token, tokenErr := h.authService.GenerateToken(user)
 		if tokenErr != nil {
-			response.InternalError(c, "Failed to generate token")
+			response.ErrorContext(authJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to generate token")
 			return
 		}
-		response.Success(c, AuthResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, AuthResponse{
 			AccessToken: token,
 			TokenType:   "Bearer",
 			User:        dto.UserFromService(user),
 		})
 		return
 	}
-	response.Success(c, AuthResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, AuthResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 		ExpiresIn:    tokenPair.ExpiresIn,
@@ -107,49 +131,57 @@ func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
 // Register handles user registration
 // POST /api/v1/auth/register
 func (h *AuthHandler) Register(c *gin.Context) {
+	h.RegisterGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) RegisterGateway(c gatewayctx.GatewayContext) {
 	var req RegisterRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Turnstile 验证（邮箱验证码注册场景避免重复校验一次性 token）
-	if err := h.authService.VerifyTurnstileForRegister(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c), req.VerifyCode); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.VerifyTurnstileForRegister(c.Request().Context(), req.TurnstileToken, ip.GetClientIPContext(c), req.VerifyCode); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	_, user, err := h.authService.RegisterWithVerification(c.Request.Context(), req.Email, req.Password, req.VerifyCode, req.PromoCode, req.InvitationCode)
+	_, user, err := h.authService.RegisterWithVerification(c.Request().Context(), req.Email, req.Password, req.VerifyCode, req.PromoCode, req.InvitationCode)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	h.respondWithTokenPair(c, user)
+	h.respondWithTokenPairGateway(c, user)
 }
 
 // SendVerifyCode 发送邮箱验证码
 // POST /api/v1/auth/send-verify-code
 func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
+	h.SendVerifyCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) SendVerifyCodeGateway(c gatewayctx.GatewayContext) {
 	var req SendVerifyCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.VerifyTurnstile(c.Request().Context(), req.TurnstileToken, ip.GetClientIPContext(c)); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	result, err := h.authService.SendVerifyCodeAsync(c.Request.Context(), req.Email)
+	result, err := h.authService.SendVerifyCodeAsync(c.Request().Context(), req.Email)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, SendVerifyCodeResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, SendVerifyCodeResponse{
 		Message:   "Verification code sent successfully",
 		Countdown: result.Countdown,
 	})
@@ -158,35 +190,39 @@ func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
 // Login handles user login
 // POST /api/v1/auth/login
 func (h *AuthHandler) Login(c *gin.Context) {
+	h.LoginGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) LoginGateway(c gatewayctx.GatewayContext) {
 	var req LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.VerifyTurnstile(c.Request().Context(), req.TurnstileToken, ip.GetClientIPContext(c)); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	token, user, err := h.authService.Login(c.Request.Context(), req.Email, req.Password)
+	token, user, err := h.authService.Login(c.Request().Context(), req.Email, req.Password)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 	_ = token // token 由 authService.Login 返回但此处由 respondWithTokenPair 重新生成
 
 	// Check if TOTP 2FA is enabled for this user
-	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request.Context()) && user.TotpEnabled {
+	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request().Context()) && user.TotpEnabled {
 		// Create a temporary login session for 2FA
-		tempToken, err := h.totpService.CreateLoginSession(c.Request.Context(), user.ID, user.Email)
+		tempToken, err := h.totpService.CreateLoginSession(c.Request().Context(), user.ID, user.Email)
 		if err != nil {
-			response.InternalError(c, "Failed to create 2FA session")
+			response.ErrorContext(authJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to create 2FA session")
 			return
 		}
 
-		response.Success(c, TotpLoginResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, TotpLoginResponse{
 			Requires2FA:     true,
 			TempToken:       tempToken,
 			UserEmailMasked: service.MaskEmail(user.Email),
@@ -195,12 +231,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// Backend mode: only admin can login
-	if h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && !user.IsAdmin() {
-		response.Forbidden(c, "Backend mode is active. Only admin login is allowed.")
+	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusForbidden, "Backend mode is active. Only admin login is allowed.")
 		return
 	}
 
-	h.respondWithTokenPair(c, user)
+	h.respondWithTokenPairGateway(c, user)
 }
 
 // TotpLoginResponse represents the response when 2FA is required
@@ -219,9 +255,13 @@ type Login2FARequest struct {
 // Login2FA completes the login with 2FA verification
 // POST /api/v1/auth/login/2fa
 func (h *AuthHandler) Login2FA(c *gin.Context) {
+	h.Login2FAGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) Login2FAGateway(c gatewayctx.GatewayContext) {
 	var req Login2FARequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -230,7 +270,7 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		"totp_code_len", len(req.TotpCode))
 
 	// Get the login session
-	session, err := h.totpService.GetLoginSession(c.Request.Context(), req.TempToken)
+	session, err := h.totpService.GetLoginSession(c.Request().Context(), req.TempToken)
 	if err != nil || session == nil {
 		tokenPrefix := ""
 		if len(req.TempToken) >= 8 {
@@ -239,7 +279,7 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		slog.Debug("login_2fa_session_invalid",
 			"temp_token_prefix", tokenPrefix,
 			"error", err)
-		response.BadRequest(c, "Invalid or expired 2FA session")
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid or expired 2FA session")
 		return
 	}
 
@@ -248,45 +288,49 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		"email", session.Email)
 
 	// Verify the TOTP code
-	if err := h.totpService.VerifyCode(c.Request.Context(), session.UserID, req.TotpCode); err != nil {
+	if err := h.totpService.VerifyCode(c.Request().Context(), session.UserID, req.TotpCode); err != nil {
 		slog.Debug("login_2fa_verify_failed",
 			"user_id", session.UserID,
 			"error", err)
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// Get the user (before session deletion so we can check backend mode)
-	user, err := h.userService.GetByID(c.Request.Context(), session.UserID)
+	user, err := h.userService.GetByID(c.Request().Context(), session.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// Backend mode: only admin can login (check BEFORE deleting session)
-	if h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && !user.IsAdmin() {
-		response.Forbidden(c, "Backend mode is active. Only admin login is allowed.")
+	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusForbidden, "Backend mode is active. Only admin login is allowed.")
 		return
 	}
 
 	// Delete the login session (only after all checks pass)
-	_ = h.totpService.DeleteLoginSession(c.Request.Context(), req.TempToken)
+	_ = h.totpService.DeleteLoginSession(c.Request().Context(), req.TempToken)
 
-	h.respondWithTokenPair(c, user)
+	h.respondWithTokenPairGateway(c, user)
 }
 
 // GetCurrentUser handles getting current authenticated user
 // GET /api/v1/auth/me
 func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetCurrentUserGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) GetCurrentUserGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(authGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
-	user, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+	user, err := h.userService.GetByID(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authGatewayResponder{ctx: c}, err)
 		return
 	}
 
@@ -300,7 +344,7 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 		runMode = h.cfg.RunMode
 	}
 
-	response.Success(c, UserResponse{User: dto.UserFromService(user), RunMode: runMode})
+	response.SuccessContext(authGatewayResponder{ctx: c}, UserResponse{User: dto.UserFromService(user), RunMode: runMode})
 }
 
 // ValidatePromoCodeRequest 验证优惠码请求
@@ -319,9 +363,13 @@ type ValidatePromoCodeResponse struct {
 // ValidatePromoCode 验证优惠码（公开接口，注册前调用）
 // POST /api/v1/auth/validate-promo-code
 func (h *AuthHandler) ValidatePromoCode(c *gin.Context) {
+	h.ValidatePromoCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) ValidatePromoCodeGateway(c gatewayctx.GatewayContext) {
 	// 检查优惠码功能是否启用
-	if h.settingSvc != nil && !h.settingSvc.IsPromoCodeEnabled(c.Request.Context()) {
-		response.Success(c, ValidatePromoCodeResponse{
+	if h.settingSvc != nil && !h.settingSvc.IsPromoCodeEnabled(c.Request().Context()) {
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidatePromoCodeResponse{
 			Valid:     false,
 			ErrorCode: "PROMO_CODE_DISABLED",
 		})
@@ -329,12 +377,12 @@ func (h *AuthHandler) ValidatePromoCode(c *gin.Context) {
 	}
 
 	var req ValidatePromoCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	promoCode, err := h.promoService.ValidatePromoCode(c.Request.Context(), req.Code)
+	promoCode, err := h.promoService.ValidatePromoCode(c.Request().Context(), req.Code)
 	if err != nil {
 		// 根据错误类型返回对应的错误码
 		errorCode := "PROMO_CODE_INVALID"
@@ -351,7 +399,7 @@ func (h *AuthHandler) ValidatePromoCode(c *gin.Context) {
 			errorCode = "PROMO_CODE_ALREADY_USED"
 		}
 
-		response.Success(c, ValidatePromoCodeResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidatePromoCodeResponse{
 			Valid:     false,
 			ErrorCode: errorCode,
 		})
@@ -359,14 +407,14 @@ func (h *AuthHandler) ValidatePromoCode(c *gin.Context) {
 	}
 
 	if promoCode == nil {
-		response.Success(c, ValidatePromoCodeResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidatePromoCodeResponse{
 			Valid:     false,
 			ErrorCode: "PROMO_CODE_INVALID",
 		})
 		return
 	}
 
-	response.Success(c, ValidatePromoCodeResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, ValidatePromoCodeResponse{
 		Valid:       true,
 		BonusAmount: promoCode.BonusAmount,
 	})
@@ -386,9 +434,13 @@ type ValidateInvitationCodeResponse struct {
 // ValidateInvitationCode 验证邀请码（公开接口，注册前调用）
 // POST /api/v1/auth/validate-invitation-code
 func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
+	h.ValidateInvitationCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) ValidateInvitationCodeGateway(c gatewayctx.GatewayContext) {
 	// 检查邀请码功能是否启用
-	if h.settingSvc == nil || !h.settingSvc.IsInvitationCodeEnabled(c.Request.Context()) {
-		response.Success(c, ValidateInvitationCodeResponse{
+	if h.settingSvc == nil || !h.settingSvc.IsInvitationCodeEnabled(c.Request().Context()) {
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidateInvitationCodeResponse{
 			Valid:     false,
 			ErrorCode: "INVITATION_CODE_DISABLED",
 		})
@@ -396,15 +448,15 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 	}
 
 	var req ValidateInvitationCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// 验证邀请码
-	redeemCode, err := h.redeemService.GetByCode(c.Request.Context(), req.Code)
+	redeemCode, err := h.redeemService.GetByCode(c.Request().Context(), req.Code)
 	if err != nil {
-		response.Success(c, ValidateInvitationCodeResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidateInvitationCodeResponse{
 			Valid:     false,
 			ErrorCode: "INVITATION_CODE_NOT_FOUND",
 		})
@@ -413,7 +465,7 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 
 	// 检查类型和状态
 	if redeemCode.Type != service.RedeemTypeInvitation {
-		response.Success(c, ValidateInvitationCodeResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidateInvitationCodeResponse{
 			Valid:     false,
 			ErrorCode: "INVITATION_CODE_INVALID",
 		})
@@ -421,14 +473,14 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 	}
 
 	if redeemCode.Status != service.StatusUnused {
-		response.Success(c, ValidateInvitationCodeResponse{
+		response.SuccessContext(authJSONResponder{ctx: c}, ValidateInvitationCodeResponse{
 			Valid:     false,
 			ErrorCode: "INVITATION_CODE_USED",
 		})
 		return
 	}
 
-	response.Success(c, ValidateInvitationCodeResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, ValidateInvitationCodeResponse{
 		Valid: true,
 	})
 }
@@ -447,33 +499,37 @@ type ForgotPasswordResponse struct {
 // ForgotPassword 请求密码重置
 // POST /api/v1/auth/forgot-password
 func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	h.ForgotPasswordGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) ForgotPasswordGateway(c gatewayctx.GatewayContext) {
 	var req ForgotPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.VerifyTurnstile(c.Request().Context(), req.TurnstileToken, ip.GetClientIPContext(c)); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	frontendBaseURL := strings.TrimSpace(h.settingSvc.GetFrontendURL(c.Request.Context()))
+	frontendBaseURL := strings.TrimSpace(h.settingSvc.GetFrontendURL(c.Request().Context()))
 	if frontendBaseURL == "" {
 		slog.Error("frontend_url not configured in settings or config; cannot build password reset link")
-		response.InternalError(c, "Password reset is not configured")
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusInternalServerError, "Password reset is not configured")
 		return
 	}
 
 	// Request password reset (async)
 	// Note: This returns success even if email doesn't exist (to prevent enumeration)
-	if err := h.authService.RequestPasswordResetAsync(c.Request.Context(), req.Email, frontendBaseURL); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.RequestPasswordResetAsync(c.Request().Context(), req.Email, frontendBaseURL); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, ForgotPasswordResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, ForgotPasswordResponse{
 		Message: "If your email is registered, you will receive a password reset link shortly.",
 	})
 }
@@ -493,19 +549,23 @@ type ResetPasswordResponse struct {
 // ResetPassword 重置密码
 // POST /api/v1/auth/reset-password
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	h.ResetPasswordGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) ResetPasswordGateway(c gatewayctx.GatewayContext) {
 	var req ResetPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// Reset password
-	if err := h.authService.ResetPassword(c.Request.Context(), req.Email, req.Token, req.NewPassword); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.authService.ResetPassword(c.Request().Context(), req.Email, req.Token, req.NewPassword); err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, ResetPasswordResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, ResetPasswordResponse{
 		Message: "Your password has been reset successfully. You can now log in with your new password.",
 	})
 }
@@ -528,25 +588,29 @@ type RefreshTokenResponse struct {
 // RefreshToken 刷新Token
 // POST /api/v1/auth/refresh
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	h.RefreshTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) RefreshTokenGateway(c gatewayctx.GatewayContext) {
 	var req RefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.authService.RefreshTokenPair(c.Request.Context(), req.RefreshToken)
+	result, err := h.authService.RefreshTokenPair(c.Request().Context(), req.RefreshToken)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// Backend mode: block non-admin token refresh
-	if h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && result.UserRole != "admin" {
-		response.Forbidden(c, "Backend mode is active. Only admin login is allowed.")
+	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && result.UserRole != "admin" {
+		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusForbidden, "Backend mode is active. Only admin login is allowed.")
 		return
 	}
 
-	response.Success(c, RefreshTokenResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, RefreshTokenResponse{
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,
 		ExpiresIn:    result.ExpiresIn,
@@ -567,19 +631,23 @@ type LogoutResponse struct {
 // Logout 用户登出
 // POST /api/v1/auth/logout
 func (h *AuthHandler) Logout(c *gin.Context) {
+	h.LogoutGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) LogoutGateway(c gatewayctx.GatewayContext) {
 	var req LogoutRequest
 	// 允许空请求体（向后兼容）
-	_ = c.ShouldBindJSON(&req)
+	_ = c.BindJSON(&req)
 
 	// 如果提供了Refresh Token，撤销它
 	if req.RefreshToken != "" {
-		if err := h.authService.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
+		if err := h.authService.RevokeRefreshToken(c.Request().Context(), req.RefreshToken); err != nil {
 			slog.Debug("failed to revoke refresh token", "error", err)
 			// 不影响登出流程
 		}
 	}
 
-	response.Success(c, LogoutResponse{
+	response.SuccessContext(authJSONResponder{ctx: c}, LogoutResponse{
 		Message: "Logged out successfully",
 	})
 }
@@ -592,19 +660,41 @@ type RevokeAllSessionsResponse struct {
 // RevokeAllSessions 撤销当前用户的所有会话
 // POST /api/v1/auth/revoke-all-sessions
 func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.RevokeAllSessionsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) RevokeAllSessionsGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(authGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
-	if err := h.authService.RevokeAllUserSessions(c.Request.Context(), subject.UserID); err != nil {
+	if err := h.authService.RevokeAllUserSessions(c.Request().Context(), subject.UserID); err != nil {
 		slog.Error("failed to revoke all sessions", "user_id", subject.UserID, "error", err)
-		response.InternalError(c, "Failed to revoke sessions")
+		response.ErrorContext(authGatewayResponder{ctx: c}, http.StatusInternalServerError, "Failed to revoke sessions")
 		return
 	}
 
-	response.Success(c, RevokeAllSessionsResponse{
+	response.SuccessContext(authGatewayResponder{ctx: c}, RevokeAllSessionsResponse{
 		Message: "All sessions have been revoked. Please log in again.",
 	})
+}
+
+type authGatewayResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g authGatewayResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g authGatewayResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
 }

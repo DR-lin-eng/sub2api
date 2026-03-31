@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -42,14 +43,20 @@ type GatewayContext interface {
 	QueryValue(name string) string
 	PathParam(name string) string
 	BindJSON(target any) error
+	CookieValue(name string) (string, error)
 	Abort()
 	SetHeader(name, value string)
 	Header() http.Header
 	SetStatus(status int)
+	SetCookie(cookie *http.Cookie)
+	Redirect(status int, location string)
 	ResponseWritten() bool
 	ResponseSize() int
 	WriteJSON(status int, value any)
 	WriteBytes(status int, payload []byte) (int, error)
+	WriteReader(status int, contentType string, reader io.Reader, size int64) error
+	ServeFile(path string) error
+	ServeFileAttachment(path, filename string) error
 	Flush() error
 	WriteSSEComment(comment string) error
 	AcceptWebSocket(opts WebSocketAcceptOptions) (WebSocketConn, error)

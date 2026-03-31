@@ -13,16 +13,17 @@ func UserFromServiceShallow(u *service.User) *User {
 		return nil
 	}
 	return &User{
-		ID:            u.ID,
-		Email:         u.Email,
-		Username:      u.Username,
-		Role:          u.Role,
-		Balance:       u.Balance,
-		Concurrency:   u.Concurrency,
-		Status:        u.Status,
-		AllowedGroups: u.AllowedGroups,
-		CreatedAt:     u.CreatedAt,
-		UpdatedAt:     u.UpdatedAt,
+		ID:                   u.ID,
+		Email:                u.Email,
+		Username:             u.Username,
+		Role:                 u.Role,
+		Balance:              u.Balance,
+		Concurrency:          u.Concurrency,
+		UnlimitedConcurrency: u.UnlimitedConcurrency,
+		Status:               u.Status,
+		AllowedGroups:        u.AllowedGroups,
+		CreatedAt:            u.CreatedAt,
+		UpdatedAt:            u.UpdatedAt,
 	}
 }
 
@@ -197,7 +198,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Platform:                a.Platform,
 		Type:                    a.Type,
 		Credentials:             service.MaskSensitiveCredentials(a.Credentials),
-		Extra:                   a.Extra,
+		Extra:                   service.FilterAccountInternalExtra(a.Extra),
 		ProxyID:                 a.ProxyID,
 		Concurrency:             a.Concurrency,
 		LoadFactor:              a.LoadFactor,
@@ -219,6 +220,11 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		SessionWindowStart:      a.SessionWindowStart,
 		SessionWindowEnd:        a.SessionWindowEnd,
 		SessionWindowStatus:     a.SessionWindowStatus,
+		SyncState:               a.SyncState,
+		SyncProgress:            a.SyncProgress,
+		SyncMessage:             a.SyncMessage,
+		SyncBatchID:             a.SyncBatchID,
+		DuplicateOfAccountID:    a.DuplicateOfAccountID,
 		GroupIDs:                a.GroupIDs,
 	}
 

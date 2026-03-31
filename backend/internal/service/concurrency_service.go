@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"golang.org/x/sync/singleflight"
 )
 
 // ConcurrencyCache 定义并发控制的缓存接口
@@ -84,15 +87,150 @@ const (
 	defaultExtraWaitSlots = 20
 )
 
+var accountLoadCacheTTL = 250 * time.Millisecond
+var accountWaitCountCacheTTL = 250 * time.Millisecond
+
+type cachedAccountLoadSnapshot struct {
+	CurrentConcurrency int
+	WaitingCount       int
+	ExpiresAtUnixNano  int64
+}
+
+type cachedAccountWaitCountSnapshot struct {
+	Count             int
+	ExpiresAtUnixNano int64
+}
+
+type cachedUserLoadSnapshot struct {
+	CurrentConcurrency int
+	WaitingCount       int
+	ExpiresAtUnixNano  int64
+}
+
+type cachedUserWaitCountSnapshot struct {
+	Count             int
+	ExpiresAtUnixNano int64
+}
+
+type localWaitTurnCoordinator struct {
+	mu     sync.Mutex
+	queues map[string][]*localWaitTurnWaiter
+}
+
+type localWaitTurnWaiter struct {
+	turnCh chan struct{}
+}
+
+func (w *localWaitTurnWaiter) signal() {
+	if w == nil || w.turnCh == nil {
+		return
+	}
+	select {
+	case w.turnCh <- struct{}{}:
+	default:
+	}
+}
+
+func newLocalWaitTurnCoordinator() *localWaitTurnCoordinator {
+	return &localWaitTurnCoordinator{
+		queues: make(map[string][]*localWaitTurnWaiter),
+	}
+}
+
+func localWaitTurnKey(slotType string, id int64) string {
+	slotType = strings.TrimSpace(slotType)
+	if slotType == "" || id <= 0 {
+		return ""
+	}
+	return slotType + ":" + strconv.FormatInt(id, 10)
+}
+
+func (c *localWaitTurnCoordinator) register(slotType string, id int64) (<-chan struct{}, func()) {
+	if c == nil {
+		return nil, func() {}
+	}
+	key := localWaitTurnKey(slotType, id)
+	if key == "" {
+		return nil, func() {}
+	}
+
+	waiter := &localWaitTurnWaiter{turnCh: make(chan struct{}, 1)}
+
+	c.mu.Lock()
+	queue := c.queues[key]
+	isHead := len(queue) == 0
+	c.queues[key] = append(queue, waiter)
+	c.mu.Unlock()
+
+	if isHead {
+		waiter.signal()
+	}
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			c.release(key, waiter)
+		})
+	}
+	return waiter.turnCh, release
+}
+
+func (c *localWaitTurnCoordinator) release(key string, waiter *localWaitTurnWaiter) {
+	if c == nil || key == "" || waiter == nil {
+		return
+	}
+
+	var next *localWaitTurnWaiter
+	c.mu.Lock()
+	queue := c.queues[key]
+	index := -1
+	for i, item := range queue {
+		if item == waiter {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	wasHead := index == 0
+	queue = append(queue[:index], queue[index+1:]...)
+	if len(queue) == 0 {
+		delete(c.queues, key)
+	} else {
+		c.queues[key] = queue
+		if wasHead {
+			next = queue[0]
+		}
+	}
+	c.mu.Unlock()
+
+	if next != nil {
+		next.signal()
+	}
+}
+
 // ConcurrencyService manages concurrent request limiting for accounts and users
 type ConcurrencyService struct {
-	cache                ConcurrencyCache
-	fairWaitQueueEnabled atomic.Bool
+	cache                 ConcurrencyCache
+	fairWaitQueueEnabled  atomic.Bool
+	accountLoadCache      sync.Map
+	accountWaitCountCache sync.Map
+	userLoadCache         sync.Map
+	userWaitCountCache    sync.Map
+	localWaitTurns        *localWaitTurnCoordinator
+	accountLoadSF         singleflight.Group
+	userLoadSF            singleflight.Group
 }
 
 // NewConcurrencyService creates a new ConcurrencyService
 func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
-	return &ConcurrencyService{cache: cache}
+	return &ConcurrencyService{
+		cache:          cache,
+		localWaitTurns: newLocalWaitTurnCoordinator(),
+	}
 }
 
 type waitTicketQueueCache interface {
@@ -121,6 +259,13 @@ func (s *ConcurrencyService) FairWaitQueueEnabled() bool {
 		return false
 	}
 	return s.fairWaitQueueEnabled.Load()
+}
+
+func (s *ConcurrencyService) RegisterLocalWaitTurn(slotType string, id int64) (<-chan struct{}, func()) {
+	if s == nil || s.localWaitTurns == nil {
+		return nil, func() {}
+	}
+	return s.localWaitTurns.register(slotType, id)
 }
 
 func (s *ConcurrencyService) ticketQueueCache() waitTicketQueueCache {
@@ -169,11 +314,10 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	if maxConcurrency <= 0 {
 		return &AcquireResult{
 			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
+			ReleaseFunc: func() {},
 		}, nil
 	}
 
-	// Generate unique request ID for this slot
 	requestID := generateRequestID()
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
@@ -204,15 +348,13 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 // If the user is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int) (*AcquireResult, error) {
-	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
 		return &AcquireResult{
 			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
+			ReleaseFunc: func() {},
 		}, nil
 	}
 
-	// Generate unique request ID for this slot
 	requestID := generateRequestID()
 
 	acquired, err := s.cache.AcquireUserSlot(ctx, userID, maxConcurrency, requestID)
@@ -239,42 +381,38 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 	}, nil
 }
 
-// ============================================
-// Wait Queue Count Methods
-// ============================================
-
 // IncrementWaitCount attempts to increment the wait queue counter for a user.
 // Returns true if successful, false if the wait queue is full.
-// maxWait should be user.Concurrency + defaultExtraWaitSlots
 func (s *ConcurrencyService) IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error) {
 	if s.cache == nil {
-		// Redis not available, allow request
 		return true, nil
 	}
 
 	result, err := s.cache.IncrementWaitCount(ctx, userID, maxWait)
 	if err != nil {
-		// On error, allow the request to proceed (fail open)
 		logger.LegacyPrintf("service.concurrency", "Warning: increment wait count failed for user %d: %v", userID, err)
 		return true, nil
+	}
+	if result {
+		s.updateCachedUserWaitCountDelta(userID, 1, 1)
 	}
 	return result, nil
 }
 
 // DecrementWaitCount decrements the wait queue counter for a user.
-// Should be called when a request completes or exits the wait queue.
 func (s *ConcurrencyService) DecrementWaitCount(ctx context.Context, userID int64) {
 	if s.cache == nil {
 		return
 	}
 
-	// Use background context to ensure decrement even if original context is cancelled
 	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := s.cache.DecrementWaitCount(bgCtx, userID); err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: decrement wait count failed for user %d: %v", userID, err)
+		return
 	}
+	s.updateCachedUserWaitCountDelta(userID, -1, 0)
 }
 
 // IncrementAccountWaitCount increments the wait queue counter for an account.
@@ -287,6 +425,9 @@ func (s *ConcurrencyService) IncrementAccountWaitCount(ctx context.Context, acco
 	if err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: increment wait count failed for account %d: %v", accountID, err)
 		return true, nil
+	}
+	if result {
+		s.updateCachedAccountWaitCountDelta(accountID, 1, 1)
 	}
 	return result, nil
 }
@@ -302,7 +443,9 @@ func (s *ConcurrencyService) DecrementAccountWaitCount(ctx context.Context, acco
 
 	if err := s.cache.DecrementAccountWaitCount(bgCtx, accountID); err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: decrement wait count failed for account %d: %v", accountID, err)
+		return
 	}
+	s.updateCachedAccountWaitCountDelta(accountID, -1, 0)
 }
 
 // GetAccountWaitingCount gets current wait queue count for an account.
@@ -310,7 +453,16 @@ func (s *ConcurrencyService) GetAccountWaitingCount(ctx context.Context, account
 	if s.cache == nil {
 		return 0, nil
 	}
-	return s.cache.GetAccountWaitingCount(ctx, accountID)
+	now := time.Now()
+	if count, ok := s.getCachedAccountWaitCount(accountID, now); ok {
+		return count, nil
+	}
+	count, err := s.cache.GetAccountWaitingCount(ctx, accountID)
+	if err != nil {
+		return 0, err
+	}
+	s.storeCachedAccountWaitCount(accountID, count, now)
+	return count, nil
 }
 
 func (s *ConcurrencyService) EnqueueUserWaitTicket(ctx context.Context, userID int64, ticketID string) error {
@@ -378,12 +530,325 @@ func CalculateMaxWait(userConcurrency int) int {
 	return userConcurrency + defaultExtraWaitSlots
 }
 
+func (s *ConcurrencyService) getCachedAccountWaitCount(accountID int64, now time.Time) (int, bool) {
+	if s == nil || accountID <= 0 {
+		return 0, false
+	}
+	value, ok := s.accountWaitCountCache.Load(accountID)
+	if !ok {
+		return 0, false
+	}
+	snapshot, ok := value.(cachedAccountWaitCountSnapshot)
+	if !ok {
+		s.accountWaitCountCache.Delete(accountID)
+		return 0, false
+	}
+	if snapshot.ExpiresAtUnixNano <= now.UnixNano() {
+		s.accountWaitCountCache.Delete(accountID)
+		return 0, false
+	}
+	if snapshot.Count < 0 {
+		s.accountWaitCountCache.Delete(accountID)
+		return 0, false
+	}
+	return snapshot.Count, true
+}
+
+func (s *ConcurrencyService) storeCachedAccountWaitCount(accountID int64, count int, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	ttl := accountWaitCountCacheTTL
+	if ttl <= 0 {
+		return
+	}
+	s.accountWaitCountCache.Store(accountID, cachedAccountWaitCountSnapshot{
+		Count:             count,
+		ExpiresAtUnixNano: now.Add(ttl).UnixNano(),
+	})
+}
+
+func (s *ConcurrencyService) updateCachedAccountWaitCountDelta(accountID int64, delta int, fallback int) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	now := time.Now()
+	count := fallback
+	if cached, ok := s.getCachedAccountWaitCount(accountID, now); ok {
+		count = cached + delta
+	}
+	if count < 0 {
+		count = 0
+	}
+	s.storeCachedAccountWaitCount(accountID, count, now)
+}
+
+func (s *ConcurrencyService) getCachedUserWaitCount(userID int64, now time.Time) (int, bool) {
+	if s == nil || userID <= 0 {
+		return 0, false
+	}
+	value, ok := s.userWaitCountCache.Load(userID)
+	if !ok {
+		return 0, false
+	}
+	snapshot, ok := value.(cachedUserWaitCountSnapshot)
+	if !ok {
+		s.userWaitCountCache.Delete(userID)
+		return 0, false
+	}
+	if snapshot.ExpiresAtUnixNano <= now.UnixNano() {
+		s.userWaitCountCache.Delete(userID)
+		return 0, false
+	}
+	if snapshot.Count < 0 {
+		s.userWaitCountCache.Delete(userID)
+		return 0, false
+	}
+	return snapshot.Count, true
+}
+
+func (s *ConcurrencyService) storeCachedUserWaitCount(userID int64, count int, now time.Time) {
+	if s == nil || userID <= 0 {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	ttl := accountWaitCountCacheTTL
+	if ttl <= 0 {
+		return
+	}
+	s.userWaitCountCache.Store(userID, cachedUserWaitCountSnapshot{
+		Count:             count,
+		ExpiresAtUnixNano: now.Add(ttl).UnixNano(),
+	})
+}
+
+func (s *ConcurrencyService) updateCachedUserWaitCountDelta(userID int64, delta int, fallback int) {
+	if s == nil || userID <= 0 {
+		return
+	}
+	now := time.Now()
+	count := fallback
+	if cached, ok := s.getCachedUserWaitCount(userID, now); ok {
+		count = cached + delta
+	}
+	if count < 0 {
+		count = 0
+	}
+	s.storeCachedUserWaitCount(userID, count, now)
+}
+
+func (s *ConcurrencyService) getCachedUserLoadSnapshot(userID int64, now time.Time) (cachedUserLoadSnapshot, bool) {
+	if s == nil || userID <= 0 {
+		return cachedUserLoadSnapshot{}, false
+	}
+	value, ok := s.userLoadCache.Load(userID)
+	if !ok {
+		return cachedUserLoadSnapshot{}, false
+	}
+	snapshot, ok := value.(cachedUserLoadSnapshot)
+	if !ok {
+		s.userLoadCache.Delete(userID)
+		return cachedUserLoadSnapshot{}, false
+	}
+	if snapshot.ExpiresAtUnixNano <= now.UnixNano() {
+		s.userLoadCache.Delete(userID)
+		return cachedUserLoadSnapshot{}, false
+	}
+	return snapshot, true
+}
+
+func (s *ConcurrencyService) storeCachedUserLoadSnapshot(userID int64, currentConcurrency int, waitingCount int, now time.Time) {
+	if s == nil || userID <= 0 {
+		return
+	}
+	ttl := accountLoadCacheTTL
+	if ttl <= 0 {
+		return
+	}
+	s.userLoadCache.Store(userID, cachedUserLoadSnapshot{
+		CurrentConcurrency: currentConcurrency,
+		WaitingCount:       waitingCount,
+		ExpiresAtUnixNano:  now.Add(ttl).UnixNano(),
+	})
+}
+
+func accountLoadRate(currentConcurrency int, waitingCount int, maxConcurrency int) int {
+	if maxConcurrency <= 0 {
+		return 0
+	}
+	return (currentConcurrency + waitingCount) * 100 / maxConcurrency
+}
+
+func accountLoadBatchKey(accounts []AccountWithConcurrency) string {
+	if len(accounts) == 0 {
+		return ""
+	}
+	ids := make([]int64, 0, len(accounts))
+	seen := make(map[int64]struct{}, len(accounts))
+	for _, account := range accounts {
+		if account.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[account.ID]; ok {
+			continue
+		}
+		seen[account.ID] = struct{}{}
+		ids = append(ids, account.ID)
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var b strings.Builder
+	b.Grow(len(ids) * 10)
+	b.WriteString("account:")
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatInt(id, 10))
+	}
+	return b.String()
+}
+
+func userLoadBatchKey(users []UserWithConcurrency) string {
+	if len(users) == 0 {
+		return ""
+	}
+	ids := make([]int64, 0, len(users))
+	seen := make(map[int64]struct{}, len(users))
+	for _, user := range users {
+		if user.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[user.ID]; ok {
+			continue
+		}
+		seen[user.ID] = struct{}{}
+		ids = append(ids, user.ID)
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	var b strings.Builder
+	b.Grow(len(ids) * 10)
+	b.WriteString("user:")
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatInt(id, 10))
+	}
+	return b.String()
+}
+
+func (s *ConcurrencyService) getCachedAccountLoadSnapshot(accountID int64, now time.Time) (cachedAccountLoadSnapshot, bool) {
+	if s == nil || accountID <= 0 {
+		return cachedAccountLoadSnapshot{}, false
+	}
+	value, ok := s.accountLoadCache.Load(accountID)
+	if !ok {
+		return cachedAccountLoadSnapshot{}, false
+	}
+	snapshot, ok := value.(cachedAccountLoadSnapshot)
+	if !ok {
+		s.accountLoadCache.Delete(accountID)
+		return cachedAccountLoadSnapshot{}, false
+	}
+	if snapshot.ExpiresAtUnixNano <= now.UnixNano() {
+		s.accountLoadCache.Delete(accountID)
+		return cachedAccountLoadSnapshot{}, false
+	}
+	return snapshot, true
+}
+
+func (s *ConcurrencyService) storeCachedAccountLoadSnapshot(accountID int64, currentConcurrency int, waitingCount int, now time.Time) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	ttl := accountLoadCacheTTL
+	if ttl <= 0 {
+		return
+	}
+	s.accountLoadCache.Store(accountID, cachedAccountLoadSnapshot{
+		CurrentConcurrency: currentConcurrency,
+		WaitingCount:       waitingCount,
+		ExpiresAtUnixNano:  now.Add(ttl).UnixNano(),
+	})
+}
+
 // GetAccountsLoadBatch returns load info for multiple accounts.
 func (s *ConcurrencyService) GetAccountsLoadBatch(ctx context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
 	if s.cache == nil {
 		return map[int64]*AccountLoadInfo{}, nil
 	}
-	return s.cache.GetAccountsLoadBatch(ctx, accounts)
+	if len(accounts) == 0 {
+		return map[int64]*AccountLoadInfo{}, nil
+	}
+
+	now := time.Now()
+	result := make(map[int64]*AccountLoadInfo, len(accounts))
+	missing := make([]AccountWithConcurrency, 0, len(accounts))
+	missingIDs := make(map[int64]struct{}, len(accounts))
+
+	for _, account := range accounts {
+		if account.ID <= 0 {
+			continue
+		}
+		if snapshot, ok := s.getCachedAccountLoadSnapshot(account.ID, now); ok {
+			result[account.ID] = &AccountLoadInfo{
+				AccountID:          account.ID,
+				CurrentConcurrency: snapshot.CurrentConcurrency,
+				WaitingCount:       snapshot.WaitingCount,
+				LoadRate:           accountLoadRate(snapshot.CurrentConcurrency, snapshot.WaitingCount, account.MaxConcurrency),
+			}
+			continue
+		}
+		if _, seen := missingIDs[account.ID]; seen {
+			continue
+		}
+		missingIDs[account.ID] = struct{}{}
+		missing = append(missing, account)
+	}
+
+	if len(missing) == 0 {
+		return result, nil
+	}
+
+	freshAny, err, _ := s.accountLoadSF.Do(accountLoadBatchKey(missing), func() (any, error) {
+		return s.cache.GetAccountsLoadBatch(ctx, missing)
+	})
+	if err != nil {
+		return nil, err
+	}
+	fresh, _ := freshAny.(map[int64]*AccountLoadInfo)
+	if fresh == nil {
+		fresh = map[int64]*AccountLoadInfo{}
+	}
+
+	refreshAt := time.Now()
+	for _, account := range missing {
+		info := fresh[account.ID]
+		if info == nil {
+			info = &AccountLoadInfo{AccountID: account.ID}
+		}
+		s.storeCachedAccountWaitCount(account.ID, info.WaitingCount, refreshAt)
+		s.storeCachedAccountLoadSnapshot(account.ID, info.CurrentConcurrency, info.WaitingCount, refreshAt)
+		result[account.ID] = &AccountLoadInfo{
+			AccountID:          account.ID,
+			CurrentConcurrency: info.CurrentConcurrency,
+			WaitingCount:       info.WaitingCount,
+			LoadRate:           accountLoadRate(info.CurrentConcurrency, info.WaitingCount, account.MaxConcurrency),
+		}
+	}
+
+	return result, nil
 }
 
 // GetUsersLoadBatch returns load info for multiple users.
@@ -391,7 +856,67 @@ func (s *ConcurrencyService) GetUsersLoadBatch(ctx context.Context, users []User
 	if s.cache == nil {
 		return map[int64]*UserLoadInfo{}, nil
 	}
-	return s.cache.GetUsersLoadBatch(ctx, users)
+	if len(users) == 0 {
+		return map[int64]*UserLoadInfo{}, nil
+	}
+
+	now := time.Now()
+	result := make(map[int64]*UserLoadInfo, len(users))
+	missing := make([]UserWithConcurrency, 0, len(users))
+	missingIDs := make(map[int64]struct{}, len(users))
+
+	for _, user := range users {
+		if user.ID <= 0 {
+			continue
+		}
+		if snapshot, ok := s.getCachedUserLoadSnapshot(user.ID, now); ok {
+			result[user.ID] = &UserLoadInfo{
+				UserID:             user.ID,
+				CurrentConcurrency: snapshot.CurrentConcurrency,
+				WaitingCount:       snapshot.WaitingCount,
+				LoadRate:           accountLoadRate(snapshot.CurrentConcurrency, snapshot.WaitingCount, user.MaxConcurrency),
+			}
+			continue
+		}
+		if _, seen := missingIDs[user.ID]; seen {
+			continue
+		}
+		missingIDs[user.ID] = struct{}{}
+		missing = append(missing, user)
+	}
+
+	if len(missing) == 0 {
+		return result, nil
+	}
+
+	freshAny, err, _ := s.userLoadSF.Do(userLoadBatchKey(missing), func() (any, error) {
+		return s.cache.GetUsersLoadBatch(ctx, missing)
+	})
+	if err != nil {
+		return nil, err
+	}
+	fresh, _ := freshAny.(map[int64]*UserLoadInfo)
+	if fresh == nil {
+		fresh = map[int64]*UserLoadInfo{}
+	}
+
+	refreshAt := time.Now()
+	for _, user := range missing {
+		info := fresh[user.ID]
+		if info == nil {
+			info = &UserLoadInfo{UserID: user.ID}
+		}
+		s.storeCachedUserWaitCount(user.ID, info.WaitingCount, refreshAt)
+		s.storeCachedUserLoadSnapshot(user.ID, info.CurrentConcurrency, info.WaitingCount, refreshAt)
+		result[user.ID] = &UserLoadInfo{
+			UserID:             user.ID,
+			CurrentConcurrency: info.CurrentConcurrency,
+			WaitingCount:       info.WaitingCount,
+			LoadRate:           accountLoadRate(info.CurrentConcurrency, info.WaitingCount, user.MaxConcurrency),
+		}
+	}
+
+	return result, nil
 }
 
 // CleanupExpiredAccountSlots removes expired slots for one account (background task).

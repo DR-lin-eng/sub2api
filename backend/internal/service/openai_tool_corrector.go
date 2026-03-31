@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	ffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -130,6 +131,24 @@ func (c *CodexToolCorrector) CorrectToolCallsInSSEBytes(data []byte) ([]byte, bo
 		return data, false
 	}
 	return updated, true
+}
+
+// CorrectToolCallsInSSEBytesFast prefers the Rust fast path and falls back to the
+// existing Go implementation when Rust FFI is disabled or cannot safely rewrite.
+func (c *CodexToolCorrector) CorrectToolCallsInSSEBytesFast(data []byte) ([]byte, bool) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return data, false
+	}
+	if !mayContainToolCallPayload(data) {
+		return data, false
+	}
+	if !gjson.ValidBytes(data) {
+		return data, false
+	}
+	if corrected, ok := ffi.CorrectOpenAIToolCalls(data); ok {
+		return corrected, true
+	}
+	return c.CorrectToolCallsInSSEBytes(data)
 }
 
 func mayContainToolCallPayload(data []byte) bool {

@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -35,33 +38,41 @@ type UpdateProfileRequest struct {
 // GetProfile handles getting user profile
 // GET /api/v1/users/me
 func (h *UserHandler) GetProfile(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetProfileGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
-	userData, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+	userData, err := h.userService.GetByID(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.UserFromService(userData))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromService(userData))
 }
 
 // ChangePassword handles changing user password
 // POST /api/v1/users/me/password
 func (h *UserHandler) ChangePassword(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.ChangePasswordGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) ChangePasswordGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
 	var req ChangePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -69,38 +80,60 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 		CurrentPassword: req.OldPassword,
 		NewPassword:     req.NewPassword,
 	}
-	err := h.userService.ChangePassword(c.Request.Context(), subject.UserID, svcReq)
+	err := h.userService.ChangePassword(c.Request().Context(), subject.UserID, svcReq)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Password changed successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"message": "Password changed successfully"})
 }
 
 // UpdateProfile handles updating user profile
 // PUT /api/v1/users/me
 func (h *UserHandler) UpdateProfile(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.UpdateProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) UpdateProfileGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
 	var req UpdateProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	svcReq := service.UpdateProfileRequest{
 		Username: req.Username,
 	}
-	updatedUser, err := h.userService.UpdateProfile(c.Request.Context(), subject.UserID, svcReq)
+	updatedUser, err := h.userService.UpdateProfile(c.Request().Context(), subject.UserID, svcReq)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.UserFromService(updatedUser))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromService(updatedUser))
+}
+
+type gatewayJSONResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g gatewayJSONResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g gatewayJSONResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
 }

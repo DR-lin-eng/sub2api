@@ -12,8 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const nativeRouteFallbackToHTTPHandlerKey = "_native_route_fallback_http_handler"
-
 // RegisterGatewayRoutes 注册 API 网关路由（Claude/OpenAI/Gemini 兼容）
 func RegisterGatewayRoutes(
 	r *gin.Engine,
@@ -223,6 +221,21 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			},
 		},
 		{
+			Method:  http.MethodGet,
+			Path:    "/v1/responses",
+			Handler: h.OpenAIGateway.ResponsesWebSocketGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
 			Method:  http.MethodPost,
 			Path:    "/v1/responses",
 			Handler: h.OpenAIGateway.ResponsesGateway,
@@ -256,6 +269,21 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			Method:  http.MethodPost,
 			Path:    "/chat/completions",
 			Handler: h.OpenAIGateway.ChatCompletionsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/responses",
+			Handler: h.OpenAIGateway.ResponsesWebSocketGateway,
 			Middleware: []string{
 				"request_logger",
 				"cors",
@@ -404,6 +432,7 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 func openAIMessagesDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
 	return func(c gatewayctx.GatewayContext) {
 		if c == nil || h == nil {
+			writeGatewayDispatchUnavailable(c)
 			return
 		}
 		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
@@ -423,13 +452,14 @@ func openAIMessagesDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
 			h.Gateway.MessagesGateway(c)
 			return
 		}
-		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+		writeGatewayDispatchUnavailable(c)
 	}
 }
 
 func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
 	return func(c gatewayctx.GatewayContext) {
 		if c == nil || h == nil {
+			writeGatewayDispatchUnavailable(c)
 			return
 		}
 		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
@@ -438,7 +468,7 @@ func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFun
 				h.Gateway.CountTokensGateway(c)
 				return
 			}
-			c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+			writeGatewayDispatchUnavailable(c)
 			return
 		}
 		if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
@@ -455,8 +485,20 @@ func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFun
 			h.Gateway.CountTokensGateway(c)
 			return
 		}
-		c.SetValue(nativeRouteFallbackToHTTPHandlerKey, true)
+		writeGatewayDispatchUnavailable(c)
 	}
+}
+
+func writeGatewayDispatchUnavailable(c gatewayctx.GatewayContext) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(http.StatusServiceUnavailable, gin.H{
+		"error": gin.H{
+			"type":    "api_error",
+			"message": "Service temporarily unavailable",
+		},
+	})
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

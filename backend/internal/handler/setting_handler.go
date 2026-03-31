@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -25,13 +28,17 @@ func NewSettingHandler(settingService *service.SettingService, version string) *
 // GetPublicSettings 获取公开设置
 // GET /api/v1/settings/public
 func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
-	settings, err := h.settingService.GetPublicSettings(c.Request.Context())
+	h.GetPublicSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetPublicSettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetPublicSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.PublicSettings{
+	response.SuccessContext(gatewayResponder{ctx: c}, dto.PublicSettings{
 		RegistrationEnabled:              settings.RegistrationEnabled,
 		EmailVerifyEnabled:               settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist: settings.RegistrationEmailSuffixWhitelist,
@@ -57,4 +64,22 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		BackendModeEnabled:               settings.BackendModeEnabled,
 		Version:                          h.version,
 	})
+}
+
+type gatewayResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g gatewayResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g gatewayResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
 }

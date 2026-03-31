@@ -223,6 +223,77 @@ func TestLoadSchedulingConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestValidateRustSidecarAutoStartRequiresBinaryPath(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Rust.Sidecar.Enabled = true
+	cfg.Rust.Sidecar.AutoStart = true
+	cfg.Rust.Sidecar.SocketPath = "/tmp/a.sock"
+	cfg.Rust.Sidecar.UpstreamSocketPath = "/tmp/b.sock"
+	cfg.Rust.Sidecar.RequestTimeoutSeconds = 1
+	cfg.Rust.Sidecar.HealthcheckTimeoutSeconds = 1
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rust.sidecar.binary_path")
+}
+
+func TestLoadRustSidecarUpgradeIdleTimeoutDefault(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 120, cfg.Rust.Sidecar.UpgradeIdleTimeoutSeconds)
+	require.Equal(t, 64<<20, cfg.Rust.Sidecar.WebSocketMaxMessageBytes)
+}
+
+func TestValidateRustSidecarUpgradeIdleTimeoutPositive(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Rust.Sidecar.Enabled = true
+	cfg.Rust.Sidecar.SocketPath = "/tmp/a.sock"
+	cfg.Rust.Sidecar.UpstreamSocketPath = "/tmp/b.sock"
+	cfg.Rust.Sidecar.RequestTimeoutSeconds = 1
+	cfg.Rust.Sidecar.UpgradeIdleTimeoutSeconds = 0
+	cfg.Rust.Sidecar.HealthcheckTimeoutSeconds = 1
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rust.sidecar.upgrade_idle_timeout_seconds")
+}
+
+func TestValidateRustSidecarWebSocketMaxMessageBytesPositive(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Rust.Sidecar.Enabled = true
+	cfg.Rust.Sidecar.SocketPath = "/tmp/a.sock"
+	cfg.Rust.Sidecar.UpstreamSocketPath = "/tmp/b.sock"
+	cfg.Rust.Sidecar.RequestTimeoutSeconds = 1
+	cfg.Rust.Sidecar.UpgradeIdleTimeoutSeconds = 1
+	cfg.Rust.Sidecar.WebSocketMaxMessageBytes = 0
+	cfg.Rust.Sidecar.HealthcheckTimeoutSeconds = 1
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rust.sidecar.websocket_max_message_bytes")
+}
+
+func TestValidateRustFFIEnabledRequiresLibraryPath(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Rust.FFI.Enabled = true
+	cfg.Rust.FFI.HashEnabled = true
+	cfg.Rust.FFI.LibraryPath = ""
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rust.ffi.library_path")
+}
+
 func TestLoadDefaultSecurityToggles(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

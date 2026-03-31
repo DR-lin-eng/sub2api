@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -47,9 +50,13 @@ type UpdatePromoCodeRequest struct {
 // List handles listing all promo codes with pagination
 // GET /api/v1/admin/promo-codes
 func (h *PromoHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
-	status := c.Query("status")
-	search := strings.TrimSpace(c.Query("search"))
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+	status := c.QueryValue("status")
+	search := strings.TrimSpace(c.QueryValue("search"))
 	if len(search) > 100 {
 		search = search[:100]
 	}
@@ -59,9 +66,9 @@ func (h *PromoHandler) List(c *gin.Context) {
 		PageSize: pageSize,
 	}
 
-	codes, paginationResult, err := h.promoService.List(c.Request.Context(), params, status, search)
+	codes, paginationResult, err := h.promoService.List(c.Request().Context(), params, status, search)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -69,33 +76,41 @@ func (h *PromoHandler) List(c *gin.Context) {
 	for i := range codes {
 		out = append(out, *dto.PromoCodeFromService(&codes[i]))
 	}
-	response.Paginated(c, out, paginationResult.Total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, paginationResult.Total, page, pageSize)
 }
 
 // GetByID handles getting a promo code by ID
 // GET /api/v1/admin/promo-codes/:id
 func (h *PromoHandler) GetByID(c *gin.Context) {
-	codeID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	codeID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid promo code ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid promo code ID")
 		return
 	}
 
-	code, err := h.promoService.GetByID(c.Request.Context(), codeID)
+	code, err := h.promoService.GetByID(c.Request().Context(), codeID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.PromoCodeFromService(code))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.PromoCodeFromService(code))
 }
 
 // Create handles creating a new promo code
 // POST /api/v1/admin/promo-codes
 func (h *PromoHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreatePromoCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -111,27 +126,31 @@ func (h *PromoHandler) Create(c *gin.Context) {
 		input.ExpiresAt = &t
 	}
 
-	code, err := h.promoService.Create(c.Request.Context(), input)
+	code, err := h.promoService.Create(c.Request().Context(), input)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.PromoCodeFromService(code))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.PromoCodeFromService(code))
 }
 
 // Update handles updating a promo code
 // PUT /api/v1/admin/promo-codes/:id
 func (h *PromoHandler) Update(c *gin.Context) {
-	codeID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	codeID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid promo code ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid promo code ID")
 		return
 	}
 
 	var req UpdatePromoCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -153,51 +172,59 @@ func (h *PromoHandler) Update(c *gin.Context) {
 		}
 	}
 
-	code, err := h.promoService.Update(c.Request.Context(), codeID, input)
+	code, err := h.promoService.Update(c.Request().Context(), codeID, input)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.PromoCodeFromService(code))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.PromoCodeFromService(code))
 }
 
 // Delete handles deleting a promo code
 // DELETE /api/v1/admin/promo-codes/:id
 func (h *PromoHandler) Delete(c *gin.Context) {
-	codeID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	codeID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid promo code ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid promo code ID")
 		return
 	}
 
-	err = h.promoService.Delete(c.Request.Context(), codeID)
+	err = h.promoService.Delete(c.Request().Context(), codeID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Promo code deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Promo code deleted successfully"})
 }
 
 // GetUsages handles getting usage records for a promo code
 // GET /api/v1/admin/promo-codes/:id/usages
 func (h *PromoHandler) GetUsages(c *gin.Context) {
-	codeID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetUsagesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *PromoHandler) GetUsagesGateway(c gatewayctx.GatewayContext) {
+	codeID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid promo code ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid promo code ID")
 		return
 	}
 
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := response.ParsePaginationValues(c)
 	params := pagination.PaginationParams{
 		Page:     page,
 		PageSize: pageSize,
 	}
 
-	usages, paginationResult, err := h.promoService.ListUsages(c.Request.Context(), codeID, params)
+	usages, paginationResult, err := h.promoService.ListUsages(c.Request().Context(), codeID, params)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -205,5 +232,5 @@ func (h *PromoHandler) GetUsages(c *gin.Context) {
 	for i := range usages {
 		out = append(out, *dto.PromoCodeUsageFromService(&usages[i]))
 	}
-	response.Paginated(c, out, paginationResult.Total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, paginationResult.Total, page, pageSize)
 }

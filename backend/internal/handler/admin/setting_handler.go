@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -60,14 +62,28 @@ func NewSettingHandler(settingService *service.SettingService, userService *serv
 // GetSettings 获取所有系统设置
 // GET /api/v1/admin/settings
 func (h *SettingHandler) GetSettings(c *gin.Context) {
-	settings, err := h.settingService.GetAllSettings(c.Request.Context())
+	h.GetSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetSettingsGateway(c gatewayctx.GatewayContext) {
+	settingsDTO, err := h.loadSystemSettingsDTO(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, settingsDTO)
+}
 
-	// Check if ops monitoring is enabled (respects config.ops.enabled)
-	opsEnabled := h.opsService != nil && h.opsService.IsMonitoringEnabled(c.Request.Context())
+func (h *SettingHandler) loadSystemSettingsDTO(ctx context.Context) (dto.SystemSettings, error) {
+	settings, err := h.settingService.GetAllSettings(ctx)
+	if err != nil {
+		return dto.SystemSettings{}, err
+	}
+	effectiveOpsMonitoringEnabled := settings.OpsMonitoringEnabled && h.opsService != nil && h.opsService.IsMonitoringEnabled(ctx)
+	return h.buildSystemSettingsDTO(settings, effectiveOpsMonitoringEnabled), nil
+}
+
+func (h *SettingHandler) buildSystemSettingsDTO(settings *service.SystemSettings, effectiveOpsMonitoringEnabled bool) dto.SystemSettings {
 	defaultSubscriptions := make([]dto.DefaultSubscriptionSetting, 0, len(settings.DefaultSubscriptions))
 	for _, sub := range settings.DefaultSubscriptions {
 		defaultSubscriptions = append(defaultSubscriptions, dto.DefaultSubscriptionSetting{
@@ -76,7 +92,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		})
 	}
 
-	response.Success(c, dto.SystemSettings{
+	return dto.SystemSettings{
 		RegistrationEnabled:                  settings.RegistrationEnabled,
 		EmailVerifyEnabled:                   settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:     settings.RegistrationEmailSuffixWhitelist,
@@ -122,7 +138,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		FallbackModelAntigravity:             settings.FallbackModelAntigravity,
 		EnableIdentityPatch:                  settings.EnableIdentityPatch,
 		IdentityPatchPrompt:                  settings.IdentityPatchPrompt,
-		OpsMonitoringEnabled:                 opsEnabled && settings.OpsMonitoringEnabled,
+		OpsMonitoringEnabled:                 effectiveOpsMonitoringEnabled,
 		OpsRealtimeMonitoringEnabled:         settings.OpsRealtimeMonitoringEnabled,
 		OpsQueryModeDefault:                  settings.OpsQueryModeDefault,
 		OpsMetricsIntervalSeconds:            settings.OpsMetricsIntervalSeconds,
@@ -133,7 +149,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AutoDelete429Accounts:                settings.AutoDelete429Accounts,
 		AutoDeleteUselessProxies:             settings.AutoDeleteUselessProxies,
 		BackendModeEnabled:                   settings.BackendModeEnabled,
-	})
+	}
 }
 
 // UpdateSettingsRequest 更新设置请求
@@ -220,15 +236,20 @@ type UpdateSettingsRequest struct {
 // UpdateSettings 更新系统设置
 // PUT /api/v1/admin/settings
 func (h *SettingHandler) UpdateSettings(c *gin.Context) {
+	h.UpdateSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateSettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateSettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	previousSettings, err := h.settingService.GetAllSettings(c.Request.Context())
+	reqCtx := c.Request().Context()
+	previousSettings, err := h.settingService.GetAllSettings(reqCtx)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -248,13 +269,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if req.TurnstileEnabled {
 		// 检查必填字段
 		if req.TurnstileSiteKey == "" {
-			response.BadRequest(c, "Turnstile Site Key is required when enabled")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Turnstile Site Key is required when enabled")
 			return
 		}
 		// 如果未提供 secret key，使用已保存的值（留空保留当前值）
 		if req.TurnstileSecretKey == "" {
 			if previousSettings.TurnstileSecretKey == "" {
-				response.BadRequest(c, "Turnstile Secret Key is required when enabled")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Turnstile Secret Key is required when enabled")
 				return
 			}
 			req.TurnstileSecretKey = previousSettings.TurnstileSecretKey
@@ -264,8 +285,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		siteKeyChanged := previousSettings.TurnstileSiteKey != req.TurnstileSiteKey
 		secretKeyChanged := previousSettings.TurnstileSecretKey != req.TurnstileSecretKey
 		if siteKeyChanged || secretKeyChanged {
-			if err := h.turnstileService.ValidateSecretKey(c.Request.Context(), req.TurnstileSecretKey); err != nil {
-				response.ErrorFrom(c, err)
+			if err := h.turnstileService.ValidateSecretKey(reqCtx, req.TurnstileSecretKey); err != nil {
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 				return
 			}
 		}
@@ -276,7 +297,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if req.TotpEnabled && !previousSettings.TotpEnabled {
 		// 尝试启用 TOTP，检查加密密钥是否已手动配置
 		if !h.settingService.IsTotpEncryptionKeyConfigured() {
-			response.BadRequest(c, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Cannot enable TOTP: TOTP_ENCRYPTION_KEY environment variable must be configured first. Generate a key with 'openssl rand -hex 32' and set it in your environment.")
 			return
 		}
 	}
@@ -288,22 +309,22 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		req.LinuxDoConnectRedirectURL = strings.TrimSpace(req.LinuxDoConnectRedirectURL)
 
 		if req.LinuxDoConnectClientID == "" {
-			response.BadRequest(c, "LinuxDo Client ID is required when enabled")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "LinuxDo Client ID is required when enabled")
 			return
 		}
 		if req.LinuxDoConnectRedirectURL == "" {
-			response.BadRequest(c, "LinuxDo Redirect URL is required when enabled")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "LinuxDo Redirect URL is required when enabled")
 			return
 		}
 		if err := config.ValidateAbsoluteHTTPURL(req.LinuxDoConnectRedirectURL); err != nil {
-			response.BadRequest(c, "LinuxDo Redirect URL must be an absolute http(s) URL")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "LinuxDo Redirect URL must be an absolute http(s) URL")
 			return
 		}
 
 		// 如果未提供 client_secret，则保留现有值（如有）。
 		if req.LinuxDoConnectClientSecret == "" {
 			if previousSettings.LinuxDoConnectClientSecret == "" {
-				response.BadRequest(c, "LinuxDo Client Secret is required when enabled")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "LinuxDo Client Secret is required when enabled")
 				return
 			}
 			req.LinuxDoConnectClientSecret = previousSettings.LinuxDoConnectClientSecret
@@ -324,16 +345,16 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	// - 禁用时允许为空；若提供了 URL 也做基本校验，避免误配置
 	if purchaseEnabled {
 		if purchaseURL == "" {
-			response.BadRequest(c, "Purchase Subscription URL is required when enabled")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Purchase Subscription URL is required when enabled")
 			return
 		}
 		if err := config.ValidateAbsoluteHTTPURL(purchaseURL); err != nil {
-			response.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Purchase Subscription URL must be an absolute http(s) URL")
 			return
 		}
 	} else if purchaseURL != "" {
 		if err := config.ValidateAbsoluteHTTPURL(purchaseURL); err != nil {
-			response.BadRequest(c, "Purchase Subscription URL must be an absolute http(s) URL")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Purchase Subscription URL must be an absolute http(s) URL")
 			return
 		}
 	}
@@ -342,7 +363,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
 	if req.FrontendURL != "" {
 		if err := config.ValidateAbsoluteHTTPURL(req.FrontendURL); err != nil {
-			response.BadRequest(c, "Frontend URL must be an absolute http(s) URL")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Frontend URL must be an absolute http(s) URL")
 			return
 		}
 	}
@@ -360,51 +381,51 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if req.CustomMenuItems != nil {
 		items := *req.CustomMenuItems
 		if len(items) > maxCustomMenuItems {
-			response.BadRequest(c, "Too many custom menu items (max 20)")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Too many custom menu items (max 20)")
 			return
 		}
 		for i, item := range items {
 			if strings.TrimSpace(item.Label) == "" {
-				response.BadRequest(c, "Custom menu item label is required")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item label is required")
 				return
 			}
 			if len(item.Label) > maxMenuItemLabelLen {
-				response.BadRequest(c, "Custom menu item label is too long (max 50 characters)")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item label is too long (max 50 characters)")
 				return
 			}
 			if strings.TrimSpace(item.URL) == "" {
-				response.BadRequest(c, "Custom menu item URL is required")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item URL is required")
 				return
 			}
 			if len(item.URL) > maxMenuItemURLLen {
-				response.BadRequest(c, "Custom menu item URL is too long (max 2048 characters)")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item URL is too long (max 2048 characters)")
 				return
 			}
 			if err := config.ValidateAbsoluteHTTPURL(strings.TrimSpace(item.URL)); err != nil {
-				response.BadRequest(c, "Custom menu item URL must be an absolute http(s) URL")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item URL must be an absolute http(s) URL")
 				return
 			}
 			if item.Visibility != "user" && item.Visibility != "admin" {
-				response.BadRequest(c, "Custom menu item visibility must be 'user' or 'admin'")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item visibility must be 'user' or 'admin'")
 				return
 			}
 			if len(item.IconSVG) > maxMenuItemIconSVGLen {
-				response.BadRequest(c, "Custom menu item icon SVG is too large (max 10KB)")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item icon SVG is too large (max 10KB)")
 				return
 			}
 			// Auto-generate ID if missing
 			if strings.TrimSpace(item.ID) == "" {
 				id, err := generateMenuItemID()
 				if err != nil {
-					response.Error(c, http.StatusInternalServerError, "Failed to generate menu item ID")
+					response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to generate menu item ID")
 					return
 				}
 				items[i].ID = id
 			} else if len(item.ID) > maxMenuItemIDLen {
-				response.BadRequest(c, "Custom menu item ID is too long (max 32 characters)")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item ID is too long (max 32 characters)")
 				return
 			} else if !menuItemIDPattern.MatchString(item.ID) {
-				response.BadRequest(c, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Custom menu item ID contains invalid characters (only a-z, A-Z, 0-9, - and _ are allowed)")
 				return
 			}
 		}
@@ -412,14 +433,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		seen := make(map[string]struct{}, len(items))
 		for _, item := range items {
 			if _, exists := seen[item.ID]; exists {
-				response.BadRequest(c, "Duplicate custom menu item ID: "+item.ID)
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Duplicate custom menu item ID: "+item.ID)
 				return
 			}
 			seen[item.ID] = struct{}{}
 		}
 		menuBytes, err := json.Marshal(items)
 		if err != nil {
-			response.BadRequest(c, "Failed to serialize custom menu items")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Failed to serialize custom menu items")
 			return
 		}
 		customMenuJSON = string(menuBytes)
@@ -447,7 +468,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	// 验证最低版本号格式（空字符串=禁用，或合法 semver）
 	if req.MinClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MinClaudeCodeVersion) {
-			response.Error(c, http.StatusBadRequest, "min_claude_code_version must be empty or a valid semver (e.g. 2.1.63)")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "min_claude_code_version must be empty or a valid semver (e.g. 2.1.63)")
 			return
 		}
 	}
@@ -455,7 +476,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	// 验证最高版本号格式（空字符串=禁用，或合法 semver）
 	if req.MaxClaudeCodeVersion != "" {
 		if !semverPattern.MatchString(req.MaxClaudeCodeVersion) {
-			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
 			return
 		}
 	}
@@ -463,7 +484,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	// 交叉验证：如果同时设置了最低和最高版本号，最高版本号必须 >= 最低版本号
 	if req.MinClaudeCodeVersion != "" && req.MaxClaudeCodeVersion != "" {
 		if service.CompareVersions(req.MaxClaudeCodeVersion, req.MinClaudeCodeVersion) < 0 {
-			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
 			return
 		}
 	}
@@ -546,88 +567,23 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}(),
 	}
 
-	if err := h.settingService.UpdateSettings(c.Request.Context(), settings); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.settingService.UpdateSettings(reqCtx, settings); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	h.auditSettingsUpdate(c, previousSettings, settings, req)
+	h.auditSettingsUpdateGateway(c, previousSettings, settings, req)
 
 	// 重新获取设置返回
-	updatedSettings, err := h.settingService.GetAllSettings(c.Request.Context())
+	updatedSettingsDTO, err := h.loadSystemSettingsDTO(reqCtx)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	updatedDefaultSubscriptions := make([]dto.DefaultSubscriptionSetting, 0, len(updatedSettings.DefaultSubscriptions))
-	for _, sub := range updatedSettings.DefaultSubscriptions {
-		updatedDefaultSubscriptions = append(updatedDefaultSubscriptions, dto.DefaultSubscriptionSetting{
-			GroupID:      sub.GroupID,
-			ValidityDays: sub.ValidityDays,
-		})
-	}
-
-	response.Success(c, dto.SystemSettings{
-		RegistrationEnabled:                  updatedSettings.RegistrationEnabled,
-		EmailVerifyEnabled:                   updatedSettings.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist:     updatedSettings.RegistrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                     updatedSettings.PromoCodeEnabled,
-		PasswordResetEnabled:                 updatedSettings.PasswordResetEnabled,
-		FrontendURL:                          updatedSettings.FrontendURL,
-		InvitationCodeEnabled:                updatedSettings.InvitationCodeEnabled,
-		TotpEnabled:                          updatedSettings.TotpEnabled,
-		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
-		SMTPHost:                             updatedSettings.SMTPHost,
-		SMTPPort:                             updatedSettings.SMTPPort,
-		SMTPUsername:                         updatedSettings.SMTPUsername,
-		SMTPPasswordConfigured:               updatedSettings.SMTPPasswordConfigured,
-		SMTPFrom:                             updatedSettings.SMTPFrom,
-		SMTPFromName:                         updatedSettings.SMTPFromName,
-		SMTPUseTLS:                           updatedSettings.SMTPUseTLS,
-		TurnstileEnabled:                     updatedSettings.TurnstileEnabled,
-		TurnstileSiteKey:                     updatedSettings.TurnstileSiteKey,
-		TurnstileSecretKeyConfigured:         updatedSettings.TurnstileSecretKeyConfigured,
-		LinuxDoConnectEnabled:                updatedSettings.LinuxDoConnectEnabled,
-		LinuxDoConnectClientID:               updatedSettings.LinuxDoConnectClientID,
-		LinuxDoConnectClientSecretConfigured: updatedSettings.LinuxDoConnectClientSecretConfigured,
-		LinuxDoConnectRedirectURL:            updatedSettings.LinuxDoConnectRedirectURL,
-		SiteName:                             updatedSettings.SiteName,
-		SiteLogo:                             updatedSettings.SiteLogo,
-		SiteSubtitle:                         updatedSettings.SiteSubtitle,
-		APIBaseURL:                           updatedSettings.APIBaseURL,
-		ContactInfo:                          updatedSettings.ContactInfo,
-		DocURL:                               updatedSettings.DocURL,
-		HomeContent:                          updatedSettings.HomeContent,
-		HideCcsImportButton:                  updatedSettings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled:          updatedSettings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:              updatedSettings.PurchaseSubscriptionURL,
-		SoraClientEnabled:                    updatedSettings.SoraClientEnabled,
-		CustomMenuItems:                      dto.ParseCustomMenuItems(updatedSettings.CustomMenuItems),
-		DefaultConcurrency:                   updatedSettings.DefaultConcurrency,
-		DefaultBalance:                       updatedSettings.DefaultBalance,
-		DefaultSubscriptions:                 updatedDefaultSubscriptions,
-		EnableModelFallback:                  updatedSettings.EnableModelFallback,
-		FallbackModelAnthropic:               updatedSettings.FallbackModelAnthropic,
-		FallbackModelOpenAI:                  updatedSettings.FallbackModelOpenAI,
-		FallbackModelGemini:                  updatedSettings.FallbackModelGemini,
-		FallbackModelAntigravity:             updatedSettings.FallbackModelAntigravity,
-		EnableIdentityPatch:                  updatedSettings.EnableIdentityPatch,
-		IdentityPatchPrompt:                  updatedSettings.IdentityPatchPrompt,
-		OpsMonitoringEnabled:                 updatedSettings.OpsMonitoringEnabled,
-		OpsRealtimeMonitoringEnabled:         updatedSettings.OpsRealtimeMonitoringEnabled,
-		OpsQueryModeDefault:                  updatedSettings.OpsQueryModeDefault,
-		OpsMetricsIntervalSeconds:            updatedSettings.OpsMetricsIntervalSeconds,
-		MinClaudeCodeVersion:                 updatedSettings.MinClaudeCodeVersion,
-		MaxClaudeCodeVersion:                 updatedSettings.MaxClaudeCodeVersion,
-		AllowUngroupedKeyScheduling:          updatedSettings.AllowUngroupedKeyScheduling,
-		AutoDelete401Accounts:                updatedSettings.AutoDelete401Accounts,
-		AutoDelete429Accounts:                updatedSettings.AutoDelete429Accounts,
-		AutoDeleteUselessProxies:             updatedSettings.AutoDeleteUselessProxies,
-		BackendModeEnabled:                   updatedSettings.BackendModeEnabled,
-	})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updatedSettingsDTO)
 }
 
-func (h *SettingHandler) auditSettingsUpdate(c *gin.Context, before *service.SystemSettings, after *service.SystemSettings, req UpdateSettingsRequest) {
+func (h *SettingHandler) auditSettingsUpdateGateway(c gatewayctx.GatewayContext, before *service.SystemSettings, after *service.SystemSettings, req UpdateSettingsRequest) {
 	if before == nil || after == nil {
 		return
 	}
@@ -637,8 +593,8 @@ func (h *SettingHandler) auditSettingsUpdate(c *gin.Context, before *service.Sys
 		return
 	}
 
-	subject, _ := middleware.GetAuthSubjectFromContext(c)
-	role, _ := middleware.GetUserRoleFromContext(c)
+	subject, _ := middleware.GetAuthSubjectFromGatewayContext(c)
+	role, _ := middleware.GetUserRoleFromGatewayContext(c)
 	log.Printf("AUDIT: settings updated at=%s user_id=%d role=%s changed=%v",
 		time.Now().UTC().Format(time.RFC3339),
 		subject.UserID,
@@ -861,9 +817,13 @@ type TestSMTPRequest struct {
 // TestSMTPConnection 测试SMTP连接
 // POST /api/v1/admin/settings/test-smtp
 func (h *SettingHandler) TestSMTPConnection(c *gin.Context) {
+	h.TestSMTPConnectionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) TestSMTPConnectionGateway(c gatewayctx.GatewayContext) {
 	var req TestSMTPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -874,7 +834,7 @@ func (h *SettingHandler) TestSMTPConnection(c *gin.Context) {
 	// 如果未提供密码，从数据库获取已保存的密码
 	password := req.SMTPPassword
 	if password == "" {
-		savedConfig, err := h.emailService.GetSMTPConfig(c.Request.Context())
+		savedConfig, err := h.emailService.GetSMTPConfig(c.Request().Context())
 		if err == nil && savedConfig != nil {
 			password = savedConfig.Password
 		}
@@ -890,11 +850,11 @@ func (h *SettingHandler) TestSMTPConnection(c *gin.Context) {
 
 	err := h.emailService.TestSMTPConnectionWithConfig(config)
 	if err != nil {
-		response.BadRequest(c, "SMTP connection test failed: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "SMTP connection test failed: "+err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "SMTP connection successful"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "SMTP connection successful"})
 }
 
 // SendTestEmailRequest 发送测试邮件请求
@@ -912,9 +872,13 @@ type SendTestEmailRequest struct {
 // SendTestEmail 发送测试邮件
 // POST /api/v1/admin/settings/send-test-email
 func (h *SettingHandler) SendTestEmail(c *gin.Context) {
+	h.SendTestEmailGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) SendTestEmailGateway(c gatewayctx.GatewayContext) {
 	var req SendTestEmailRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -925,7 +889,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 	// 如果未提供密码，从数据库获取已保存的密码
 	password := req.SMTPPassword
 	if password == "" {
-		savedConfig, err := h.emailService.GetSMTPConfig(c.Request.Context())
+		savedConfig, err := h.emailService.GetSMTPConfig(c.Request().Context())
 		if err == nil && savedConfig != nil {
 			password = savedConfig.Password
 		}
@@ -941,7 +905,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 		UseTLS:   req.SMTPUseTLS,
 	}
 
-	siteName := h.settingService.GetSiteName(c.Request.Context())
+	siteName := h.settingService.GetSiteName(c.Request().Context())
 	subject := "[" + siteName + "] Test Email"
 	body := `
 <!DOCTYPE html>
@@ -976,23 +940,27 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 `
 
 	if err := h.emailService.SendEmailWithConfig(config, req.Email, subject, body); err != nil {
-		response.BadRequest(c, "Failed to send test email: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Failed to send test email: "+err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Test email sent successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Test email sent successfully"})
 }
 
 // GetAdminAPIKey 获取管理员 API Key 状态
 // GET /api/v1/admin/settings/admin-api-key
 func (h *SettingHandler) GetAdminAPIKey(c *gin.Context) {
-	maskedKey, exists, err := h.settingService.GetAdminAPIKeyStatus(c.Request.Context())
+	h.GetAdminAPIKeyGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetAdminAPIKeyGateway(c gatewayctx.GatewayContext) {
+	maskedKey, exists, err := h.settingService.GetAdminAPIKeyStatus(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"exists":     exists,
 		"masked_key": maskedKey,
 	})
@@ -1001,29 +969,33 @@ func (h *SettingHandler) GetAdminAPIKey(c *gin.Context) {
 // RegenerateAdminAPIKey 生成/重新生成管理员 API Key
 // POST /api/v1/admin/settings/admin-api-key/regenerate
 func (h *SettingHandler) RegenerateAdminAPIKey(c *gin.Context) {
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	h.RegenerateAdminAPIKeyGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) RegenerateAdminAPIKeyGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware.GetAuthSubjectFromGatewayContext(c)
 	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Authorization required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "Authorization required")
 		return
 	}
 
 	adminTokenVersion := int64(0)
 	if h.userService != nil {
-		admin, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+		admin, err := h.userService.GetByID(c.Request().Context(), subject.UserID)
 		if err != nil || admin == nil || !admin.IsActive() || !admin.IsAdmin() {
-			response.Error(c, http.StatusUnauthorized, "Admin user not found")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "Admin user not found")
 			return
 		}
 		adminTokenVersion = admin.TokenVersion
 	}
 
-	key, err := h.settingService.GenerateAdminAPIKey(c.Request.Context(), subject.UserID, adminTokenVersion)
+	key, err := h.settingService.GenerateAdminAPIKey(c.Request().Context(), subject.UserID, adminTokenVersion)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"key": key, // 完整 key 只在生成时返回一次
 	})
 }
@@ -1031,24 +1003,32 @@ func (h *SettingHandler) RegenerateAdminAPIKey(c *gin.Context) {
 // DeleteAdminAPIKey 删除管理员 API Key
 // DELETE /api/v1/admin/settings/admin-api-key
 func (h *SettingHandler) DeleteAdminAPIKey(c *gin.Context) {
-	if err := h.settingService.DeleteAdminAPIKey(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	h.DeleteAdminAPIKeyGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) DeleteAdminAPIKeyGateway(c gatewayctx.GatewayContext) {
+	if err := h.settingService.DeleteAdminAPIKey(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Admin API key deleted"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Admin API key deleted"})
 }
 
 // GetOverloadCooldownSettings 获取529过载冷却配置
 // GET /api/v1/admin/settings/overload-cooldown
 func (h *SettingHandler) GetOverloadCooldownSettings(c *gin.Context) {
-	settings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	h.GetOverloadCooldownSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetOverloadCooldownSettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetOverloadCooldownSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.OverloadCooldownSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.OverloadCooldownSettings{
 		Enabled:         settings.Enabled,
 		CooldownMinutes: settings.CooldownMinutes,
 	})
@@ -1063,9 +1043,13 @@ type UpdateOverloadCooldownSettingsRequest struct {
 // UpdateOverloadCooldownSettings 更新529过载冷却配置
 // PUT /api/v1/admin/settings/overload-cooldown
 func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
+	h.UpdateOverloadCooldownSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateOverloadCooldownSettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateOverloadCooldownSettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1074,18 +1058,18 @@ func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
 		CooldownMinutes: req.CooldownMinutes,
 	}
 
-	if err := h.settingService.SetOverloadCooldownSettings(c.Request.Context(), settings); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := h.settingService.SetOverloadCooldownSettings(c.Request().Context(), settings); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	updatedSettings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	updatedSettings, err := h.settingService.GetOverloadCooldownSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.OverloadCooldownSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.OverloadCooldownSettings{
 		Enabled:         updatedSettings.Enabled,
 		CooldownMinutes: updatedSettings.CooldownMinutes,
 	})
@@ -1094,13 +1078,17 @@ func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
 // GetStreamTimeoutSettings 获取流超时处理配置
 // GET /api/v1/admin/settings/stream-timeout
 func (h *SettingHandler) GetStreamTimeoutSettings(c *gin.Context) {
-	settings, err := h.settingService.GetStreamTimeoutSettings(c.Request.Context())
+	h.GetStreamTimeoutSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetStreamTimeoutSettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetStreamTimeoutSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.StreamTimeoutSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.StreamTimeoutSettings{
 		Enabled:                settings.Enabled,
 		Action:                 settings.Action,
 		TempUnschedMinutes:     settings.TempUnschedMinutes,
@@ -1146,6 +1134,44 @@ func toSoraS3ProfileDTO(profile service.SoraS3Profile) dto.SoraS3Profile {
 	}
 }
 
+func toTLSFingerprintProfileDTO(profile service.TLSFingerprintProfile) dto.TLSFingerprintProfile {
+	return dto.TLSFingerprintProfile{
+		ProfileID:    profile.ProfileID,
+		Name:         profile.Name,
+		Enabled:      profile.Enabled,
+		EnableGREASE: profile.EnableGREASE,
+		CipherSuites: profile.CipherSuites,
+		Curves:       profile.Curves,
+		PointFormats: profile.PointFormats,
+		UpdatedAt:    profile.UpdatedAt,
+	}
+}
+
+func uint16To64Slice(values []uint16) []uint64 {
+	result := make([]uint64, 0, len(values))
+	for _, value := range values {
+		result = append(result, uint64(value))
+	}
+	return result
+}
+
+func uint8To64Slice(values []uint8) []uint64 {
+	result := make([]uint64, 0, len(values))
+	for _, value := range values {
+		result = append(result, uint64(value))
+	}
+	return result
+}
+
+func validateTLSFingerprintSlice(field string, values []uint64) error {
+	for _, value := range values {
+		if value == 0 {
+			return fmt.Errorf("%s cannot contain zero values", field)
+		}
+	}
+	return nil
+}
+
 func validateSoraS3RequiredWhenEnabled(enabled bool, endpoint, bucket, accessKeyID, secretAccessKey string, hasStoredSecret bool) error {
 	if !enabled {
 		return nil
@@ -1165,6 +1191,211 @@ func validateSoraS3RequiredWhenEnabled(enabled bool, endpoint, bucket, accessKey
 	return fmt.Errorf("S3 Secret Access Key is required when enabled")
 }
 
+type UpdateTLSFingerprintSettingsRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+type CreateTLSFingerprintProfileRequest struct {
+	ProfileID    string   `json:"profile_id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+}
+
+type UpdateTLSFingerprintProfileRequest struct {
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+}
+
+// GetTLSFingerprintSettings 获取 TLS 指纹全局设置与列表。
+// GET /api/v1/admin/settings/tls-fingerprint
+func (h *SettingHandler) GetTLSFingerprintSettings(c *gin.Context) {
+	h.GetTLSFingerprintSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetTLSFingerprintSettingsGateway(c gatewayctx.GatewayContext) {
+	result, err := h.settingService.ListTLSFingerprintProfiles(c.Request().Context())
+	if err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	items := make([]dto.TLSFingerprintProfile, 0, len(result.Items))
+	for idx := range result.Items {
+		items = append(items, toTLSFingerprintProfileDTO(result.Items[idx]))
+	}
+	response.SuccessContext(c, dto.ListTLSFingerprintProfilesResponse{
+		Enabled: result.Enabled,
+		Items:   items,
+	})
+}
+
+// UpdateTLSFingerprintSettings 更新 TLS 指纹全局开关。
+// PUT /api/v1/admin/settings/tls-fingerprint
+func (h *SettingHandler) UpdateTLSFingerprintSettings(c *gin.Context) {
+	h.UpdateTLSFingerprintSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateTLSFingerprintSettingsGateway(c gatewayctx.GatewayContext) {
+	var req UpdateTLSFingerprintSettingsRequest
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.settingService.SetTLSFingerprintSettings(c.Request().Context(), &service.TLSFingerprintSettings{
+		Enabled: req.Enabled,
+	}); err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	response.SuccessContext(c, dto.TLSFingerprintSettings{Enabled: req.Enabled})
+}
+
+// ListTLSFingerprintProfiles 获取 TLS 指纹 Profile 列表。
+// GET /api/v1/admin/settings/tls-fingerprint/profiles
+func (h *SettingHandler) ListTLSFingerprintProfiles(c *gin.Context) {
+	h.ListTLSFingerprintProfilesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) ListTLSFingerprintProfilesGateway(c gatewayctx.GatewayContext) {
+	result, err := h.settingService.ListTLSFingerprintProfiles(c.Request().Context())
+	if err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	items := make([]dto.TLSFingerprintProfile, 0, len(result.Items))
+	for idx := range result.Items {
+		items = append(items, toTLSFingerprintProfileDTO(result.Items[idx]))
+	}
+	response.SuccessContext(c, dto.ListTLSFingerprintProfilesResponse{
+		Enabled: result.Enabled,
+		Items:   items,
+	})
+}
+
+// CreateTLSFingerprintProfile 创建 TLS 指纹 Profile。
+// POST /api/v1/admin/settings/tls-fingerprint/profiles
+func (h *SettingHandler) CreateTLSFingerprintProfile(c *gin.Context) {
+	h.CreateTLSFingerprintProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) CreateTLSFingerprintProfileGateway(c gatewayctx.GatewayContext) {
+	var req CreateTLSFingerprintProfileRequest
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.ProfileID) == "" {
+		response.ErrorContext(c, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.ErrorContext(c, http.StatusBadRequest, "Name is required")
+		return
+	}
+	if err := validateTLSFingerprintSlice("cipher_suites", uint16To64Slice(req.CipherSuites)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("curves", uint16To64Slice(req.Curves)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("point_formats", uint8To64Slice(req.PointFormats)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	created, err := h.settingService.CreateTLSFingerprintProfile(c.Request().Context(), &service.TLSFingerprintProfile{
+		ProfileID:    req.ProfileID,
+		Name:         req.Name,
+		Enabled:      req.Enabled,
+		EnableGREASE: req.EnableGREASE,
+		CipherSuites: req.CipherSuites,
+		Curves:       req.Curves,
+		PointFormats: req.PointFormats,
+	})
+	if err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	response.SuccessContext(c, toTLSFingerprintProfileDTO(*created))
+}
+
+// UpdateTLSFingerprintProfile 更新 TLS 指纹 Profile。
+// PUT /api/v1/admin/settings/tls-fingerprint/profiles/:profile_id
+func (h *SettingHandler) UpdateTLSFingerprintProfile(c *gin.Context) {
+	h.UpdateTLSFingerprintProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateTLSFingerprintProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
+	if profileID == "" {
+		response.ErrorContext(c, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	var req UpdateTLSFingerprintProfileRequest
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.ErrorContext(c, http.StatusBadRequest, "Name is required")
+		return
+	}
+	if err := validateTLSFingerprintSlice("cipher_suites", uint16To64Slice(req.CipherSuites)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("curves", uint16To64Slice(req.Curves)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateTLSFingerprintSlice("point_formats", uint8To64Slice(req.PointFormats)); err != nil {
+		response.ErrorContext(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	updated, err := h.settingService.UpdateTLSFingerprintProfile(c.Request().Context(), profileID, &service.TLSFingerprintProfile{
+		Name:         req.Name,
+		Enabled:      req.Enabled,
+		EnableGREASE: req.EnableGREASE,
+		CipherSuites: req.CipherSuites,
+		Curves:       req.Curves,
+		PointFormats: req.PointFormats,
+	})
+	if err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	response.SuccessContext(c, toTLSFingerprintProfileDTO(*updated))
+}
+
+// DeleteTLSFingerprintProfile 删除 TLS 指纹 Profile。
+// DELETE /api/v1/admin/settings/tls-fingerprint/profiles/:profile_id
+func (h *SettingHandler) DeleteTLSFingerprintProfile(c *gin.Context) {
+	h.DeleteTLSFingerprintProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) DeleteTLSFingerprintProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
+	if profileID == "" {
+		response.ErrorContext(c, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if err := h.settingService.DeleteTLSFingerprintProfile(c.Request().Context(), profileID); err != nil {
+		response.ErrorFromContext(c, err)
+		return
+	}
+	response.SuccessContext(c, gin.H{"deleted": true})
+}
+
 func findSoraS3ProfileByID(items []service.SoraS3Profile, profileID string) *service.SoraS3Profile {
 	for idx := range items {
 		if items[idx].ProfileID == profileID {
@@ -1177,27 +1408,35 @@ func findSoraS3ProfileByID(items []service.SoraS3Profile, profileID string) *ser
 // GetSoraS3Settings 获取 Sora S3 存储配置（兼容旧单配置接口）
 // GET /api/v1/admin/settings/sora-s3
 func (h *SettingHandler) GetSoraS3Settings(c *gin.Context) {
-	settings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	h.GetSoraS3SettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetSoraS3SettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetSoraS3Settings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, toSoraS3SettingsDTO(settings))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, toSoraS3SettingsDTO(settings))
 }
 
 // ListSoraS3Profiles 获取 Sora S3 多配置
 // GET /api/v1/admin/settings/sora-s3/profiles
 func (h *SettingHandler) ListSoraS3Profiles(c *gin.Context) {
-	result, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+	h.ListSoraS3ProfilesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) ListSoraS3ProfilesGateway(c gatewayctx.GatewayContext) {
+	result, err := h.settingService.ListSoraS3Profiles(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	items := make([]dto.SoraS3Profile, 0, len(result.Items))
 	for idx := range result.Items {
 		items = append(items, toSoraS3ProfileDTO(result.Items[idx]))
 	}
-	response.Success(c, dto.ListSoraS3ProfilesResponse{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.ListSoraS3ProfilesResponse{
 		ActiveProfileID: result.ActiveProfileID,
 		Items:           items,
 	})
@@ -1251,9 +1490,13 @@ type UpdateSoraS3ProfileRequest struct {
 // CreateSoraS3Profile 创建 Sora S3 配置
 // POST /api/v1/admin/settings/sora-s3/profiles
 func (h *SettingHandler) CreateSoraS3Profile(c *gin.Context) {
+	h.CreateSoraS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) CreateSoraS3ProfileGateway(c gatewayctx.GatewayContext) {
 	var req CreateSoraS3ProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1261,19 +1504,19 @@ func (h *SettingHandler) CreateSoraS3Profile(c *gin.Context) {
 		req.DefaultStorageQuotaBytes = 0
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		response.BadRequest(c, "Name is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Name is required")
 		return
 	}
 	if strings.TrimSpace(req.ProfileID) == "" {
-		response.BadRequest(c, "Profile ID is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
 	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, false); err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	created, err := h.settingService.CreateSoraS3Profile(c.Request.Context(), &service.SoraS3Profile{
+	created, err := h.settingService.CreateSoraS3Profile(c.Request().Context(), &service.SoraS3Profile{
 		ProfileID:                req.ProfileID,
 		Name:                     req.Name,
 		Enabled:                  req.Enabled,
@@ -1288,25 +1531,29 @@ func (h *SettingHandler) CreateSoraS3Profile(c *gin.Context) {
 		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
 	}, req.SetActive)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, toSoraS3ProfileDTO(*created))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, toSoraS3ProfileDTO(*created))
 }
 
 // UpdateSoraS3Profile 更新 Sora S3 配置
 // PUT /api/v1/admin/settings/sora-s3/profiles/:profile_id
 func (h *SettingHandler) UpdateSoraS3Profile(c *gin.Context) {
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	h.UpdateSoraS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateSoraS3ProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Profile ID is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
 
 	var req UpdateSoraS3ProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1314,26 +1561,26 @@ func (h *SettingHandler) UpdateSoraS3Profile(c *gin.Context) {
 		req.DefaultStorageQuotaBytes = 0
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		response.BadRequest(c, "Name is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Name is required")
 		return
 	}
 
-	existingList, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+	existingList, err := h.settingService.ListSoraS3Profiles(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	existing := findSoraS3ProfileByID(existingList.Items, profileID)
 	if existing == nil {
-		response.ErrorFrom(c, service.ErrSoraS3ProfileNotFound)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, service.ErrSoraS3ProfileNotFound)
 		return
 	}
 	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, existing.SecretAccessKeyConfigured); err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	updated, updateErr := h.settingService.UpdateSoraS3Profile(c.Request.Context(), profileID, &service.SoraS3Profile{
+	updated, updateErr := h.settingService.UpdateSoraS3Profile(c.Request().Context(), profileID, &service.SoraS3Profile{
 		Name:                     req.Name,
 		Enabled:                  req.Enabled,
 		Endpoint:                 req.Endpoint,
@@ -1347,56 +1594,68 @@ func (h *SettingHandler) UpdateSoraS3Profile(c *gin.Context) {
 		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
 	})
 	if updateErr != nil {
-		response.ErrorFrom(c, updateErr)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, updateErr)
 		return
 	}
 
-	response.Success(c, toSoraS3ProfileDTO(*updated))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, toSoraS3ProfileDTO(*updated))
 }
 
 // DeleteSoraS3Profile 删除 Sora S3 配置
 // DELETE /api/v1/admin/settings/sora-s3/profiles/:profile_id
 func (h *SettingHandler) DeleteSoraS3Profile(c *gin.Context) {
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	h.DeleteSoraS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) DeleteSoraS3ProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Profile ID is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
-	if err := h.settingService.DeleteSoraS3Profile(c.Request.Context(), profileID); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.settingService.DeleteSoraS3Profile(c.Request().Context(), profileID); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"deleted": true})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"deleted": true})
 }
 
 // SetActiveSoraS3Profile 切换激活 Sora S3 配置
 // POST /api/v1/admin/settings/sora-s3/profiles/:profile_id/activate
 func (h *SettingHandler) SetActiveSoraS3Profile(c *gin.Context) {
-	profileID := strings.TrimSpace(c.Param("profile_id"))
+	h.SetActiveSoraS3ProfileGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) SetActiveSoraS3ProfileGateway(c gatewayctx.GatewayContext) {
+	profileID := strings.TrimSpace(c.PathParam("profile_id"))
 	if profileID == "" {
-		response.BadRequest(c, "Profile ID is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
-	active, err := h.settingService.SetActiveSoraS3Profile(c.Request.Context(), profileID)
+	active, err := h.settingService.SetActiveSoraS3Profile(c.Request().Context(), profileID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, toSoraS3ProfileDTO(*active))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, toSoraS3ProfileDTO(*active))
 }
 
 // UpdateSoraS3Settings 更新 Sora S3 存储配置（兼容旧单配置接口）
 // PUT /api/v1/admin/settings/sora-s3
 func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
+	h.UpdateSoraS3SettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateSoraS3SettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateSoraS3SettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	existing, err := h.settingService.GetSoraS3Settings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -1404,7 +1663,7 @@ func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
 		req.DefaultStorageQuotaBytes = 0
 	}
 	if err := validateSoraS3RequiredWhenEnabled(req.Enabled, req.Endpoint, req.Bucket, req.AccessKeyID, req.SecretAccessKey, existing.SecretAccessKeyConfigured); err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1420,40 +1679,44 @@ func (h *SettingHandler) UpdateSoraS3Settings(c *gin.Context) {
 		CDNURL:                   req.CDNURL,
 		DefaultStorageQuotaBytes: req.DefaultStorageQuotaBytes,
 	}
-	if err := h.settingService.SetSoraS3Settings(c.Request.Context(), settings); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.settingService.SetSoraS3Settings(c.Request().Context(), settings); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	updatedSettings, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+	updatedSettings, err := h.settingService.GetSoraS3Settings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, toSoraS3SettingsDTO(updatedSettings))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, toSoraS3SettingsDTO(updatedSettings))
 }
 
 // TestSoraS3Connection 测试 Sora S3 连接（HeadBucket）
 // POST /api/v1/admin/settings/sora-s3/test
 func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
+	h.TestSoraS3ConnectionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) TestSoraS3ConnectionGateway(c gatewayctx.GatewayContext) {
 	if h.soraS3Storage == nil {
-		response.Error(c, 500, "S3 存储服务未初始化")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, 500, "S3 存储服务未初始化")
 		return
 	}
 
 	var req UpdateSoraS3SettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if !req.Enabled {
-		response.BadRequest(c, "S3 未启用，无法测试连接")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "S3 未启用，无法测试连接")
 		return
 	}
 
 	if req.SecretAccessKey == "" {
 		if req.ProfileID != "" {
-			profiles, err := h.settingService.ListSoraS3Profiles(c.Request.Context())
+			profiles, err := h.settingService.ListSoraS3Profiles(c.Request().Context())
 			if err == nil {
 				profile := findSoraS3ProfileByID(profiles.Items, req.ProfileID)
 				if profile != nil {
@@ -1462,7 +1725,7 @@ func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
 			}
 		}
 		if req.SecretAccessKey == "" {
-			existing, err := h.settingService.GetSoraS3Settings(c.Request.Context())
+			existing, err := h.settingService.GetSoraS3Settings(c.Request().Context())
 			if err == nil {
 				req.SecretAccessKey = existing.SecretAccessKey
 			}
@@ -1480,23 +1743,27 @@ func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
 		ForcePathStyle:  req.ForcePathStyle,
 		CDNURL:          req.CDNURL,
 	}
-	if err := h.soraS3Storage.TestConnectionWithSettings(c.Request.Context(), testCfg); err != nil {
-		response.Error(c, 400, "S3 连接测试失败: "+err.Error())
+	if err := h.soraS3Storage.TestConnectionWithSettings(c.Request().Context(), testCfg); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, 400, "S3 连接测试失败: "+err.Error())
 		return
 	}
-	response.Success(c, gin.H{"message": "S3 连接成功"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "S3 连接成功"})
 }
 
 // GetRectifierSettings 获取请求整流器配置
 // GET /api/v1/admin/settings/rectifier
 func (h *SettingHandler) GetRectifierSettings(c *gin.Context) {
-	settings, err := h.settingService.GetRectifierSettings(c.Request.Context())
+	h.GetRectifierSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetRectifierSettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetRectifierSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.RectifierSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.RectifierSettings{
 		Enabled:                  settings.Enabled,
 		ThinkingSignatureEnabled: settings.ThinkingSignatureEnabled,
 		ThinkingBudgetEnabled:    settings.ThinkingBudgetEnabled,
@@ -1513,9 +1780,13 @@ type UpdateRectifierSettingsRequest struct {
 // UpdateRectifierSettings 更新请求整流器配置
 // PUT /api/v1/admin/settings/rectifier
 func (h *SettingHandler) UpdateRectifierSettings(c *gin.Context) {
+	h.UpdateRectifierSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateRectifierSettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateRectifierSettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1525,19 +1796,19 @@ func (h *SettingHandler) UpdateRectifierSettings(c *gin.Context) {
 		ThinkingBudgetEnabled:    req.ThinkingBudgetEnabled,
 	}
 
-	if err := h.settingService.SetRectifierSettings(c.Request.Context(), settings); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := h.settingService.SetRectifierSettings(c.Request().Context(), settings); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// 重新获取设置返回
-	updatedSettings, err := h.settingService.GetRectifierSettings(c.Request.Context())
+	updatedSettings, err := h.settingService.GetRectifierSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.RectifierSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.RectifierSettings{
 		Enabled:                  updatedSettings.Enabled,
 		ThinkingSignatureEnabled: updatedSettings.ThinkingSignatureEnabled,
 		ThinkingBudgetEnabled:    updatedSettings.ThinkingBudgetEnabled,
@@ -1547,9 +1818,13 @@ func (h *SettingHandler) UpdateRectifierSettings(c *gin.Context) {
 // GetBetaPolicySettings 获取 Beta 策略配置
 // GET /api/v1/admin/settings/beta-policy
 func (h *SettingHandler) GetBetaPolicySettings(c *gin.Context) {
-	settings, err := h.settingService.GetBetaPolicySettings(c.Request.Context())
+	h.GetBetaPolicySettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) GetBetaPolicySettingsGateway(c gatewayctx.GatewayContext) {
+	settings, err := h.settingService.GetBetaPolicySettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -1557,7 +1832,7 @@ func (h *SettingHandler) GetBetaPolicySettings(c *gin.Context) {
 	for i, r := range settings.Rules {
 		rules[i] = dto.BetaPolicyRule(r)
 	}
-	response.Success(c, dto.BetaPolicySettings{Rules: rules})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.BetaPolicySettings{Rules: rules})
 }
 
 // UpdateBetaPolicySettingsRequest 更新 Beta 策略配置请求
@@ -1568,9 +1843,13 @@ type UpdateBetaPolicySettingsRequest struct {
 // UpdateBetaPolicySettings 更新 Beta 策略配置
 // PUT /api/v1/admin/settings/beta-policy
 func (h *SettingHandler) UpdateBetaPolicySettings(c *gin.Context) {
+	h.UpdateBetaPolicySettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateBetaPolicySettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateBetaPolicySettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1580,15 +1859,15 @@ func (h *SettingHandler) UpdateBetaPolicySettings(c *gin.Context) {
 	}
 
 	settings := &service.BetaPolicySettings{Rules: rules}
-	if err := h.settingService.SetBetaPolicySettings(c.Request.Context(), settings); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := h.settingService.SetBetaPolicySettings(c.Request().Context(), settings); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Re-fetch to return updated settings
-	updated, err := h.settingService.GetBetaPolicySettings(c.Request.Context())
+	updated, err := h.settingService.GetBetaPolicySettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -1596,7 +1875,7 @@ func (h *SettingHandler) UpdateBetaPolicySettings(c *gin.Context) {
 	for i, r := range updated.Rules {
 		outRules[i] = dto.BetaPolicyRule(r)
 	}
-	response.Success(c, dto.BetaPolicySettings{Rules: outRules})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.BetaPolicySettings{Rules: outRules})
 }
 
 // UpdateStreamTimeoutSettingsRequest 更新流超时配置请求
@@ -1611,9 +1890,13 @@ type UpdateStreamTimeoutSettingsRequest struct {
 // UpdateStreamTimeoutSettings 更新流超时处理配置
 // PUT /api/v1/admin/settings/stream-timeout
 func (h *SettingHandler) UpdateStreamTimeoutSettings(c *gin.Context) {
+	h.UpdateStreamTimeoutSettingsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SettingHandler) UpdateStreamTimeoutSettingsGateway(c gatewayctx.GatewayContext) {
 	var req UpdateStreamTimeoutSettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1625,19 +1908,19 @@ func (h *SettingHandler) UpdateStreamTimeoutSettings(c *gin.Context) {
 		ThresholdWindowMinutes: req.ThresholdWindowMinutes,
 	}
 
-	if err := h.settingService.SetStreamTimeoutSettings(c.Request.Context(), settings); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := h.settingService.SetStreamTimeoutSettings(c.Request().Context(), settings); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// 重新获取设置返回
-	updatedSettings, err := h.settingService.GetStreamTimeoutSettings(c.Request.Context())
+	updatedSettings, err := h.settingService.GetStreamTimeoutSettings(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.StreamTimeoutSettings{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.StreamTimeoutSettings{
 		Enabled:                updatedSettings.Enabled,
 		Action:                 updatedSettings.Action,
 		TempUnschedMinutes:     updatedSettings.TempUnschedMinutes,

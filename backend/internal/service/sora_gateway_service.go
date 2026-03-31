@@ -161,6 +161,7 @@ func (s *SoraGatewayService) ForwardContext(ctx context.Context, c gatewayctx.Ga
 		reqModel = mappedModel
 		upstreamModel = mappedModel
 	}
+	SetOpsUpstreamModelContext(c, upstreamModel)
 
 	modelCfg, ok := GetSoraModelConfig(reqModel)
 	if !ok {

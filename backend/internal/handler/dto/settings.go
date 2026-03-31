@@ -163,6 +163,29 @@ type ListSoraS3ProfilesResponse struct {
 	Items           []SoraS3Profile `json:"items"`
 }
 
+// TLSFingerprintSettings TLS 指纹全局设置 DTO。
+type TLSFingerprintSettings struct {
+	Enabled bool `json:"enabled"`
+}
+
+// TLSFingerprintProfile TLS 指纹 Profile DTO。
+type TLSFingerprintProfile struct {
+	ProfileID    string   `json:"profile_id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	EnableGREASE bool     `json:"enable_grease"`
+	CipherSuites []uint16 `json:"cipher_suites"`
+	Curves       []uint16 `json:"curves"`
+	PointFormats []uint8  `json:"point_formats"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+// ListTLSFingerprintProfilesResponse TLS 指纹配置列表响应。
+type ListTLSFingerprintProfilesResponse struct {
+	Enabled bool                    `json:"enabled"`
+	Items   []TLSFingerprintProfile `json:"items"`
+}
+
 // OverloadCooldownSettings 529过载冷却配置 DTO
 type OverloadCooldownSettings struct {
 	Enabled         bool `json:"enabled"`

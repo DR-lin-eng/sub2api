@@ -5,6 +5,7 @@ package main
 import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -113,10 +114,17 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		groupRepository,
 		cfg,
 	)
+	accountImportAccountStore := repository.ProvideAccountImportAccountStore(client, db, schedulerCache)
+	accountImportBatchRepository := repository.ProvideAccountImportBatchRepository(redisClient)
+	accountImportService := service.ProvideAccountImportService(accountImportAccountStore, accountImportBatchRepository, proxyRepository, groupRepository, soraAccountRepository, schedulerSnapshotService, cfg)
+	adminhandler.SetDefaultAccountImportService(accountImportService)
 
 	antigravityTokenProvider := service.ProvideAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService, oauthRefreshAPI, tempUnschedCache)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, schedulerSnapshotService, antigravityTokenProvider, rateLimitService, httpUpstream, settingService)
 	geminiTokenProvider := service.ProvideGeminiTokenProvider(accountRepository, geminiTokenCache, geminiOAuthService, oauthRefreshAPI)
+	kiroUsageService := service.NewKiroUsageService()
+	kiroTokenProvider := service.ProvideKiroTokenProvider(accountRepository, geminiTokenCache, kiroUsageService, oauthRefreshAPI)
+	kiroGatewayService := service.NewKiroGatewayService(httpUpstream, kiroTokenProvider, kiroUsageService)
 	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, antigravityGatewayService, httpUpstream, cfg)
 
 	pricingService, err := service.ProvidePricingService(cfg, repository.ProvidePricingRemoteClient(cfg))
@@ -176,6 +184,8 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		settingService,
 		proxyRepository,
 		proxyLatencyCache,
+		kiroTokenProvider,
+		kiroGatewayService,
 	)
 
 	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oauthRefreshAPI)
@@ -247,7 +257,9 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		providePrivacyClientFactory(),
 		proxyRepository,
 		oauthRefreshAPI,
+		rateLimitService,
 	)
+	schedulerSnapshotService = service.ProvideSchedulerSnapshotAdmissionBinding(schedulerSnapshotService, tokenRefreshService)
 	accountExpiryService := service.ProvideAccountExpiryService(accountRepository)
 	accountModelsRefreshService := service.ProvideAccountModelsRefreshService(accountRepository, accountTestService)
 	subscriptionExpiryService := service.ProvideSubscriptionExpiryService(userSubscriptionRepository)
@@ -290,17 +302,17 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		idempotencyCleanupService,
 		pricingService,
 		emailQueueService,
-	billingCacheService,
-	nil,
-	subscriptionService,
-	oauthService,
-	openAIOAuthService,
-	geminiOAuthService,
-	antigravityOAuthService,
-	nil,
-	openAIGatewayService,
-	scheduledTestRunnerService,
-	proxyMaintenanceRunnerService,
+		billingCacheService,
+		nil,
+		subscriptionService,
+		oauthService,
+		openAIOAuthService,
+		geminiOAuthService,
+		antigravityOAuthService,
+		nil,
+		openAIGatewayService,
+		scheduledTestRunnerService,
+		proxyMaintenanceRunnerService,
 		backupService,
 	)
 

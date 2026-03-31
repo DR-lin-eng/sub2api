@@ -25,6 +25,10 @@
       d="M12 2.5l2.1 4.7 5.1.5-3.9 3.4 1.2 5-4.5-2.6-4.5 2.6 1.2-5-3.9-3.4 5.1-.5L12 2.5z"
     />
   </svg>
+  <!-- Kiro logo -->
+  <svg v-else-if="platform === 'kiro'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M5 3h3v7l6-7h4l-7 8 8 10h-4l-6-8-1 1v7H5z" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

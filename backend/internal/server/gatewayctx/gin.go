@@ -3,7 +3,10 @@ package gatewayctx
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	coderws "github.com/coder/websocket"
@@ -114,6 +117,13 @@ func (c *ginGatewayContext) BindJSON(target any) error {
 	return c.gin.ShouldBindJSON(target)
 }
 
+func (c *ginGatewayContext) CookieValue(name string) (string, error) {
+	if c == nil || c.gin == nil {
+		return "", http.ErrNoCookie
+	}
+	return c.gin.Cookie(name)
+}
+
 func (c *ginGatewayContext) Abort() {
 	if c == nil || c.gin == nil {
 		return
@@ -140,6 +150,20 @@ func (c *ginGatewayContext) SetStatus(status int) {
 		return
 	}
 	c.gin.Status(status)
+}
+
+func (c *ginGatewayContext) SetCookie(cookie *http.Cookie) {
+	if c == nil || c.gin == nil || cookie == nil {
+		return
+	}
+	http.SetCookie(c.gin.Writer, cookie)
+}
+
+func (c *ginGatewayContext) Redirect(status int, location string) {
+	if c == nil || c.gin == nil {
+		return
+	}
+	c.gin.Redirect(status, location)
 }
 
 func (c *ginGatewayContext) ResponseWritten() bool {
@@ -171,6 +195,40 @@ func (c *ginGatewayContext) WriteBytes(status int, payload []byte) (int, error) 
 		c.gin.Status(status)
 	}
 	return c.gin.Writer.Write(payload)
+}
+
+func (c *ginGatewayContext) WriteReader(status int, contentType string, reader io.Reader, size int64) error {
+	if c == nil || c.gin == nil {
+		return nil
+	}
+	extraHeaders := map[string]string{}
+	if strings.TrimSpace(contentType) != "" {
+		extraHeaders["Content-Type"] = contentType
+	}
+	c.gin.DataFromReader(status, size, contentType, reader, extraHeaders)
+	return nil
+}
+
+func (c *ginGatewayContext) ServeFile(path string) error {
+	if c == nil || c.gin == nil {
+		return nil
+	}
+	c.gin.File(path)
+	return nil
+}
+
+func (c *ginGatewayContext) ServeFileAttachment(path, filename string) error {
+	if c == nil || c.gin == nil {
+		return nil
+	}
+	if strings.TrimSpace(filename) == "" {
+		filename = filepath.Base(path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	c.gin.FileAttachment(path, filename)
+	return nil
 }
 
 func (c *ginGatewayContext) Flush() error {

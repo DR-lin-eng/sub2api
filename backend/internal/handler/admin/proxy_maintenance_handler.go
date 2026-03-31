@@ -2,11 +2,13 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -43,18 +45,26 @@ type runProxyMaintenanceRequest struct {
 }
 
 func (h *ProxyMaintenanceHandler) List(c *gin.Context) {
-	plans, err := h.svc.ListPlans(c.Request.Context())
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) ListGateway(c gatewayctx.GatewayContext) {
+	plans, err := h.svc.ListPlans(c.Request().Context())
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, plans)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, plans)
 }
 
 func (h *ProxyMaintenanceHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req createProxyMaintenancePlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 	plan := &service.ProxyMaintenancePlan{
@@ -68,28 +78,32 @@ func (h *ProxyMaintenanceHandler) Create(c *gin.Context) {
 	if req.Enabled != nil {
 		plan.Enabled = *req.Enabled
 	}
-	created, err := h.svc.CreatePlan(c.Request.Context(), plan)
+	created, err := h.svc.CreatePlan(c.Request().Context(), plan)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 func (h *ProxyMaintenanceHandler) Update(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
-	plan, err := h.svc.GetPlan(c.Request.Context(), id)
+	plan, err := h.svc.GetPlan(c.Request().Context(), id)
 	if err != nil {
-		response.NotFound(c, "plan not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "plan not found")
 		return
 	}
 	var req updateProxyMaintenancePlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name != "" {
@@ -110,78 +124,94 @@ func (h *ProxyMaintenanceHandler) Update(c *gin.Context) {
 	if req.MaxFailuresBeforePause > 0 {
 		plan.MaxFailuresBeforePause = req.MaxFailuresBeforePause
 	}
-	updated, err := h.svc.UpdatePlan(c.Request.Context(), plan)
+	updated, err := h.svc.UpdatePlan(c.Request().Context(), plan)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, updated)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updated)
 }
 
 func (h *ProxyMaintenanceHandler) Delete(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
-	if err := h.svc.DeletePlan(c.Request.Context(), id); err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.svc.DeletePlan(c.Request().Context(), id); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "deleted"})
 }
 
 func (h *ProxyMaintenanceHandler) ListResults(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ListResultsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) ListResultsGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
 	limit := 50
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
+	if l, err := strconv.Atoi(c.QueryValue("limit")); err == nil && l > 0 {
 		limit = l
 	}
-	results, err := h.svc.ListResults(c.Request.Context(), id, limit)
+	results, err := h.svc.ListResults(c.Request().Context(), id, limit)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, results)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, results)
 }
 
 func (h *ProxyMaintenanceHandler) RunNow(c *gin.Context) {
+	h.RunNowGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) RunNowGateway(c gatewayctx.GatewayContext) {
 	var req runProxyMaintenanceRequest
-	if c.Request != nil && c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			response.BadRequest(c, err.Error())
+	if c.Request() != nil && c.Request().ContentLength > 0 {
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	task := h.taskManager.createTask()
 	if task == nil {
-		response.Error(c, http.StatusServiceUnavailable, "proxy maintenance task manager not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "proxy maintenance task manager not available")
 		return
 	}
 	task.execute = func(ctx context.Context, task *proxyMaintenanceTask) (*service.ProxyMaintenanceResult, error) {
 		return h.svc.RunNow(ctx, req.SourceProxyIDs)
 	}
 	if err := h.taskManager.submitTask(task); err != nil {
-		response.Error(c, http.StatusTooManyRequests, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	response.Accepted(c, task.state)
+	response.AcceptedContext(gatewayJSONResponder{ctx: c}, task.state)
 }
 
 func (h *ProxyMaintenanceHandler) GetTask(c *gin.Context) {
-	taskID := strings.TrimSpace(c.Param("task_id"))
+	h.GetTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyMaintenanceHandler) GetTaskGateway(c gatewayctx.GatewayContext) {
+	taskID := strings.TrimSpace(c.PathParam("task_id"))
 	if taskID == "" {
-		response.BadRequest(c, "task_id is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "task_id is required")
 		return
 	}
 	task, ok := h.taskManager.getTask(taskID)
 	if !ok || task == nil {
-		response.NotFound(c, "task not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "task not found")
 		return
 	}
-	response.Success(c, task)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, task)
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,17 +22,18 @@ var (
 const outboxEventTimeout = 2 * time.Minute
 
 type SchedulerSnapshotService struct {
-	cache         SchedulerCache
-	outboxRepo    SchedulerOutboxRepository
-	accountRepo   AccountRepository
-	groupRepo     GroupRepository
-	cfg           *config.Config
-	stopCh        chan struct{}
-	stopOnce      sync.Once
-	wg            sync.WaitGroup
-	fallbackLimit *fallbackLimiter
-	lagMu         sync.Mutex
-	lagFailures   int
+	cache           SchedulerCache
+	outboxRepo      SchedulerOutboxRepository
+	accountRepo     AccountRepository
+	groupRepo       GroupRepository
+	cfg             *config.Config
+	admissionTester SchedulerAdmissionTester
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	wg              sync.WaitGroup
+	fallbackLimit   *fallbackLimiter
+	lagMu           sync.Mutex
+	lagFailures     int
 }
 
 func NewSchedulerSnapshotService(
@@ -54,6 +56,13 @@ func NewSchedulerSnapshotService(
 		stopCh:        make(chan struct{}),
 		fallbackLimit: newFallbackLimiter(maxQPS),
 	}
+}
+
+func (s *SchedulerSnapshotService) SetAdmissionTester(tester SchedulerAdmissionTester) {
+	if s == nil {
+		return
+	}
+	s.admissionTester = tester
 }
 
 func (s *SchedulerSnapshotService) Start() {
@@ -158,6 +167,33 @@ func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, acc
 		return nil
 	}
 	return s.cache.SetAccount(ctx, account)
+}
+
+// RefreshAccounts updates single-account cache entries and proactively rebuilds
+// the affected scheduler buckets so newly imported placeholder accounts can be
+// selected immediately without waiting for the outbox worker.
+func (s *SchedulerSnapshotService) RefreshAccounts(ctx context.Context, accounts []*Account, reason string) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	var firstErr error
+	for _, account := range accounts {
+		if account == nil || account.ID <= 0 {
+			continue
+		}
+		var previous *Account
+		if cached, err := s.cache.GetAccount(ctx, account.ID); err == nil {
+			previous = cached
+		}
+		if err := s.cache.SetAccount(ctx, account); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		s.maybeEnqueueAdmissionProbe(previous, account)
+		if err := s.rebuildByAccount(ctx, account, account.GroupIDs, reason); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *SchedulerSnapshotService) runInitialRebuild() {
@@ -349,11 +385,18 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 			continue
 		}
 		found[account.ID] = struct{}{}
+		var previous *Account
+		if s.cache != nil {
+			if cached, cacheErr := s.cache.GetAccount(ctx, account.ID); cacheErr == nil {
+				previous = cached
+			}
+		}
 		if s.cache != nil {
 			if err := s.cache.SetAccount(ctx, account); err != nil {
 				return err
 			}
 		}
+		s.maybeEnqueueAdmissionProbe(previous, account)
 		for _, gid := range account.GroupIDs {
 			if gid > 0 {
 				rebuildGroupSet[gid] = struct{}{}
@@ -391,6 +434,12 @@ func (s *SchedulerSnapshotService) handleAccountEvent(ctx context.Context, accou
 	if payload != nil {
 		groupIDs = parseInt64Slice(payload["group_ids"])
 	}
+	var previous *Account
+	if s.cache != nil {
+		if cached, cacheErr := s.cache.GetAccount(ctx, *accountID); cacheErr == nil {
+			previous = cached
+		}
+	}
 
 	account, err := s.accountRepo.GetByID(ctx, *accountID)
 	if err != nil {
@@ -409,10 +458,30 @@ func (s *SchedulerSnapshotService) handleAccountEvent(ctx context.Context, accou
 			return err
 		}
 	}
+	s.maybeEnqueueAdmissionProbe(previous, account)
 	if len(groupIDs) == 0 {
 		groupIDs = account.GroupIDs
 	}
 	return s.rebuildByAccount(ctx, account, groupIDs, "account_change")
+}
+
+func (s *SchedulerSnapshotService) maybeEnqueueAdmissionProbe(previous *Account, current *Account) {
+	if s == nil || s.admissionTester == nil || current == nil || current.ID <= 0 {
+		return
+	}
+	if current.Type != AccountTypeOAuth {
+		return
+	}
+	if strings.TrimSpace(current.GetCredential("refresh_token")) == "" {
+		return
+	}
+	if !current.IsSchedulable() {
+		return
+	}
+	if previous != nil && previous.IsSchedulable() {
+		return
+	}
+	s.admissionTester.EnqueueSchedulerAdmissionTest(current.ID)
 }
 
 func (s *SchedulerSnapshotService) handleGroupEvent(ctx context.Context, groupID *int64) error {

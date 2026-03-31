@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	rustsidecar "github.com/Wei-Shaw/sub2api/internal/rustbridge/sidecar"
 	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -106,6 +107,28 @@ func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackMode
 		return ""
 	}
 	return strings.TrimSpace(apiKey.Group.DefaultMappedModel)
+}
+
+func resolveOpenAISelectionFallbackModel(apiKey *service.APIKey, requestedModel string) string {
+	fallbackModel := resolveOpenAIForwardDefaultMappedModel(apiKey, "")
+	if fallbackModel == "" || strings.EqualFold(strings.TrimSpace(fallbackModel), strings.TrimSpace(requestedModel)) {
+		return ""
+	}
+	return fallbackModel
+}
+
+func handleOpenAISelectionExhausted(
+	ctx context.Context,
+	failedAccountIDs map[int64]struct{},
+	lastFailoverErr *service.UpstreamFailoverError,
+	switchCount int,
+	maxSwitches int,
+) (map[int64]struct{}, FailoverAction) {
+	fs := NewFailoverState(maxSwitches, false)
+	fs.FailedAccountIDs = failedAccountIDs
+	fs.LastFailoverErr = lastFailoverErr
+	fs.SwitchCount = switchCount
+	return fs.FailedAccountIDs, fs.HandleSelectionExhausted(ctx)
 }
 
 func clampOpenAIMaxSwitches(limit, cap int) int {
@@ -433,6 +456,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 	}
 
 	setOpsRequestContextGateway(transportCtx, reqModel, reqStream, body)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequestContext(transportCtx, body, reqLog) {
@@ -489,6 +513,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
+		transportCtx.SetValue("openai_responses_fallback_model", "")
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
@@ -506,15 +531,51 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
-				return
-			}
-			if lastFailoverErr != nil {
-				h.handleFailoverExhaustedContext(transportCtx, lastFailoverErr, streamStarted)
+				fallbackModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
+				if fallbackModel != "" {
+					reqLog.Info("openai.fallback_to_default_model",
+						zap.String("default_mapped_model", fallbackModel),
+					)
+					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+						transportCtx.Context(),
+						apiKey.GroupID,
+						previousResponseID,
+						sessionHash,
+						fallbackModel,
+						failedAccountIDs,
+						service.OpenAIUpstreamTransportAny,
+					)
+					if err == nil && selection != nil {
+						transportCtx.SetValue("openai_responses_fallback_model", fallbackModel)
+					}
+				}
+				if err != nil {
+					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+					return
+				}
 			} else {
-				h.handleFailoverExhaustedSimpleContext(transportCtx, 502, streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					transportCtx.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleFailoverExhaustedContext(transportCtx, lastFailoverErr, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimpleContext(transportCtx, 502, streamStarted)
+					}
+					return
+				}
 			}
-			return
 		}
 		if selection == nil || selection.Account == nil {
 			h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
@@ -545,7 +606,8 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		// Forward request
 		service.SetOpsLatencyMsContext(transportCtx, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.gatewayService.ForwardContext(transportCtx.Context(), transportCtx, account, body)
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, getContextStringGateway(transportCtx, "openai_responses_fallback_model"))
+		result, err := h.gatewayService.ForwardContext(transportCtx.Context(), transportCtx, account, body, defaultMappedModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -855,6 +917,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContextGateway(transportCtx, reqModel, reqStream, body)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
@@ -934,10 +997,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 			)
 			// 首次调度失败 + 有默认映射模型 → 用默认模型重试
 			if len(failedAccountIDs) == 0 {
-				defaultModel := ""
-				if apiKey.Group != nil {
-					defaultModel = apiKey.Group.DefaultMappedModel
-				}
+				defaultModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
 				if defaultModel != "" && defaultModel != reqModel {
 					reqLog.Info("openai_messages.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
@@ -960,12 +1020,27 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 					return
 				}
 			} else {
-				if lastFailoverErr != nil {
-					h.handleAnthropicFailoverExhaustedContext(transportCtx, lastFailoverErr, streamStarted)
-				} else {
-					h.anthropicStreamingAwareErrorContext(transportCtx, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					transportCtx.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleAnthropicFailoverExhaustedContext(transportCtx, lastFailoverErr, streamStarted)
+					} else {
+						h.anthropicStreamingAwareErrorContext(transportCtx, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+					}
+					return
 				}
-				return
 			}
 		}
 		if selection == nil || selection.Account == nil {
@@ -1131,7 +1206,7 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareErrorContext(c gatewayctx.
 	if c == nil {
 		return
 	}
-	if streamStarted {
+	if streamStarted || service.RequestUsesAnthropicSSE(c) {
 		_ = gatewayctx.WriteSSEEvent(c, "error", gin.H{
 			"type": "error",
 			"error": gin.H{
@@ -1160,7 +1235,10 @@ func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, stre
 }
 
 func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponseContext(c gatewayctx.GatewayContext, streamStarted bool) bool {
-	if c == nil || c.ResponseWritten() {
+	if c == nil || service.RequestPayloadStarted(c) {
+		return false
+	}
+	if c.ResponseWritten() && !streamStarted && !service.RequestUsesAnthropicSSE(c) && !service.RequestUsesBufferedJSON(c) {
 		return false
 	}
 	h.anthropicStreamingAwareErrorContext(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
@@ -1373,10 +1451,10 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotContext(
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
 // GET /openai/v1/responses (Upgrade: websocket)
 func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
-	h.responsesWebSocketGateway(gatewayctx.FromGin(c))
+	h.ResponsesWebSocketGateway(gatewayctx.FromGin(c))
 }
 
-func (h *OpenAIGatewayHandler) responsesWebSocketGateway(transportCtx gatewayctx.GatewayContext) {
+func (h *OpenAIGatewayHandler) ResponsesWebSocketGateway(transportCtx gatewayctx.GatewayContext) {
 	if transportCtx == nil {
 		return
 	}
@@ -1412,6 +1490,10 @@ func (h *OpenAIGatewayHandler) responsesWebSocketGateway(transportCtx gatewayctx
 	reqLog.Info("openai.websocket_ingress_started")
 	clientIP := strings.TrimSpace(transportCtx.ClientIP())
 	userAgent := strings.TrimSpace(transportCtx.HeaderValue("User-Agent"))
+
+	if handled := h.tryProxyResponsesWebSocketViaRustSidecar(transportCtx, reqLog); handled {
+		return
+	}
 
 	acceptedConn, err := transportCtx.AcceptWebSocket(gatewayctx.WebSocketAcceptOptions{
 		CompressionEnabled: true,
@@ -1481,6 +1563,7 @@ func (h *OpenAIGatewayHandler) responsesWebSocketGateway(transportCtx gatewayctx
 		zap.String("previous_response_id_kind", previousResponseIDKind),
 	)
 	setOpsRequestContextGateway(transportCtx, reqModel, true, firstMessage)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeWSV2))
 
 	var currentUserRelease func()
 	var currentAccountRelease func()
@@ -1671,6 +1754,57 @@ func (h *OpenAIGatewayHandler) responsesWebSocketGateway(transportCtx gatewayctx
 	reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
 }
 
+func (h *OpenAIGatewayHandler) shouldUseRustSidecarResponsesWS(transportCtx gatewayctx.GatewayContext) bool {
+	if h == nil || h.cfg == nil || transportCtx == nil {
+		return false
+	}
+	if !h.cfg.Rust.Sidecar.Enabled || !h.cfg.Rust.Sidecar.ResponsesWSEnabled {
+		return false
+	}
+	return !rustsidecar.HasBypassHeader(transportCtx.Request())
+}
+
+func (h *OpenAIGatewayHandler) tryProxyResponsesWebSocketViaRustSidecar(transportCtx gatewayctx.GatewayContext, reqLog *zap.Logger) bool {
+	if !h.shouldUseRustSidecarResponsesWS(transportCtx) {
+		return false
+	}
+
+	socketPath := strings.TrimSpace(h.cfg.Rust.Sidecar.SocketPath)
+	var hijacker http.Hijacker
+	switch native := transportCtx.Native().(type) {
+	case *gin.Context:
+		hj, ok := native.Writer.(http.Hijacker)
+		if ok {
+			hijacker = hj
+		}
+	case http.Hijacker:
+		hijacker = native
+	}
+	if hijacker == nil {
+		if reqLog != nil {
+			reqLog.Warn("openai.websocket_rust_sidecar_unavailable", zap.String("reason", "no_hijacker"))
+		}
+		if h.cfg.Rust.Sidecar.FailClosed {
+			return true
+		}
+		return false
+	}
+
+	if err := rustsidecar.TunnelUpgradedRequest(transportCtx.Request(), hijacker, socketPath); err != nil {
+		if reqLog != nil {
+			reqLog.Warn("openai.websocket_rust_sidecar_proxy_failed", zap.Error(err))
+		}
+		if h.cfg.Rust.Sidecar.FailClosed {
+			return true
+		}
+		return false
+	}
+	if reqLog != nil {
+		reqLog.Info("openai.websocket_routed_via_rust_sidecar")
+	}
+	return true
+}
+
 func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
 	h.recoverResponsesPanicContext(gatewayctx.FromGin(c), streamStarted)
 }
@@ -1801,6 +1935,15 @@ func getContextStringGateway(c gatewayctx.GatewayContext, key string) string {
 	return strings.TrimSpace(s)
 }
 
+func shouldMaskOpenAIUpstreamError(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
 	if task == nil {
 		return
@@ -1865,6 +2008,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhaustedContext(c gatewayctx.Gatew
 		}
 	}
 
+	if service.WriteOpenAICompactErrorAfterResponseStartedContext(c, "upstream_error", firstNonEmpty(service.ExtractUpstreamErrorMessage(responseBody), "Upstream compact request failed")) {
+		return
+	}
+
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamErrorContext(c, statusCode, upstreamMsg, "")
@@ -1921,6 +2068,12 @@ func (h *OpenAIGatewayHandler) handleRemoteCompactFailureContext(c gatewayctx.Ga
 	}
 	service.SetOpsUpstreamErrorContext(c, statusCode, upstreamMsg, "")
 
+	if shouldMaskOpenAIUpstreamError(statusCode) {
+		mappedStatus, mappedType, mappedMsg := h.mapUpstreamError(statusCode)
+		h.handleStreamingAwareErrorContext(c, mappedStatus, mappedType, mappedMsg, streamStarted)
+		return
+	}
+
 	errType := "upstream_error"
 	switch statusCode {
 	case http.StatusBadRequest:
@@ -1952,11 +2105,11 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 	case 403:
 		return http.StatusBadGateway, "upstream_error", "Upstream access forbidden, please contact administrator"
 	case 429:
-		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	case 529:
-		return http.StatusServiceUnavailable, "upstream_error", "Upstream service overloaded, please retry later"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	case 500, 502, 503, 504:
-		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
+		return http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
 	}
@@ -1971,7 +2124,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorContext(c gatewayctx.Gat
 	if c == nil {
 		return
 	}
-	if streamStarted {
+	if streamStarted || service.RequestUsesOpenAISSE(c) {
 		_ = gatewayctx.WriteSSEEvent(c, "error", gin.H{
 			"error": gin.H{
 				"type":    errType,
@@ -1991,7 +2144,10 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 }
 
 func (h *OpenAIGatewayHandler) ensureForwardErrorResponseContext(c gatewayctx.GatewayContext, streamStarted bool) bool {
-	if c == nil || c.ResponseWritten() {
+	if c == nil || service.RequestPayloadStarted(c) {
+		return false
+	}
+	if c.ResponseWritten() && !streamStarted && !service.RequestUsesOpenAISSE(c) && !service.RequestUsesBufferedJSON(c) {
 		return false
 	}
 	h.handleStreamingAwareErrorContext(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)

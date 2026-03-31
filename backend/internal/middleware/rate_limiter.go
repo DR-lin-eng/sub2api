@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
@@ -121,6 +122,39 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 	}
 }
 
+func (r *RateLimiter) AllowContext(c gatewayctx.GatewayContext, key string, limit int, window time.Duration, opts RateLimitOptions) bool {
+	failureMode := opts.FailureMode
+	if failureMode != RateLimitFailClose {
+		failureMode = RateLimitFailOpen
+	}
+	if c == nil {
+		return false
+	}
+
+	ip := c.ClientIP()
+	redisKey := r.prefix + key + ":" + ip
+	ctx := c.Request().Context()
+	windowMillis := windowTTLMillis(window)
+
+	count, repaired, err := rateLimitRun(ctx, r.redis, redisKey, windowMillis)
+	if err != nil {
+		log.Printf("[RateLimit] redis error: key=%s mode=%s err=%v", redisKey, failureModeLabel(failureMode), err)
+		if failureMode == RateLimitFailClose {
+			abortRateLimitContext(c)
+			return false
+		}
+		return true
+	}
+	if repaired {
+		log.Printf("[RateLimit] ttl repaired: key=%s window_ms=%d", redisKey, windowMillis)
+	}
+	if count > int64(limit) {
+		abortRateLimitContext(c)
+		return false
+	}
+	return true
+}
+
 func windowTTLMillis(window time.Duration) int64 {
 	ttl := window.Milliseconds()
 	if ttl < 1 {
@@ -134,6 +168,17 @@ func abortRateLimit(c *gin.Context) {
 		"error":   "rate limit exceeded",
 		"message": "Too many requests, please try again later",
 	})
+}
+
+func abortRateLimitContext(c gatewayctx.GatewayContext) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(http.StatusTooManyRequests, gin.H{
+		"error":   "rate limit exceeded",
+		"message": "Too many requests, please try again later",
+	})
+	c.Abort()
 }
 
 func failureModeLabel(mode RateLimitFailureMode) string {

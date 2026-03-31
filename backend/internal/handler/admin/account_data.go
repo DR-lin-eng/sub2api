@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -70,13 +71,16 @@ type DataImportRequest struct {
 }
 
 type DataImportResult struct {
-	ProxyCreated   int               `json:"proxy_created"`
-	ProxyReused    int               `json:"proxy_reused"`
-	ProxyFailed    int               `json:"proxy_failed"`
-	AccountCreated int               `json:"account_created"`
-	AccountSkipped int               `json:"account_skipped"`
-	AccountFailed  int               `json:"account_failed"`
-	Errors         []DataImportError `json:"errors,omitempty"`
+	BatchID            string            `json:"batch_id,omitempty"`
+	ProxyCreated       int               `json:"proxy_created"`
+	ProxyReused        int               `json:"proxy_reused"`
+	ProxyFailed        int               `json:"proxy_failed"`
+	AccountEnqueued    int               `json:"account_enqueued,omitempty"`
+	PlaceholderCreated int               `json:"placeholder_created,omitempty"`
+	AccountCreated     int               `json:"account_created"`
+	AccountSkipped     int               `json:"account_skipped"`
+	AccountFailed      int               `json:"account_failed"`
+	Errors             []DataImportError `json:"errors,omitempty"`
 }
 
 type DataImportError struct {
@@ -91,33 +95,57 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
-	ctx := c.Request.Context()
+	h.ExportDataGateway(gatewayctx.FromGin(c))
+}
 
-	selectedIDs, err := parseAccountIDs(c)
+func (h *AccountHandler) ExportDataGateway(c gatewayctx.GatewayContext) {
+	ctx := c.Request().Context()
+
+	selectedIDs, err := parseAccountIDsRequest(c.Request())
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	includeProxies, err := parseIncludeProxies(c)
+	includeProxies, err := parseIncludeProxiesRequest(c.Request())
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if shouldDownloadExportData(c) && h != nil && h.accountExportService != nil {
-		c.Header("Content-Type", "application/json")
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", buildAccountExportFilename()))
-		c.Status(http.StatusOK)
-		if _, err := h.accountExportService.StreamJSON(ctx, c.Writer, buildAccountExportQueryRequest(c, selectedIDs, includeProxies)); err != nil {
-			response.InternalError(c, "Failed to serialize export data")
+	if shouldDownloadExportDataRequest(c.Request()) && h != nil && h.accountExportService != nil {
+		c.SetHeader("Content-Disposition", fmt.Sprintf("attachment; filename=%q", buildAccountExportFilename()))
+		tmp, err := os.CreateTemp("", "sub2api-account-export-*.json")
+		if err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to serialize export data")
+			return
+		}
+		defer func() {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+		}()
+		if _, err := h.accountExportService.StreamJSON(ctx, tmp, buildAccountExportQueryRequestRequest(c.Request(), selectedIDs, includeProxies)); err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to serialize export data")
+			return
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to serialize export data")
+			return
+		}
+		info, err := tmp.Stat()
+		if err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to serialize export data")
+			return
+		}
+		if err := c.WriteReader(http.StatusOK, "application/json", tmp, info.Size()); err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to serialize export data")
 		}
 		return
 	}
 
-	accounts, err := h.resolveExportAccounts(ctx, selectedIDs, c)
+	accounts, err := h.resolveExportAccountsRequest(ctx, selectedIDs, c.Request())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -125,7 +153,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	if includeProxies {
 		proxies, err = h.resolveExportProxies(ctx, accounts)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
 	} else {
@@ -188,24 +216,28 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 		Accounts:   dataAccounts,
 	}
 
-	response.Success(c, payload)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 func (h *AccountHandler) CreateExportTask(c *gin.Context) {
+	h.CreateExportTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) CreateExportTaskGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.exportTaskManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Export task manager not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Export task manager not available")
 		return
 	}
 
-	req, err := parseAccountExportTaskRequest(c)
+	req, err := parseAccountExportTaskRequestRequest(c.Request())
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	task := h.exportTaskManager.createTask(accountExportTaskPayload{Request: req})
 	if task == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Failed to create export task")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Failed to create export task")
 		return
 	}
 
@@ -214,44 +246,54 @@ func (h *AccountHandler) CreateExportTask(c *gin.Context) {
 	}
 
 	if err := h.exportTaskManager.submitTask(task); err != nil {
-		response.Error(c, http.StatusTooManyRequests, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusTooManyRequests, err.Error())
 		return
 	}
 
-	response.Accepted(c, task.state)
+	response.AcceptedContext(gatewayJSONResponder{ctx: c}, task.state)
 }
 
 func (h *AccountHandler) GetExportTask(c *gin.Context) {
+	h.GetExportTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetExportTaskGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.exportTaskManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Export task manager not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Export task manager not available")
 		return
 	}
-	taskID := strings.TrimSpace(c.Param("task_id"))
+	taskID := strings.TrimSpace(c.PathParam("task_id"))
 	if taskID == "" {
-		response.BadRequest(c, "task_id is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "task_id is required")
 		return
 	}
 	task, ok := h.exportTaskManager.getTask(taskID)
 	if !ok || task == nil {
-		response.NotFound(c, "Export task not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Export task not found")
 		return
 	}
-	response.Success(c, task)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, task)
 }
 
 func (h *AccountHandler) DownloadExportTask(c *gin.Context) {
+	h.DownloadExportTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) DownloadExportTaskGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.exportTaskManager == nil {
-		response.NotFound(c, "Export artifact not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Export artifact not found")
 		return
 	}
-	taskID := strings.TrimSpace(c.Param("task_id"))
-	token := strings.TrimSpace(c.Query("token"))
+	taskID := strings.TrimSpace(c.PathParam("task_id"))
+	token := strings.TrimSpace(c.QueryValue("token"))
 	path, filename, ok := h.exportTaskManager.resolveDownload(taskID, token)
 	if !ok {
-		response.NotFound(c, "Export artifact not found or expired")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Export artifact not found or expired")
 		return
 	}
-	c.FileAttachment(path, filename)
+	if err := c.ServeFileAttachment(path, filename); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Export artifact not found or expired")
+	}
 }
 
 func shouldDownloadExportData(c *gin.Context) bool {
@@ -259,6 +301,19 @@ func shouldDownloadExportData(c *gin.Context) bool {
 		return false
 	}
 	raw := strings.TrimSpace(strings.ToLower(c.Query("download")))
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldDownloadExportDataRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	raw := strings.TrimSpace(strings.ToLower(req.URL.Query().Get("download")))
 	switch raw {
 	case "1", "true", "yes", "on":
 		return true
@@ -286,6 +341,18 @@ func parseAccountExportTaskRequest(c *gin.Context) (DataExportTaskRequest, error
 		return req, errors.New("invalid request")
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		return req, errors.New("Invalid request: " + err.Error())
+	}
+	req.IDs = normalizeInt64IDList(req.IDs)
+	return req, nil
+}
+
+func parseAccountExportTaskRequestRequest(r *http.Request) (DataExportTaskRequest, error) {
+	var req DataExportTaskRequest
+	if r == nil {
+		return req, errors.New("invalid request")
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return req, errors.New("Invalid request: " + err.Error())
 	}
 	req.IDs = normalizeInt64IDList(req.IDs)
@@ -388,6 +455,25 @@ func buildAccountExportQueryRequest(c *gin.Context, ids []int64, includeProxies 
 	}
 }
 
+func buildAccountExportQueryRequestRequest(r *http.Request, ids []int64, includeProxies bool) service.AccountExportQuery {
+	query := service.AccountExportQuery{IDs: ids, IncludeProxies: includeProxies}
+	if r == nil || r.URL == nil {
+		return query
+	}
+	q := r.URL.Query()
+	query.Filters = service.AccountExportFilters{
+		Platform:  strings.TrimSpace(q.Get("platform")),
+		Type:      strings.TrimSpace(q.Get("type")),
+		Status:    strings.TrimSpace(q.Get("status")),
+		Search:    strings.TrimSpace(q.Get("search")),
+		Group:     strings.TrimSpace(q.Get("group")),
+		Plan:      strings.TrimSpace(q.Get("plan")),
+		OAuthType: strings.TrimSpace(q.Get("oauth_type")),
+		TierID:    strings.TrimSpace(q.Get("tier_id")),
+	}
+	return query
+}
+
 func buildAccountExportQueryRequestFromTask(req DataExportTaskRequest, includeProxies bool) service.AccountExportQuery {
 	filters := service.AccountExportFilters{}
 	if req.Filters != nil {
@@ -410,25 +496,33 @@ func buildAccountExportQueryRequestFromTask(req DataExportTaskRequest, includePr
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {
-	req, err := parseAccountDataImportRequest(c)
+	h.ImportDataGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ImportDataGateway(c gatewayctx.GatewayContext) {
+	req, err := parseAccountDataImportRequestRequest(c.Request())
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if err := validateDataHeader(req.Data); err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	executeAdminIdempotentJSONFailOpenOnStoreUnavailable(c, "admin.accounts.import_data", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminIdempotentGatewayJSONWithMode(c, "admin.accounts.import_data", req, service.DefaultWriteIdempotencyTTL(), idempotencyStoreUnavailableFailOpen, func(ctx context.Context) (any, error) {
 		return h.importData(ctx, req)
 	})
 }
 
 func (h *AccountHandler) CreateImportTask(c *gin.Context) {
+	h.CreateImportTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) CreateImportTaskGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.importTaskManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import task manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import task manager not available")
 		return
 	}
 	var (
@@ -438,31 +532,32 @@ func (h *AccountHandler) CreateImportTask(c *gin.Context) {
 		skipPtr     *bool
 		err         error
 	)
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
-		payloadPath, filename, groupIDs, skipPtr, err = persistImportTaskPayloadStreaming(c)
+	req := c.Request()
+	if req != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Type"))), "multipart/form-data") {
+		payloadPath, filename, groupIDs, skipPtr, err = persistImportTaskPayloadStreamingRequest(req)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(c, http.StatusBadRequest, err.Error())
 			return
 		}
 	} else {
-		req, parseErr := parseAccountDataImportRequest(c)
+		importReq, parseErr := parseAccountDataImportRequestRequest(req)
 		if parseErr != nil {
-			response.BadRequest(c, parseErr.Error())
+			response.ErrorContext(c, http.StatusBadRequest, parseErr.Error())
 			return
 		}
-		raw, marshalErr := json.Marshal(req.Data)
+		raw, marshalErr := json.Marshal(importReq.Data)
 		if marshalErr != nil {
-			response.BadRequest(c, "Failed to serialize import request")
+			response.ErrorContext(c, http.StatusBadRequest, "Failed to serialize import request")
 			return
 		}
 		payloadPath, err = saveImportPayloadToTempFile(raw)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(c, http.StatusBadRequest, err.Error())
 			return
 		}
 		filename = "import.json"
-		groupIDs = req.GroupIDs
-		skipPtr = req.SkipDefaultGroupBind
+		groupIDs = importReq.GroupIDs
+		skipPtr = importReq.SkipDefaultGroupBind
 	}
 
 	task := h.importTaskManager.createTask(filename, accountImportTaskPayload{
@@ -473,7 +568,7 @@ func (h *AccountHandler) CreateImportTask(c *gin.Context) {
 	})
 	if task == nil {
 		_ = os.Remove(payloadPath)
-		response.Error(c, http.StatusServiceUnavailable, "Failed to create import task")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Failed to create import task")
 		return
 	}
 	task.execute = func(ctx context.Context, task *accountImportTask, progress func(stage string, current, total int, message string)) (DataImportResult, error) {
@@ -493,64 +588,82 @@ func (h *AccountHandler) CreateImportTask(c *gin.Context) {
 	}
 	if err := h.importTaskManager.submitTask(task); err != nil {
 		_ = os.Remove(payloadPath)
-		response.Error(c, http.StatusTooManyRequests, err.Error())
+		response.ErrorContext(c, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	response.Accepted(c, task.state)
+	response.AcceptedContext(c, task.state)
 }
 
 func (h *AccountHandler) GetImportTask(c *gin.Context) {
+	h.GetImportTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetImportTaskGateway(c gatewayctx.GatewayContext) {
 	if h == nil || h.importTaskManager == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Import task manager not available")
+		response.ErrorContext(c, http.StatusServiceUnavailable, "Import task manager not available")
 		return
 	}
-	taskID := strings.TrimSpace(c.Param("task_id"))
+	taskID := strings.TrimSpace(c.PathParam("task_id"))
 	if taskID == "" {
-		response.BadRequest(c, "task_id is required")
+		response.ErrorContext(c, http.StatusBadRequest, "task_id is required")
 		return
 	}
 	task, ok := h.importTaskManager.getTask(taskID)
 	if !ok || task == nil {
-		response.NotFound(c, "Import task not found")
+		response.ErrorContext(c, http.StatusNotFound, "Import task not found")
 		return
 	}
-	response.Success(c, task)
+	response.SuccessContext(c, task)
 }
 
 func parseAccountDataImportRequest(c *gin.Context) (DataImportRequest, error) {
+	if c == nil {
+		return DataImportRequest{}, errors.New("invalid request")
+	}
+	return parseAccountDataImportRequestRequest(c.Request)
+}
+
+func parseAccountDataImportRequestRequest(r *http.Request) (DataImportRequest, error) {
 	var req DataImportRequest
-	if c == nil || c.Request == nil {
+	if r == nil {
 		return req, errors.New("invalid request")
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
-		payload, err := parseImportPayloadFromMultipart(c)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "multipart/form-data") {
+		payload, err := parseImportPayloadFromMultipartRequest(r)
 		if err != nil {
 			return req, err
 		}
 		req.Data = payload
-		groupIDs, err := parseImportGroupIDs(c)
+		groupIDs, err := parseImportGroupIDsRequest(r)
 		if err != nil {
 			return req, err
 		}
 		req.GroupIDs = groupIDs
-		if skip, ok, err := parseOptionalBoolFormValue(c, "skip_default_group_bind"); err != nil {
+		if skip, ok, err := parseOptionalBoolFormValueRequest(r, "skip_default_group_bind"); err != nil {
 			return req, err
 		} else if ok {
 			req.SkipDefaultGroupBind = &skip
 		}
 		return req, nil
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return req, errors.New("Invalid request: " + err.Error())
 	}
 	return req, nil
 }
 
 func persistImportTaskPayloadStreaming(c *gin.Context) (path string, filename string, groupIDs []int64, skipPtr *bool, err error) {
-	if c == nil || c.Request == nil {
+	if c == nil {
 		return "", "", nil, nil, errors.New("invalid request")
 	}
-	reader, err := c.Request.MultipartReader()
+	return persistImportTaskPayloadStreamingRequest(c.Request)
+}
+
+func persistImportTaskPayloadStreamingRequest(req *http.Request) (path string, filename string, groupIDs []int64, skipPtr *bool, err error) {
+	if req == nil {
+		return "", "", nil, nil, errors.New("invalid request")
+	}
+	reader, err := req.MultipartReader()
 	if err != nil {
 		return "", "", nil, nil, errors.New("failed to read multipart body")
 	}
@@ -688,6 +801,17 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 }
 
 func (h *AccountHandler) importDataWithProgress(
+	ctx context.Context,
+	req DataImportRequest,
+	progress func(stage string, current, total int, message string),
+) (DataImportResult, error) {
+	if svc := getDefaultAccountImportService(); svc != nil {
+		return h.importDataWithFastPath(ctx, req, progress, svc)
+	}
+	return h.importDataLegacyWithProgress(ctx, req, progress)
+}
+
+func (h *AccountHandler) importDataLegacyWithProgress(
 	ctx context.Context,
 	req DataImportRequest,
 	progress func(stage string, current, total int, message string),
@@ -875,6 +999,120 @@ func (h *AccountHandler) importDataWithProgress(
 
 	reportProgress("completed", "Import completed")
 	return result, nil
+}
+
+func (h *AccountHandler) importDataWithFastPath(
+	ctx context.Context,
+	req DataImportRequest,
+	progress func(stage string, current, total int, message string),
+	svc *service.AccountImportService,
+) (DataImportResult, error) {
+	if svc == nil {
+		return DataImportResult{}, errors.New("account import service not configured")
+	}
+	payload, err := convertToAccountImportPayload(req)
+	if err != nil {
+		return DataImportResult{}, err
+	}
+	result, err := svc.Import(ctx, payload, progress)
+	if err != nil {
+		return DataImportResult{}, err
+	}
+	return dataImportResultFromService(result), nil
+}
+
+func convertToAccountImportPayload(req DataImportRequest) (service.AccountImportPayload, error) {
+	payload := service.AccountImportPayload{
+		GroupIDs:             normalizeInt64IDList(req.GroupIDs),
+		SkipDefaultGroupBind: true,
+		Proxies:              make([]service.AccountImportProxy, 0, len(req.Data.Proxies)),
+		Accounts:             make([]service.AccountImportAccount, 0, len(req.Data.Accounts)),
+	}
+	if req.SkipDefaultGroupBind != nil {
+		payload.SkipDefaultGroupBind = *req.SkipDefaultGroupBind
+	}
+
+	for _, item := range req.Data.Proxies {
+		key := strings.TrimSpace(item.ProxyKey)
+		if key == "" {
+			key = buildProxyKey(item.Protocol, item.Host, item.Port, item.Username, item.Password)
+		}
+		if err := validateDataProxy(item); err != nil {
+			return payload, err
+		}
+		payload.Proxies = append(payload.Proxies, service.AccountImportProxy{
+			ProxyKey: key,
+			Name:     item.Name,
+			Protocol: item.Protocol,
+			Host:     item.Host,
+			Port:     item.Port,
+			Username: item.Username,
+			Password: item.Password,
+			Status:   item.Status,
+		})
+	}
+
+	for _, item := range req.Data.Accounts {
+		if err := validateDataAccount(item); err != nil {
+			return payload, err
+		}
+		enrichCredentialsFromIDToken(&item)
+		spec := service.AccountImportAccount{
+			Name:               item.Name,
+			Notes:              item.Notes,
+			Platform:           item.Platform,
+			Type:               item.Type,
+			Credentials:        copyDataImportMap(item.Credentials),
+			Extra:              copyDataImportMap(item.Extra),
+			GroupIDs:           normalizeInt64IDList(item.GroupIDs),
+			Concurrency:        item.Concurrency,
+			Priority:           item.Priority,
+			RateMultiplier:     item.RateMultiplier,
+			ExpiresAt:          item.ExpiresAt,
+			AutoPauseOnExpired: item.AutoPauseOnExpired,
+		}
+		if item.ProxyKey != nil {
+			spec.ProxyKey = strings.TrimSpace(*item.ProxyKey)
+		}
+		payload.Accounts = append(payload.Accounts, spec)
+	}
+
+	return payload, nil
+}
+
+func dataImportResultFromService(result service.AccountImportResult) DataImportResult {
+	out := DataImportResult{
+		BatchID:            result.BatchID,
+		ProxyCreated:       result.ProxyCreated,
+		ProxyReused:        result.ProxyReused,
+		ProxyFailed:        result.ProxyFailed,
+		AccountEnqueued:    result.AccountEnqueued,
+		PlaceholderCreated: result.PlaceholderCreated,
+		AccountFailed:      result.AccountFailed,
+	}
+	if len(result.Errors) > 0 {
+		out.Errors = make([]DataImportError, 0, len(result.Errors))
+		for _, item := range result.Errors {
+			out.Errors = append(out.Errors, DataImportError{
+				Kind:     item.Kind,
+				Name:     item.Name,
+				ProxyKey: item.ProxyKey,
+				Message:  item.Message,
+			})
+		}
+	}
+	return out
+}
+
+func copyDataImportMap(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, error) {
@@ -1109,6 +1347,38 @@ func parseAccountIDs(c *gin.Context) ([]int64, error) {
 	return ids, nil
 }
 
+func parseAccountIDsRequest(req *http.Request) ([]int64, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+	values := req.URL.Query()["ids"]
+	if len(values) == 0 {
+		raw := strings.TrimSpace(req.URL.Query().Get("ids"))
+		if raw != "" {
+			values = []string{raw}
+		}
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, 0, len(values))
+	for _, item := range values {
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("invalid account id: %s", part)
+			}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 func parseIncludeProxies(c *gin.Context) (bool, error) {
 	raw := strings.TrimSpace(strings.ToLower(c.Query("include_proxies")))
 	if raw == "" {
@@ -1122,6 +1392,60 @@ func parseIncludeProxies(c *gin.Context) (bool, error) {
 	default:
 		return true, fmt.Errorf("invalid include_proxies value: %s", raw)
 	}
+}
+
+func parseIncludeProxiesRequest(req *http.Request) (bool, error) {
+	if req == nil || req.URL == nil {
+		return true, nil
+	}
+	raw := strings.TrimSpace(strings.ToLower(req.URL.Query().Get("include_proxies")))
+	if raw == "" {
+		return true, nil
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return true, fmt.Errorf("invalid include_proxies value: %s", raw)
+	}
+}
+
+func (h *AccountHandler) resolveExportAccountsRequest(ctx context.Context, ids []int64, req *http.Request) ([]service.Account, error) {
+	if len(ids) > 0 {
+		accounts, err := h.adminService.GetAccountsByIDs(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]service.Account, 0, len(accounts))
+		for _, acc := range accounts {
+			if acc == nil {
+				continue
+			}
+			out = append(out, *acc)
+		}
+		return out, nil
+	}
+	if req == nil || req.URL == nil {
+		return h.listAccountsFiltered(ctx, "", "", "", "", "", "", "", "")
+	}
+	q := req.URL.Query()
+	search := strings.TrimSpace(q.Get("search"))
+	if len(search) > 100 {
+		search = search[:100]
+	}
+	return h.listAccountsFiltered(
+		ctx,
+		strings.TrimSpace(q.Get("platform")),
+		strings.TrimSpace(q.Get("type")),
+		strings.TrimSpace(q.Get("status")),
+		search,
+		strings.TrimSpace(q.Get("group")),
+		strings.TrimSpace(q.Get("plan")),
+		strings.TrimSpace(q.Get("oauth_type")),
+		strings.TrimSpace(q.Get("tier_id")),
+	)
 }
 
 func validateDataHeader(payload DataPayload) error {
@@ -1267,8 +1591,18 @@ func normalizeProxyStatus(status string) string {
 }
 
 func parseImportPayloadFromMultipart(c *gin.Context) (DataPayload, error) {
+	if c == nil {
+		return DataPayload{}, errors.New("invalid request")
+	}
+	return parseImportPayloadFromMultipartRequest(c.Request)
+}
+
+func parseImportPayloadFromMultipartRequest(req *http.Request) (DataPayload, error) {
 	var payload DataPayload
-	file, _, err := c.Request.FormFile("file")
+	if req == nil {
+		return payload, errors.New("invalid request")
+	}
+	file, _, err := req.FormFile("file")
 	if err != nil {
 		return payload, errors.New("import file is required")
 	}
@@ -1292,9 +1626,22 @@ func parseImportPayloadFromMultipart(c *gin.Context) (DataPayload, error) {
 }
 
 func parseImportGroupIDs(c *gin.Context) ([]int64, error) {
-	values := c.PostFormArray("group_ids")
+	if c == nil {
+		return nil, errors.New("invalid request")
+	}
+	return parseImportGroupIDsRequest(c.Request)
+}
+
+func parseImportGroupIDsRequest(req *http.Request) ([]int64, error) {
+	if req == nil {
+		return nil, errors.New("invalid request")
+	}
+	if err := req.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		return nil, err
+	}
+	values := req.PostForm["group_ids"]
 	if len(values) == 0 {
-		if raw := strings.TrimSpace(c.PostForm("group_ids")); raw != "" {
+		if raw := strings.TrimSpace(req.FormValue("group_ids")); raw != "" {
 			values = []string{raw}
 		}
 	}
@@ -1338,7 +1685,17 @@ func appendImportGroupIDs(ids []int64, raw string) ([]int64, error) {
 }
 
 func parseOptionalBoolFormValue(c *gin.Context, key string) (bool, bool, error) {
-	raw := strings.TrimSpace(c.PostForm(key))
+	if c == nil {
+		return false, false, errors.New("invalid request")
+	}
+	return parseOptionalBoolFormValueRequest(c.Request, key)
+}
+
+func parseOptionalBoolFormValueRequest(req *http.Request, key string) (bool, bool, error) {
+	if req == nil {
+		return false, false, errors.New("invalid request")
+	}
+	raw := strings.TrimSpace(req.FormValue(key))
 	if raw == "" {
 		return false, false, nil
 	}

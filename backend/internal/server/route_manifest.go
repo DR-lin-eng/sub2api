@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/web"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,8 +40,14 @@ func BuildRouteManifest(router *gin.Engine) RouteManifest {
 		entry.Hints = inferRouteTransportHints(entry)
 		manifest = append(manifest, entry)
 	}
-	runtimeCfg := buildExecutableRuntimeConfig(nil, nil, nil, nil, nil)
-	overlayExecutableRouteMetadata(manifest, runtimeCfg.routes)
+	runtimeCfg := buildExecutableRuntimeConfig(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	manifest = overlayExecutableRouteMetadata(manifest, runtimeCfg.routes)
+	if web.HasEmbeddedFrontend() {
+		manifest = overlayExecutableRouteMetadata(manifest, []executableRoute{
+			{method: "GET", path: "/"},
+			{method: "GET", path: "/*path"},
+		})
+	}
 
 	sort.Slice(manifest, func(i, j int) bool {
 		if manifest[i].Path == manifest[j].Path {
@@ -51,11 +58,13 @@ func BuildRouteManifest(router *gin.Engine) RouteManifest {
 	return manifest
 }
 
-func overlayExecutableRouteMetadata(manifest RouteManifest, defs []executableRoute) {
-	if len(manifest) == 0 || len(defs) == 0 {
-		return
+func overlayExecutableRouteMetadata(manifest RouteManifest, defs []executableRoute) RouteManifest {
+	if len(defs) == 0 {
+		return manifest
 	}
+	seen := make(map[string]struct{}, len(manifest))
 	for i := range manifest {
+		seen[manifest[i].Method+" "+manifest[i].Path] = struct{}{}
 		for _, def := range defs {
 			if manifest[i].Method == def.method && manifest[i].Path == def.path {
 				manifest[i].Executable = true
@@ -66,6 +75,21 @@ func overlayExecutableRouteMetadata(manifest RouteManifest, defs []executableRou
 			}
 		}
 	}
+	for _, def := range defs {
+		key := def.method + " " + def.path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		manifest = append(manifest, RouteManifestEntry{
+			Method:     def.method,
+			Path:       def.path,
+			Handler:    "executable",
+			Hints:      inferRouteTransportHints(RouteManifestEntry{Method: def.method, Path: def.path}),
+			Middleware: append([]string(nil), def.middleware...),
+			Executable: true,
+		})
+	}
+	return manifest
 }
 
 func inferRouteTransportHints(entry RouteManifestEntry) RouteTransportHints {

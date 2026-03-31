@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -158,16 +160,20 @@ type UpdateGroupRequest struct {
 // List handles listing all groups with pagination
 // GET /api/v1/admin/groups
 func (h *GroupHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
-	platform := c.Query("platform")
-	status := c.Query("status")
-	search := c.Query("search")
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+	platform := c.QueryValue("platform")
+	status := c.QueryValue("status")
+	search := c.QueryValue("search")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)
 	if len(search) > 100 {
 		search = search[:100]
 	}
-	isExclusiveStr := c.Query("is_exclusive")
+	isExclusiveStr := c.QueryValue("is_exclusive")
 
 	var isExclusive *bool
 	if isExclusiveStr != "" {
@@ -175,9 +181,9 @@ func (h *GroupHandler) List(c *gin.Context) {
 		isExclusive = &val
 	}
 
-	groups, total, err := h.adminService.ListGroups(c.Request.Context(), page, pageSize, platform, status, search, isExclusive)
+	groups, total, err := h.adminService.ListGroups(c.Request().Context(), page, pageSize, platform, status, search, isExclusive)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -185,25 +191,29 @@ func (h *GroupHandler) List(c *gin.Context) {
 	for i := range groups {
 		outGroups = append(outGroups, *dto.GroupFromServiceAdmin(&groups[i]))
 	}
-	response.Paginated(c, outGroups, total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, outGroups, total, page, pageSize)
 }
 
 // GetAll handles getting all active groups without pagination
 // GET /api/v1/admin/groups/all
 func (h *GroupHandler) GetAll(c *gin.Context) {
-	platform := c.Query("platform")
+	h.GetAllGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetAllGateway(c gatewayctx.GatewayContext) {
+	platform := c.QueryValue("platform")
 
 	var groups []service.Group
 	var err error
 
 	if platform != "" {
-		groups, err = h.adminService.GetAllGroupsByPlatform(c.Request.Context(), platform)
+		groups, err = h.adminService.GetAllGroupsByPlatform(c.Request().Context(), platform)
 	} else {
-		groups, err = h.adminService.GetAllGroups(c.Request.Context())
+		groups, err = h.adminService.GetAllGroups(c.Request().Context())
 	}
 
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -211,37 +221,45 @@ func (h *GroupHandler) GetAll(c *gin.Context) {
 	for i := range groups {
 		outGroups = append(outGroups, *dto.GroupFromServiceAdmin(&groups[i]))
 	}
-	response.Success(c, outGroups)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, outGroups)
 }
 
 // GetByID handles getting a group by ID
 // GET /api/v1/admin/groups/:id
 func (h *GroupHandler) GetByID(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
-	group, err := h.adminService.GetGroup(c.Request.Context(), groupID)
+	group, err := h.adminService.GetGroup(c.Request().Context(), groupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.GroupFromServiceAdmin(group))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.GroupFromServiceAdmin(group))
 }
 
 // Create handles creating a new group
 // POST /api/v1/admin/groups
 func (h *GroupHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreateGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	group, err := h.adminService.CreateGroup(c.Request.Context(), &service.CreateGroupInput{
+	group, err := h.adminService.CreateGroup(c.Request().Context(), &service.CreateGroupInput{
 		Name:                            req.Name,
 		Description:                     req.Description,
 		Platform:                        req.Platform,
@@ -271,29 +289,33 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.GroupFromServiceAdmin(group))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.GroupFromServiceAdmin(group))
 }
 
 // Update handles updating a group
 // PUT /api/v1/admin/groups/:id
 func (h *GroupHandler) Update(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
 	var req UpdateGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	group, err := h.adminService.UpdateGroup(c.Request.Context(), groupID, &service.UpdateGroupInput{
+	group, err := h.adminService.UpdateGroup(c.Request().Context(), groupID, &service.UpdateGroupInput{
 		Name:                            req.Name,
 		Description:                     req.Description,
 		Platform:                        req.Platform,
@@ -324,42 +346,50 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.GroupFromServiceAdmin(group))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.GroupFromServiceAdmin(group))
 }
 
 // Delete handles deleting a group
 // DELETE /api/v1/admin/groups/:id
 func (h *GroupHandler) Delete(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
-	err = h.adminService.DeleteGroup(c.Request.Context(), groupID)
+	err = h.adminService.DeleteGroup(c.Request().Context(), groupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Group deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"message": "Group deleted successfully"})
 }
 
 // GetStats handles getting group statistics
 // GET /api/v1/admin/groups/:id/stats
 func (h *GroupHandler) GetStats(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
 	// Return mock data for now
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
 		"total_api_keys":  0,
 		"active_api_keys": 0,
 		"total_requests":  0,
@@ -371,44 +401,56 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 // GetUsageSummary returns today's and cumulative cost for all groups.
 // GET /api/v1/admin/groups/usage-summary?timezone=Asia/Shanghai
 func (h *GroupHandler) GetUsageSummary(c *gin.Context) {
-	userTZ := c.Query("timezone")
+	h.GetUsageSummaryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetUsageSummaryGateway(c gatewayctx.GatewayContext) {
+	userTZ := c.QueryValue("timezone")
 	now := timezone.NowInUserLocation(userTZ)
 	todayStart := timezone.StartOfDayInUserLocation(now, userTZ)
 
-	results, err := h.dashboardService.GetGroupUsageSummary(c.Request.Context(), todayStart)
+	results, err := h.dashboardService.GetGroupUsageSummary(c.Request().Context(), todayStart)
 	if err != nil {
-		response.Error(c, 500, "Failed to get group usage summary")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get group usage summary")
 		return
 	}
 
-	response.Success(c, results)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, results)
 }
 
 // GetCapacitySummary returns aggregated capacity (concurrency/sessions/RPM) for all active groups.
 // GET /api/v1/admin/groups/capacity-summary
 func (h *GroupHandler) GetCapacitySummary(c *gin.Context) {
-	results, err := h.groupCapacityService.GetAllGroupCapacity(c.Request.Context())
+	h.GetCapacitySummaryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetCapacitySummaryGateway(c gatewayctx.GatewayContext) {
+	results, err := h.groupCapacityService.GetAllGroupCapacity(c.Request().Context())
 	if err != nil {
-		response.Error(c, 500, "Failed to get group capacity summary")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get group capacity summary")
 		return
 	}
-	response.Success(c, results)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, results)
 }
 
 // GetGroupAPIKeys handles getting API keys in a group
 // GET /api/v1/admin/groups/:id/api-keys
 func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetGroupAPIKeysGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetGroupAPIKeysGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := response.ParsePaginationValues(c)
 
-	keys, total, err := h.adminService.GetGroupAPIKeys(c.Request.Context(), groupID, page, pageSize)
+	keys, total, err := h.adminService.GetGroupAPIKeys(c.Request().Context(), groupID, page, pageSize)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -416,45 +458,53 @@ func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
 	for i := range keys {
 		outKeys = append(outKeys, *dto.APIKeyFromService(&keys[i]))
 	}
-	response.Paginated(c, outKeys, total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, outKeys, total, page, pageSize)
 }
 
 // GetGroupRateMultipliers handles getting rate multipliers for users in a group
 // GET /api/v1/admin/groups/:id/rate-multipliers
 func (h *GroupHandler) GetGroupRateMultipliers(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetGroupRateMultipliersGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) GetGroupRateMultipliersGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
-	entries, err := h.adminService.GetGroupRateMultipliers(c.Request.Context(), groupID)
+	entries, err := h.adminService.GetGroupRateMultipliers(c.Request().Context(), groupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	if entries == nil {
 		entries = []service.UserGroupRateEntry{}
 	}
-	response.Success(c, entries)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, entries)
 }
 
 // ClearGroupRateMultipliers handles clearing all rate multipliers for a group
 // DELETE /api/v1/admin/groups/:id/rate-multipliers
 func (h *GroupHandler) ClearGroupRateMultipliers(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ClearGroupRateMultipliersGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) ClearGroupRateMultipliersGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
-	if err := h.adminService.ClearGroupRateMultipliers(c.Request.Context(), groupID); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.adminService.ClearGroupRateMultipliers(c.Request().Context(), groupID); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Rate multipliers cleared successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Rate multipliers cleared successfully"})
 }
 
 // BatchSetGroupRateMultipliersRequest represents batch set rate multipliers request
@@ -465,24 +515,28 @@ type BatchSetGroupRateMultipliersRequest struct {
 // BatchSetGroupRateMultipliers handles batch setting rate multipliers for a group
 // PUT /api/v1/admin/groups/:id/rate-multipliers
 func (h *GroupHandler) BatchSetGroupRateMultipliers(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.BatchSetGroupRateMultipliersGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) BatchSetGroupRateMultipliersGateway(c gatewayctx.GatewayContext) {
+	groupID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid group ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group ID")
 		return
 	}
 
 	var req BatchSetGroupRateMultipliersRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	if err := h.adminService.BatchSetGroupRateMultipliers(c.Request.Context(), groupID, req.Entries); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.adminService.BatchSetGroupRateMultipliers(c.Request().Context(), groupID, req.Entries); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Rate multipliers updated successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Rate multipliers updated successfully"})
 }
 
 // UpdateSortOrderRequest represents the request to update group sort orders
@@ -496,9 +550,13 @@ type UpdateSortOrderRequest struct {
 // UpdateSortOrder handles updating group sort orders
 // PUT /api/v1/admin/groups/sort-order
 func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
+	h.UpdateSortOrderGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GroupHandler) UpdateSortOrderGateway(c gatewayctx.GatewayContext) {
 	var req UpdateSortOrderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -510,10 +568,10 @@ func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
 		})
 	}
 
-	if err := h.adminService.UpdateGroupSortOrders(c.Request.Context(), updates); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.adminService.UpdateGroupSortOrders(c.Request().Context(), updates); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Sort order updated successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Sort order updated successfully"})
 }

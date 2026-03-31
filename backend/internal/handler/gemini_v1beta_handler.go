@@ -196,6 +196,7 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 	}
 
 	setOpsRequestContextGateway(transportCtx, modelName, stream, body)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeFromLegacy(stream, false)))
 
 	// Get subscription (may be nil)
 	subscription, _ := middleware.GetSubscriptionFromGatewayContext(transportCtx)

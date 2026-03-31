@@ -390,6 +390,89 @@ export async function updateBetaPolicySettings(
   return data
 }
 
+// ==================== TLS Fingerprint Settings ====================
+
+export interface TLSFingerprintSettings {
+  enabled: boolean
+}
+
+export interface TLSFingerprintProfile {
+  profile_id: string
+  name: string
+  enabled: boolean
+  enable_grease: boolean
+  cipher_suites: number[]
+  curves: number[]
+  point_formats: number[]
+  updated_at: string
+}
+
+export interface ListTLSFingerprintProfilesResponse {
+  enabled: boolean
+  items: TLSFingerprintProfile[]
+}
+
+export interface CreateTLSFingerprintProfileRequest {
+  profile_id: string
+  name: string
+  enabled: boolean
+  enable_grease: boolean
+  cipher_suites: number[]
+  curves: number[]
+  point_formats: number[]
+}
+
+export interface UpdateTLSFingerprintProfileRequest {
+  name: string
+  enabled: boolean
+  enable_grease: boolean
+  cipher_suites: number[]
+  curves: number[]
+  point_formats: number[]
+}
+
+export async function getTLSFingerprintSettings(): Promise<ListTLSFingerprintProfilesResponse> {
+  const { data } = await apiClient.get<ListTLSFingerprintProfilesResponse>('/admin/settings/tls-fingerprint')
+  return data
+}
+
+export async function updateTLSFingerprintSettings(
+  settings: TLSFingerprintSettings
+): Promise<TLSFingerprintSettings> {
+  const { data } = await apiClient.put<TLSFingerprintSettings>(
+    '/admin/settings/tls-fingerprint',
+    settings
+  )
+  return data
+}
+
+export async function listTLSFingerprintProfiles(): Promise<ListTLSFingerprintProfilesResponse> {
+  const { data } = await apiClient.get<ListTLSFingerprintProfilesResponse>('/admin/settings/tls-fingerprint/profiles')
+  return data
+}
+
+export async function createTLSFingerprintProfile(
+  request: CreateTLSFingerprintProfileRequest
+): Promise<TLSFingerprintProfile> {
+  const { data } = await apiClient.post<TLSFingerprintProfile>('/admin/settings/tls-fingerprint/profiles', request)
+  return data
+}
+
+export async function updateTLSFingerprintProfile(
+  profileID: string,
+  request: UpdateTLSFingerprintProfileRequest
+): Promise<TLSFingerprintProfile> {
+  const { data } = await apiClient.put<TLSFingerprintProfile>(
+    `/admin/settings/tls-fingerprint/profiles/${profileID}`,
+    request
+  )
+  return data
+}
+
+export async function deleteTLSFingerprintProfile(profileID: string): Promise<void> {
+  await apiClient.delete(`/admin/settings/tls-fingerprint/profiles/${profileID}`)
+}
+
 // ==================== Sora S3 Settings ====================
 
 export interface SoraS3Settings {
@@ -542,6 +625,12 @@ export const settingsAPI = {
   updateRectifierSettings,
   getBetaPolicySettings,
   updateBetaPolicySettings,
+  getTLSFingerprintSettings,
+  updateTLSFingerprintSettings,
+  listTLSFingerprintProfiles,
+  createTLSFingerprintProfile,
+  updateTLSFingerprintProfile,
+  deleteTLSFingerprintProfile,
   getSoraS3Settings,
   updateSoraS3Settings,
   testSoraS3Connection,

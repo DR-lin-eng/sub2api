@@ -2,10 +2,12 @@ package admin
 
 import (
 	"encoding/json"
+	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -134,11 +136,15 @@ func valueToResponse(val *service.UserAttributeValue) *AttributeValueResponse {
 // ListDefinitions lists all attribute definitions
 // GET /admin/user-attributes
 func (h *UserAttributeHandler) ListDefinitions(c *gin.Context) {
-	enabledOnly := c.Query("enabled") == "true"
+	h.ListDefinitionsGateway(gatewayctx.FromGin(c))
+}
 
-	defs, err := h.attrService.ListDefinitions(c.Request.Context(), enabledOnly)
+func (h *UserAttributeHandler) ListDefinitionsGateway(c gatewayctx.GatewayContext) {
+	enabledOnly := c.QueryValue("enabled") == "true"
+
+	defs, err := h.attrService.ListDefinitions(c.Request().Context(), enabledOnly)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -147,19 +153,23 @@ func (h *UserAttributeHandler) ListDefinitions(c *gin.Context) {
 		out = append(out, defToResponse(&defs[i]))
 	}
 
-	response.Success(c, out)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, out)
 }
 
 // CreateDefinition creates a new attribute definition
 // POST /admin/user-attributes
 func (h *UserAttributeHandler) CreateDefinition(c *gin.Context) {
+	h.CreateDefinitionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) CreateDefinitionGateway(c gatewayctx.GatewayContext) {
 	var req CreateAttributeDefinitionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	def, err := h.attrService.CreateDefinition(c.Request.Context(), service.CreateAttributeDefinitionInput{
+	def, err := h.attrService.CreateDefinition(c.Request().Context(), service.CreateAttributeDefinitionInput{
 		Key:         req.Key,
 		Name:        req.Name,
 		Description: req.Description,
@@ -171,25 +181,29 @@ func (h *UserAttributeHandler) CreateDefinition(c *gin.Context) {
 		Enabled:     req.Enabled,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, defToResponse(def))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, defToResponse(def))
 }
 
 // UpdateDefinition updates an attribute definition
 // PUT /admin/user-attributes/:id
 func (h *UserAttributeHandler) UpdateDefinition(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateDefinitionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) UpdateDefinitionGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid attribute ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid attribute ID")
 		return
 	}
 
 	var req UpdateAttributeDefinitionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -207,38 +221,46 @@ func (h *UserAttributeHandler) UpdateDefinition(c *gin.Context) {
 		input.Type = &t
 	}
 
-	def, err := h.attrService.UpdateDefinition(c.Request.Context(), id, input)
+	def, err := h.attrService.UpdateDefinition(c.Request().Context(), id, input)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, defToResponse(def))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, defToResponse(def))
 }
 
 // DeleteDefinition deletes an attribute definition
 // DELETE /admin/user-attributes/:id
 func (h *UserAttributeHandler) DeleteDefinition(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteDefinitionGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) DeleteDefinitionGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid attribute ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid attribute ID")
 		return
 	}
 
-	if err := h.attrService.DeleteDefinition(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.attrService.DeleteDefinition(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Attribute definition deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Attribute definition deleted successfully"})
 }
 
 // ReorderDefinitions reorders attribute definitions
 // PUT /admin/user-attributes/reorder
 func (h *UserAttributeHandler) ReorderDefinitions(c *gin.Context) {
+	h.ReorderDefinitionsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) ReorderDefinitionsGateway(c gatewayctx.GatewayContext) {
 	var req ReorderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -248,26 +270,30 @@ func (h *UserAttributeHandler) ReorderDefinitions(c *gin.Context) {
 		orders[id] = i
 	}
 
-	if err := h.attrService.ReorderDefinitions(c.Request.Context(), orders); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.attrService.ReorderDefinitions(c.Request().Context(), orders); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Reorder successful"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Reorder successful"})
 }
 
 // GetUserAttributes gets a user's attribute values
 // GET /admin/users/:id/attributes
 func (h *UserAttributeHandler) GetUserAttributes(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetUserAttributesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) GetUserAttributesGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	values, err := h.attrService.GetUserAttributes(c.Request.Context(), userID)
+	values, err := h.attrService.GetUserAttributes(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -276,21 +302,25 @@ func (h *UserAttributeHandler) GetUserAttributes(c *gin.Context) {
 		out = append(out, valueToResponse(&values[i]))
 	}
 
-	response.Success(c, out)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, out)
 }
 
 // UpdateUserAttributes updates a user's attribute values
 // PUT /admin/users/:id/attributes
 func (h *UserAttributeHandler) UpdateUserAttributes(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateUserAttributesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) UpdateUserAttributesGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	var req UpdateUserAttributesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -302,15 +332,15 @@ func (h *UserAttributeHandler) UpdateUserAttributes(c *gin.Context) {
 		})
 	}
 
-	if err := h.attrService.UpdateUserAttributes(c.Request.Context(), userID, inputs); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.attrService.UpdateUserAttributes(c.Request().Context(), userID, inputs); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// Return updated values
-	values, err := h.attrService.GetUserAttributes(c.Request.Context(), userID)
+	values, err := h.attrService.GetUserAttributes(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -319,21 +349,25 @@ func (h *UserAttributeHandler) UpdateUserAttributes(c *gin.Context) {
 		out = append(out, valueToResponse(&values[i]))
 	}
 
-	response.Success(c, out)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, out)
 }
 
 // GetBatchUserAttributes gets attribute values for multiple users
 // POST /admin/user-attributes/batch
 func (h *UserAttributeHandler) GetBatchUserAttributes(c *gin.Context) {
+	h.GetBatchUserAttributesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserAttributeHandler) GetBatchUserAttributesGateway(c gatewayctx.GatewayContext) {
 	var req BatchGetUserAttributesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	userIDs := normalizeInt64IDList(req.UserIDs)
 	if len(userIDs) == 0 {
-		response.Success(c, BatchUserAttributesResponse{Attributes: map[int64]map[int64]string{}})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, BatchUserAttributesResponse{Attributes: map[int64]map[int64]string{}})
 		return
 	}
 
@@ -344,19 +378,19 @@ func (h *UserAttributeHandler) GetBatchUserAttributes(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 	if cached, ok := userAttributesBatchCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+		c.SetHeader("X-Snapshot-Cache", "hit")
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 		return
 	}
 
-	attrs, err := h.attrService.GetBatchUserAttributes(c.Request.Context(), userIDs)
+	attrs, err := h.attrService.GetBatchUserAttributes(c.Request().Context(), userIDs)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	payload := BatchUserAttributesResponse{Attributes: attrs}
 	userAttributesBatchCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.SetHeader("X-Snapshot-Cache", "miss")
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }

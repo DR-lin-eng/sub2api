@@ -58,7 +58,7 @@
           {{ t('admin.accounts.dataImportResult') }}
         </div>
         <div class="text-sm text-gray-700 dark:text-dark-300">
-          {{ t('admin.accounts.dataImportResultSummary', result) }}
+          {{ buildResultSummary(result) }}
         </div>
 
         <div v-if="errorItems.length" class="mt-2">
@@ -177,6 +177,13 @@ const buildTaskMessage = (task: AdminDataImportTask) => {
   return task.message || task.stage || task.status
 }
 
+const buildResultSummary = (summary: AdminDataImportResult) => {
+  if ((summary.account_enqueued || 0) > 0 || (summary.placeholder_created || 0) > 0) {
+    return `快速导入完成：已入队 ${summary.account_enqueued || 0}，占位账号 ${summary.placeholder_created || 0}，账号失败 ${summary.account_failed || 0}，代理失败 ${summary.proxy_failed || 0}`
+  }
+  return t('admin.accounts.dataImportResultSummary', summary as unknown as Record<string, unknown>)
+}
+
 const uploadFileByChunks = async (
   file: File,
   session: AdminDataImportUploadSession,
@@ -230,14 +237,19 @@ const scheduleTaskPoll = (taskID: string, toastID: string) => {
       if (task.status === 'completed') {
         result.value = task.result || null
         const summary = task.result || {
+          batch_id: undefined,
           proxy_created: 0,
           proxy_reused: 0,
           proxy_failed: 0,
+          account_enqueued: 0,
+          placeholder_created: 0,
           account_created: 0,
           account_skipped: 0,
           account_failed: 0
         }
         const msgParams: Record<string, unknown> = {
+          account_enqueued: summary.account_enqueued || 0,
+          placeholder_created: summary.placeholder_created || 0,
           account_created: summary.account_created,
           account_skipped: summary.account_skipped,
           account_failed: summary.account_failed,
@@ -245,12 +257,15 @@ const scheduleTaskPoll = (taskID: string, toastID: string) => {
           proxy_reused: summary.proxy_reused,
           proxy_failed: summary.proxy_failed,
         }
+        const fastPathCompleted = (summary.account_enqueued || 0) > 0 || (summary.placeholder_created || 0) > 0
         appStore.updateToast(toastID, {
           type: summary.account_failed > 0 || summary.proxy_failed > 0 ? 'warning' : 'success',
           subtitle: buildTaskSubtitle(task),
-          message: summary.account_failed > 0 || summary.proxy_failed > 0
-            ? t('admin.accounts.dataImportCompletedWithErrors', msgParams)
-            : t('admin.accounts.dataImportSuccess', msgParams),
+          message: fastPathCompleted
+            ? `快速导入完成：已入队 ${summary.account_enqueued || 0}，占位账号 ${summary.placeholder_created || 0}，失败 ${summary.account_failed || 0}`
+            : summary.account_failed > 0 || summary.proxy_failed > 0
+              ? t('admin.accounts.dataImportCompletedWithErrors', msgParams)
+              : t('admin.accounts.dataImportSuccess', msgParams),
           progress: 100,
           duration: 5000
         })

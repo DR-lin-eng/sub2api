@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -40,25 +42,33 @@ type updateScheduledTestPlanRequest struct {
 
 // ListByAccount GET /admin/accounts/:id/scheduled-test-plans
 func (h *ScheduledTestHandler) ListByAccount(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ListByAccountGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ScheduledTestHandler) ListByAccountGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid account id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid account id")
 		return
 	}
 
-	plans, err := h.scheduledTestSvc.ListPlansByAccount(c.Request.Context(), accountID)
+	plans, err := h.scheduledTestSvc.ListPlansByAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, plans)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, plans)
 }
 
 // Create POST /admin/scheduled-test-plans
 func (h *ScheduledTestHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ScheduledTestHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req createScheduledTestPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -77,31 +87,35 @@ func (h *ScheduledTestHandler) Create(c *gin.Context) {
 		plan.AutoRecover = *req.AutoRecover
 	}
 
-	created, err := h.scheduledTestSvc.CreatePlan(c.Request.Context(), plan)
+	created, err := h.scheduledTestSvc.CreatePlan(c.Request().Context(), plan)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 // Update PUT /admin/scheduled-test-plans/:id
 func (h *ScheduledTestHandler) Update(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ScheduledTestHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	planID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
 
-	existing, err := h.scheduledTestSvc.GetPlan(c.Request.Context(), planID)
+	existing, err := h.scheduledTestSvc.GetPlan(c.Request().Context(), planID)
 	if err != nil {
-		response.NotFound(c, "plan not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "plan not found")
 		return
 	}
 
 	var req updateScheduledTestPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -124,46 +138,54 @@ func (h *ScheduledTestHandler) Update(c *gin.Context) {
 		existing.MaxFailuresBeforePause = req.MaxFailuresBeforePause
 	}
 
-	updated, err := h.scheduledTestSvc.UpdatePlan(c.Request.Context(), existing)
+	updated, err := h.scheduledTestSvc.UpdatePlan(c.Request().Context(), existing)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, updated)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updated)
 }
 
 // Delete DELETE /admin/scheduled-test-plans/:id
 func (h *ScheduledTestHandler) Delete(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ScheduledTestHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	planID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
 
-	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.scheduledTestSvc.DeletePlan(c.Request().Context(), planID); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "deleted"})
 }
 
 // ListResults GET /admin/scheduled-test-plans/:id/results
 func (h *ScheduledTestHandler) ListResults(c *gin.Context) {
-	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ListResultsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ScheduledTestHandler) ListResultsGateway(c gatewayctx.GatewayContext) {
+	planID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid plan id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "invalid plan id")
 		return
 	}
 
 	limit := 50
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
+	if l, err := strconv.Atoi(c.QueryValue("limit")); err == nil && l > 0 {
 		limit = l
 	}
 
-	results, err := h.scheduledTestSvc.ListResults(c.Request.Context(), planID, limit)
+	results, err := h.scheduledTestSvc.ListResults(c.Request().Context(), planID, limit)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, results)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, results)
 }

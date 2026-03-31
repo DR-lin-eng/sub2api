@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/util/soraerror"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
@@ -493,8 +494,8 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // TestAccountConnection tests an account's connection by sending a test request
 // All account types use full Claude Code client characteristics, only auth header differs
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
-func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) TestAccountConnection(c gatewayctx.GatewayContext, accountID int64, modelID string, prompt string) error {
+	ctx := c.Request().Context()
 
 	// Get account
 	account, err := s.accountRepo.GetByID(ctx, accountID)
@@ -523,8 +524,8 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
-func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) testClaudeAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string) error {
+	ctx := c.Request().Context()
 
 	// Determine the model to use
 	testModelID := modelID
@@ -577,11 +578,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	}
 
 	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	// Create Claude Code style payload (same for all account types)
 	payload, err := createTestPayload(testModelID)
@@ -645,7 +646,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 }
 
 // testBedrockAccountConnection tests a Bedrock (SigV4 or API Key) account using non-streaming invoke
-func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testBedrockAccountConnection(c gatewayctx.GatewayContext, ctx context.Context, account *Account, testModelID string) error {
 	region := bedrockRuntimeRegion(account)
 	resolvedModelID, ok := ResolveBedrockModelID(account, testModelID)
 	if !ok {
@@ -654,11 +655,11 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	testModelID = resolvedModelID
 
 	// Set SSE headers (test UI expects SSE)
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	// Create a minimal Bedrock-compatible payload (no stream, no cache_control)
 	bedrockPayload := map[string]any{
@@ -748,8 +749,8 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 }
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
-func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) testOpenAIAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string) error {
+	ctx := c.Request().Context()
 
 	// Default to openai.DefaultTestModel for OpenAI testing
 	testModelID := modelID
@@ -805,11 +806,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 
 	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	// Create OpenAI Responses API payload
 	payload := createOpenAITestPayload(testModelID, isOAuth)
@@ -877,8 +878,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection
-func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) testGeminiAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string, prompt string) error {
+	ctx := c.Request().Context()
 
 	// Determine the model to use
 	testModelID := modelID
@@ -897,11 +898,11 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	}
 
 	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	// Create test payload (Gemini format)
 	payload := createGeminiTestPayload(testModelID, prompt)
@@ -1000,7 +1001,7 @@ func (r *soraProbeRecorder) finalize() soraProbeSummary {
 	}
 }
 
-func (s *AccountTestService) emitSoraProbeSummary(c *gin.Context, rec *soraProbeRecorder) {
+func (s *AccountTestService) emitSoraProbeSummary(c gatewayctx.GatewayContext, rec *soraProbeRecorder) {
 	if rec == nil {
 		return
 	}
@@ -1062,8 +1063,8 @@ func ceilSeconds(d time.Duration) int {
 
 // testSoraAPIKeyAccountConnection 测试 Sora apikey 类型账号的连通性。
 // 向上游 base_url 发送轻量级 prompt-enhance 请求验证连通性和 API Key 有效性。
-func (s *AccountTestService) testSoraAPIKeyAccountConnection(c *gin.Context, account *Account) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) testSoraAPIKeyAccountConnection(c gatewayctx.GatewayContext, account *Account) error {
+	ctx := c.Request().Context()
 
 	apiKey := account.GetCredential("api_key")
 	if apiKey == "" {
@@ -1083,11 +1084,11 @@ func (s *AccountTestService) testSoraAPIKeyAccountConnection(c *gin.Context, acc
 	upstreamURL := strings.TrimSuffix(normalizedBaseURL, "/") + "/sora/v1/chat/completions"
 
 	// 设置 SSE 头
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	if wait, ok := s.acquireSoraTestPermit(account.ID); !ok {
 		msg := fmt.Sprintf("Sora 账号测试过于频繁，请 %d 秒后重试", ceilSeconds(wait))
@@ -1150,13 +1151,13 @@ func (s *AccountTestService) testSoraAPIKeyAccountConnection(c *gin.Context, acc
 // testSoraAccountConnection 测试 Sora 账号的连接
 // OAuth 类型：调用 /backend/me 接口验证 access_token 有效性
 // APIKey 类型：向上游 base_url 发送轻量级 prompt-enhance 请求验证连通性
-func (s *AccountTestService) testSoraAccountConnection(c *gin.Context, account *Account) error {
+func (s *AccountTestService) testSoraAccountConnection(c gatewayctx.GatewayContext, account *Account) error {
 	// apikey 类型走独立测试流程
 	if account.Type == AccountTypeAPIKey {
 		return s.testSoraAPIKeyAccountConnection(c, account)
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 	recorder := &soraProbeRecorder{}
 
 	authToken := account.GetCredential("access_token")
@@ -1167,11 +1168,11 @@ func (s *AccountTestService) testSoraAccountConnection(c *gin.Context, account *
 	}
 
 	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	if wait, ok := s.acquireSoraTestPermit(account.ID); !ok {
 		msg := fmt.Sprintf("Sora 账号测试过于频繁，请 %d 秒后重试", ceilSeconds(wait))
@@ -1307,7 +1308,7 @@ func (s *AccountTestService) testSoraAccountConnection(c *gin.Context, account *
 }
 
 func (s *AccountTestService) testSora2Capabilities(
-	c *gin.Context,
+	c gatewayctx.GatewayContext,
 	ctx context.Context,
 	account *Account,
 	authToken string,
@@ -1640,7 +1641,7 @@ func truncateSoraErrorBody(body []byte, max int) string {
 
 // routeAntigravityTest 路由 Antigravity 账号的测试请求。
 // APIKey 类型走原生协议（与 gateway_handler 路由一致），OAuth/Upstream 走 CRS 中转。
-func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Account, modelID string, prompt string) error {
+func (s *AccountTestService) routeAntigravityTest(c gatewayctx.GatewayContext, account *Account, modelID string, prompt string) error {
 	if account.Type == AccountTypeAPIKey {
 		if strings.HasPrefix(modelID, "gemini-") {
 			return s.testGeminiAccountConnection(c, account, modelID, prompt)
@@ -1652,8 +1653,8 @@ func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Accou
 
 // testAntigravityAccountConnection tests an Antigravity account's connection
 // 支持 Claude 和 Gemini 两种协议，使用非流式请求
-func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string) error {
-	ctx := c.Request.Context()
+func (s *AccountTestService) testAntigravityAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string) error {
+	ctx := c.Request().Context()
 
 	// 默认模型：Claude 使用 claude-sonnet-4-5，Gemini 使用 gemini-3-pro-preview
 	testModelID := modelID
@@ -1666,11 +1667,11 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	}
 
 	// Set SSE headers
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.Flush()
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
 
 	// Send test_start event
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
@@ -1845,7 +1846,7 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 }
 
 // processGeminiStream processes SSE stream from Gemini API
-func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader) error {
+func (s *AccountTestService) processGeminiStream(c gatewayctx.GatewayContext, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
 	for {
@@ -1955,7 +1956,7 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 }
 
 // processClaudeStream processes the SSE stream from Claude API
-func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
+func (s *AccountTestService) processClaudeStream(c gatewayctx.GatewayContext, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
 	for {
@@ -2009,7 +2010,7 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 }
 
 // processOpenAIStream processes the SSE stream from OpenAI Responses API
-func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
+func (s *AccountTestService) processOpenAIStream(c gatewayctx.GatewayContext, body io.Reader) error {
 	reader := bufio.NewReader(body)
 
 	for {
@@ -2062,17 +2063,17 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 }
 
 // sendEvent sends a SSE event to the client
-func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+func (s *AccountTestService) sendEvent(c gatewayctx.GatewayContext, event TestEvent) {
 	eventJSON, _ := json.Marshal(event)
-	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
+	if _, err := c.WriteBytes(0, []byte("data: "+string(eventJSON)+"\n\n")); err != nil {
 		log.Printf("failed to write SSE event: %v", err)
 		return
 	}
-	c.Writer.Flush()
+	_ = c.Flush()
 }
 
 // sendErrorAndEnd sends an error event and ends the stream
-func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
+func (s *AccountTestService) sendErrorAndEnd(c gatewayctx.GatewayContext, errorMsg string) error {
 	if !shouldSuppressAccountTestErrorLog(errorMsg) {
 		log.Printf("Account test error: %s", errorMsg)
 	}
@@ -2100,7 +2101,7 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	ginCtx, _ := gin.CreateTestContext(w)
 	ginCtx.Request = (&http.Request{}).WithContext(ctx)
 
-	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "")
+	testErr := s.TestAccountConnection(gatewayctx.FromGin(ginCtx), accountID, modelID, "")
 
 	finishedAt := time.Now()
 	body := w.Body.String()

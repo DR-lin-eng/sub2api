@@ -579,6 +579,7 @@ func (s *GeminiMessagesCompatService) forwardWithContext(ctx context.Context, c 
 	if account.Type == AccountTypeAPIKey {
 		mappedModel = account.GetMappedModel(req.Model)
 	}
+	SetOpsUpstreamModelContext(c, mappedModel)
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body)
 	if err != nil {
@@ -2790,6 +2791,9 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 		return
 	}
 	if statusCode != 429 {
+		return
+	}
+	if s.rateLimitService != nil && s.rateLimitService.maybeAutoDeleteAccountOn429(ctx, account, body) {
 		return
 	}
 

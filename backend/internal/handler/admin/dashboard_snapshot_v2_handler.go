@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -68,27 +69,31 @@ type dashboardSnapshotV2CacheKey struct {
 }
 
 func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
-	granularity := strings.TrimSpace(c.DefaultQuery("granularity", "day"))
+	h.GetSnapshotV2Gateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetSnapshotV2Gateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
+	granularity := strings.TrimSpace(defaultQueryValue(c, "granularity", "day"))
 	if granularity != "hour" {
 		granularity = "day"
 	}
 
-	includeStats := parseBoolQueryWithDefault(c.Query("include_stats"), true)
-	includeTrend := parseBoolQueryWithDefault(c.Query("include_trend"), true)
-	includeModels := parseBoolQueryWithDefault(c.Query("include_model_stats"), true)
-	includeGroups := parseBoolQueryWithDefault(c.Query("include_group_stats"), false)
-	includeUsersTrend := parseBoolQueryWithDefault(c.Query("include_users_trend"), false)
+	includeStats := parseBoolQueryWithDefault(c.QueryValue("include_stats"), true)
+	includeTrend := parseBoolQueryWithDefault(c.QueryValue("include_trend"), true)
+	includeModels := parseBoolQueryWithDefault(c.QueryValue("include_model_stats"), true)
+	includeGroups := parseBoolQueryWithDefault(c.QueryValue("include_group_stats"), false)
+	includeUsersTrend := parseBoolQueryWithDefault(c.QueryValue("include_users_trend"), false)
 	usersTrendLimit := 12
-	if raw := strings.TrimSpace(c.Query("users_trend_limit")); raw != "" {
+	if raw := strings.TrimSpace(c.QueryValue("users_trend_limit")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 50 {
 			usersTrendLimit = parsed
 		}
 	}
 
-	filters, err := parseDashboardSnapshotV2Filters(c)
+	filters, err := parseDashboardSnapshotV2FiltersGateway(c)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -115,7 +120,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 
 	cached, hit, err := dashboardSnapshotV2Cache.GetOrLoad(cacheKey, func() (any, error) {
 		return h.buildSnapshotV2Response(
-			c.Request.Context(),
+			c.Request().Context(),
 			startTime,
 			endTime,
 			granularity,
@@ -129,19 +134,19 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		)
 	})
 	if err != nil {
-		response.Error(c, 500, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if cached.ETag != "" {
-		c.Header("ETag", cached.ETag)
-		c.Header("Vary", "If-None-Match")
-		if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
-			c.Status(http.StatusNotModified)
+		c.SetHeader("ETag", cached.ETag)
+		c.SetHeader("Vary", "If-None-Match")
+		if ifNoneMatchMatched(c.HeaderValue("If-None-Match"), cached.ETag) {
+			_, _ = c.WriteBytes(http.StatusNotModified, nil)
 			return
 		}
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
-	response.Success(c, cached.Payload)
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 }
 
 func (h *DashboardHandler) buildSnapshotV2Response(
@@ -242,32 +247,36 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 }
 
 func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filters, error) {
+	return parseDashboardSnapshotV2FiltersGateway(gatewayctx.FromGin(c))
+}
+
+func parseDashboardSnapshotV2FiltersGateway(c gatewayctx.GatewayContext) (*dashboardSnapshotV2Filters, error) {
 	filters := &dashboardSnapshotV2Filters{
-		Model: strings.TrimSpace(c.Query("model")),
+		Model: strings.TrimSpace(c.QueryValue("model")),
 	}
 
-	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
+	if userIDStr := strings.TrimSpace(c.QueryValue("user_id")); userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		filters.UserID = id
 	}
-	if apiKeyIDStr := strings.TrimSpace(c.Query("api_key_id")); apiKeyIDStr != "" {
+	if apiKeyIDStr := strings.TrimSpace(c.QueryValue("api_key_id")); apiKeyIDStr != "" {
 		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		filters.APIKeyID = id
 	}
-	if accountIDStr := strings.TrimSpace(c.Query("account_id")); accountIDStr != "" {
+	if accountIDStr := strings.TrimSpace(c.QueryValue("account_id")); accountIDStr != "" {
 		id, err := strconv.ParseInt(accountIDStr, 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		filters.AccountID = id
 	}
-	if groupIDStr := strings.TrimSpace(c.Query("group_id")); groupIDStr != "" {
+	if groupIDStr := strings.TrimSpace(c.QueryValue("group_id")); groupIDStr != "" {
 		id, err := strconv.ParseInt(groupIDStr, 10, 64)
 		if err != nil {
 			return nil, err
@@ -275,14 +284,14 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		filters.GroupID = id
 	}
 
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
 			return nil, err
 		}
 		value := int16(parsed)
 		filters.RequestType = &value
-	} else if streamStr := strings.TrimSpace(c.Query("stream")); streamStr != "" {
+	} else if streamStr := strings.TrimSpace(c.QueryValue("stream")); streamStr != "" {
 		streamVal, err := strconv.ParseBool(streamStr)
 		if err != nil {
 			return nil, err
@@ -290,7 +299,7 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		filters.Stream = &streamVal
 	}
 
-	if billingTypeStr := strings.TrimSpace(c.Query("billing_type")); billingTypeStr != "" {
+	if billingTypeStr := strings.TrimSpace(c.QueryValue("billing_type")); billingTypeStr != "" {
 		v, err := strconv.ParseInt(billingTypeStr, 10, 8)
 		if err != nil {
 			return nil, err

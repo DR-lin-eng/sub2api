@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -60,12 +62,16 @@ type CreateUsageCleanupTaskRequest struct {
 // List handles listing all usage records with filters
 // GET /api/v1/admin/usage
 func (h *UsageHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
 	exactTotal := false
-	if exactTotalRaw := strings.TrimSpace(c.Query("exact_total")); exactTotalRaw != "" {
+	if exactTotalRaw := strings.TrimSpace(c.QueryValue("exact_total")); exactTotalRaw != "" {
 		parsed, err := strconv.ParseBool(exactTotalRaw)
 		if err != nil {
-			response.BadRequest(c, "Invalid exact_total value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid exact_total value, use true or false")
 			return
 		}
 		exactTotal = parsed
@@ -73,68 +79,68 @@ func (h *UsageHandler) List(c *gin.Context) {
 
 	// Parse filters
 	var userID, apiKeyID, accountID, groupID int64
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
+	if userIDStr := c.QueryValue("user_id"); userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid user_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user_id")
 			return
 		}
 		userID = id
 	}
 
-	if apiKeyIDStr := c.Query("api_key_id"); apiKeyIDStr != "" {
+	if apiKeyIDStr := c.QueryValue("api_key_id"); apiKeyIDStr != "" {
 		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid api_key_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid api_key_id")
 			return
 		}
 		apiKeyID = id
 	}
 
-	if accountIDStr := c.Query("account_id"); accountIDStr != "" {
+	if accountIDStr := c.QueryValue("account_id"); accountIDStr != "" {
 		id, err := strconv.ParseInt(accountIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid account_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account_id")
 			return
 		}
 		accountID = id
 	}
 
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group_id"); groupIDStr != "" {
 		id, err := strconv.ParseInt(groupIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid group_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group_id")
 			return
 		}
 		groupID = id
 	}
 
-	model := c.Query("model")
+	model := c.QueryValue("model")
 
 	var requestType *int16
 	var stream *bool
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
 		requestType = &value
-	} else if streamStr := c.Query("stream"); streamStr != "" {
+	} else if streamStr := c.QueryValue("stream"); streamStr != "" {
 		val, err := strconv.ParseBool(streamStr)
 		if err != nil {
-			response.BadRequest(c, "Invalid stream value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid stream value, use true or false")
 			return
 		}
 		stream = &val
 	}
 
 	var billingType *int8
-	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
+	if billingTypeStr := c.QueryValue("billing_type"); billingTypeStr != "" {
 		val, err := strconv.ParseInt(billingTypeStr, 10, 8)
 		if err != nil {
-			response.BadRequest(c, "Invalid billing_type")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid billing_type")
 			return
 		}
 		bt := int8(val)
@@ -143,20 +149,20 @@ func (h *UsageHandler) List(c *gin.Context) {
 
 	// Parse date range
 	var startTime, endTime *time.Time
-	userTZ := c.Query("timezone") // Get user's timezone from request
-	if startDateStr := c.Query("start_date"); startDateStr != "" {
+	userTZ := c.QueryValue("timezone")
+	if startDateStr := c.QueryValue("start_date"); startDateStr != "" {
 		t, err := timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
 		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid start_date format, use YYYY-MM-DD")
 			return
 		}
 		startTime = &t
 	}
 
-	if endDateStr := c.Query("end_date"); endDateStr != "" {
+	if endDateStr := c.QueryValue("end_date"); endDateStr != "" {
 		t, err := timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
 		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid end_date format, use YYYY-MM-DD")
 			return
 		}
 		// Use half-open range [start, end), move to next calendar day start (DST-safe).
@@ -179,9 +185,9 @@ func (h *UsageHandler) List(c *gin.Context) {
 		ExactTotal:  exactTotal,
 	}
 
-	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)
+	records, result, err := h.usageService.ListWithFilters(c.Request().Context(), params, filters)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -189,76 +195,80 @@ func (h *UsageHandler) List(c *gin.Context) {
 	for i := range records {
 		out = append(out, *dto.UsageLogFromServiceAdmin(&records[i]))
 	}
-	response.Paginated(c, out, result.Total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, result.Total, page, pageSize)
 }
 
 // Stats handles getting usage statistics with filters
 // GET /api/v1/admin/usage/stats
 func (h *UsageHandler) Stats(c *gin.Context) {
+	h.StatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) StatsGateway(c gatewayctx.GatewayContext) {
 	// Parse filters - same as List endpoint
 	var userID, apiKeyID, accountID, groupID int64
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
+	if userIDStr := c.QueryValue("user_id"); userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid user_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user_id")
 			return
 		}
 		userID = id
 	}
 
-	if apiKeyIDStr := c.Query("api_key_id"); apiKeyIDStr != "" {
+	if apiKeyIDStr := c.QueryValue("api_key_id"); apiKeyIDStr != "" {
 		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid api_key_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid api_key_id")
 			return
 		}
 		apiKeyID = id
 	}
 
-	if accountIDStr := c.Query("account_id"); accountIDStr != "" {
+	if accountIDStr := c.QueryValue("account_id"); accountIDStr != "" {
 		id, err := strconv.ParseInt(accountIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid account_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account_id")
 			return
 		}
 		accountID = id
 	}
 
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group_id"); groupIDStr != "" {
 		id, err := strconv.ParseInt(groupIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid group_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group_id")
 			return
 		}
 		groupID = id
 	}
 
-	model := c.Query("model")
+	model := c.QueryValue("model")
 
 	var requestType *int16
 	var stream *bool
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
 		requestType = &value
-	} else if streamStr := c.Query("stream"); streamStr != "" {
+	} else if streamStr := c.QueryValue("stream"); streamStr != "" {
 		val, err := strconv.ParseBool(streamStr)
 		if err != nil {
-			response.BadRequest(c, "Invalid stream value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid stream value, use true or false")
 			return
 		}
 		stream = &val
 	}
 
 	var billingType *int8
-	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
+	if billingTypeStr := c.QueryValue("billing_type"); billingTypeStr != "" {
 		val, err := strconv.ParseInt(billingTypeStr, 10, 8)
 		if err != nil {
-			response.BadRequest(c, "Invalid billing_type")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid billing_type")
 			return
 		}
 		bt := int8(val)
@@ -266,29 +276,29 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 
 	// Parse date range
-	userTZ := c.Query("timezone")
+	userTZ := c.QueryValue("timezone")
 	now := timezone.NowInUserLocation(userTZ)
 	var startTime, endTime time.Time
 
-	startDateStr := c.Query("start_date")
-	endDateStr := c.Query("end_date")
+	startDateStr := c.QueryValue("start_date")
+	endDateStr := c.QueryValue("end_date")
 
 	if startDateStr != "" && endDateStr != "" {
 		var err error
 		startTime, err = timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
 		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid start_date format, use YYYY-MM-DD")
 			return
 		}
 		endTime, err = timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
 		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid end_date format, use YYYY-MM-DD")
 			return
 		}
 		// 与 SQL 条件 created_at < end 对齐，使用次日 00:00 作为上边界（DST-safe）。
 		endTime = endTime.AddDate(0, 0, 1)
 	} else {
-		period := c.DefaultQuery("period", "today")
+		period := defaultQueryValue(c, "period", "today")
 		switch period {
 		case "today":
 			startTime = timezone.StartOfDayInUserLocation(now, userTZ)
@@ -316,28 +326,32 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		EndTime:     &endTime,
 	}
 
-	stats, err := h.usageService.GetStatsWithFilters(c.Request.Context(), filters)
+	stats, err := h.usageService.GetStatsWithFilters(c.Request().Context(), filters)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, stats)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, stats)
 }
 
 // SearchUsers handles searching users by email keyword
 // GET /api/v1/admin/usage/search-users
 func (h *UsageHandler) SearchUsers(c *gin.Context) {
-	keyword := c.Query("q")
+	h.SearchUsersGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) SearchUsersGateway(c gatewayctx.GatewayContext) {
+	keyword := c.QueryValue("q")
 	if keyword == "" {
-		response.Success(c, []any{})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, []any{})
 		return
 	}
 
 	// Limit to 30 results
-	users, _, err := h.adminService.ListUsers(c.Request.Context(), 1, 30, service.UserListFilters{Search: keyword})
+	users, _, err := h.adminService.ListUsers(c.Request().Context(), 1, 30, service.UserListFilters{Search: keyword})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -355,28 +369,32 @@ func (h *UsageHandler) SearchUsers(c *gin.Context) {
 		}
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // SearchAPIKeys handles searching API keys by user
 // GET /api/v1/admin/usage/search-api-keys
 func (h *UsageHandler) SearchAPIKeys(c *gin.Context) {
-	userIDStr := c.Query("user_id")
-	keyword := c.Query("q")
+	h.SearchAPIKeysGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) SearchAPIKeysGateway(c gatewayctx.GatewayContext) {
+	userIDStr := c.QueryValue("user_id")
+	keyword := c.QueryValue("q")
 
 	var userID int64
 	if userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil {
-			response.BadRequest(c, "Invalid user_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user_id")
 			return
 		}
 		userID = id
 	}
 
-	keys, err := h.apiKeyService.SearchAPIKeys(c.Request.Context(), userID, keyword, 30)
+	keys, err := h.apiKeyService.SearchAPIKeys(c.Request().Context(), userID, keyword, 30)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -396,27 +414,31 @@ func (h *UsageHandler) SearchAPIKeys(c *gin.Context) {
 		}
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // ListCleanupTasks handles listing usage cleanup tasks
 // GET /api/v1/admin/usage/cleanup-tasks
 func (h *UsageHandler) ListCleanupTasks(c *gin.Context) {
+	h.ListCleanupTasksGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) ListCleanupTasksGateway(c gatewayctx.GatewayContext) {
 	if h.cleanupService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
 		return
 	}
 	operator := int64(0)
-	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
+	if subject, ok := middleware.GetAuthSubjectFromGatewayContext(c); ok {
 		operator = subject.UserID
 	}
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := response.ParsePaginationValues(c)
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 请求清理任务列表: operator=%d page=%d page_size=%d", operator, page, pageSize)
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
-	tasks, result, err := h.cleanupService.ListTasks(c.Request.Context(), params)
+	tasks, result, err := h.cleanupService.ListTasks(c.Request().Context(), params)
 	if err != nil {
 		logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 查询清理任务列表失败: operator=%d page=%d page_size=%d err=%v", operator, page, pageSize, err)
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	out := make([]dto.UsageCleanupTask, 0, len(tasks))
@@ -424,42 +446,46 @@ func (h *UsageHandler) ListCleanupTasks(c *gin.Context) {
 		out = append(out, *dto.UsageCleanupTaskFromService(&tasks[i]))
 	}
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 返回清理任务列表: operator=%d total=%d items=%d page=%d page_size=%d", operator, result.Total, len(out), page, pageSize)
-	response.Paginated(c, out, result.Total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, result.Total, page, pageSize)
 }
 
 // CreateCleanupTask handles creating a usage cleanup task
 // POST /api/v1/admin/usage/cleanup-tasks
 func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
+	h.CreateCleanupTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) CreateCleanupTaskGateway(c gatewayctx.GatewayContext) {
 	if h.cleanupService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
 		return
 	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	subject, ok := middleware.GetAuthSubjectFromGatewayContext(c)
 	if !ok || subject.UserID <= 0 {
-		response.Unauthorized(c, "Unauthorized")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	var req CreateUsageCleanupTaskRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	req.StartDate = strings.TrimSpace(req.StartDate)
 	req.EndDate = strings.TrimSpace(req.EndDate)
 	if req.StartDate == "" || req.EndDate == "" {
-		response.BadRequest(c, "start_date and end_date are required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "start_date and end_date are required")
 		return
 	}
 
 	startTime, err := timezone.ParseInUserLocation("2006-01-02", req.StartDate, req.Timezone)
 	if err != nil {
-		response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid start_date format, use YYYY-MM-DD")
 		return
 	}
 	endTime, err := timezone.ParseInUserLocation("2006-01-02", req.EndDate, req.Timezone)
 	if err != nil {
-		response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid end_date format, use YYYY-MM-DD")
 		return
 	}
 	endTime = endTime.Add(24*time.Hour - time.Nanosecond)
@@ -469,7 +495,7 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 	if req.RequestType != nil {
 		parsed, err := service.ParseUsageRequestType(*req.RequestType)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
@@ -530,7 +556,7 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 		OperatorID: subject.UserID,
 		Body:       req,
 	}
-	executeAdminIdempotentJSON(c, "admin.usage.cleanup_tasks.create", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminIdempotentGatewayJSON(c, "admin.usage.cleanup_tasks.create", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 请求创建清理任务: operator=%d start=%s end=%s user_id=%v api_key_id=%v account_id=%v group_id=%v model=%v request_type=%v stream=%v billing_type=%v tz=%q",
 			subject.UserID,
 			filters.StartTime.Format(time.RFC3339),
@@ -559,27 +585,31 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 // CancelCleanupTask handles canceling a usage cleanup task
 // POST /api/v1/admin/usage/cleanup-tasks/:id/cancel
 func (h *UsageHandler) CancelCleanupTask(c *gin.Context) {
+	h.CancelCleanupTaskGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UsageHandler) CancelCleanupTaskGateway(c gatewayctx.GatewayContext) {
 	if h.cleanupService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
 		return
 	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	subject, ok := middleware.GetAuthSubjectFromGatewayContext(c)
 	if !ok || subject.UserID <= 0 {
-		response.Unauthorized(c, "Unauthorized")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
-	idStr := strings.TrimSpace(c.Param("id"))
+	idStr := strings.TrimSpace(c.PathParam("id"))
 	taskID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || taskID <= 0 {
-		response.BadRequest(c, "Invalid task id")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid task id")
 		return
 	}
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 请求取消清理任务: task=%d operator=%d", taskID, subject.UserID)
-	if err := h.cleanupService.CancelTask(c.Request.Context(), taskID, subject.UserID); err != nil {
+	if err := h.cleanupService.CancelTask(c.Request().Context(), taskID, subject.UserID); err != nil {
 		logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 取消清理任务失败: task=%d operator=%d err=%v", taskID, subject.UserID, err)
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 清理任务已取消: task=%d operator=%d", taskID, subject.UserID)
-	response.Success(c, gin.H{"id": taskID, "status": service.UsageCleanupStatusCanceled})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"id": taskID, "status": service.UsageCleanupStatusCanceled})
 }

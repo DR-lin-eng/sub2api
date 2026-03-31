@@ -56,6 +56,15 @@ type Account struct {
 	GroupIDs      []int64
 	Groups        []*Group
 
+	// Import/sync state is persisted in extra using reserved internal keys,
+	// then hydrated into these explicit fields for API responses and workers.
+	SyncState            string
+	SyncProgress         int
+	SyncMessage          string
+	SyncBatchID          string
+	DuplicateOfAccountID *int64
+	DedupFingerprint     string
+
 	// model_mapping 热路径缓存（非持久化字段）
 	modelMappingCache               map[string]string
 	modelMappingCacheReady          bool
@@ -63,6 +72,32 @@ type Account struct {
 	modelMappingCacheRawPtr         uintptr
 	modelMappingCacheRawLen         int
 	modelMappingCacheRawSig         uint64
+}
+
+const (
+	AccountSyncStatePending   = "pending"
+	AccountSyncStateSyncing   = "syncing"
+	AccountSyncStateCompleted = "completed"
+	AccountSyncStateFailed    = "failed"
+	AccountSyncStateDuplicate = "duplicate"
+)
+
+const (
+	AccountExtraSyncStateKey        = "_import_sync_state"
+	AccountExtraSyncProgressKey     = "_import_sync_progress"
+	AccountExtraSyncMessageKey      = "_import_sync_message"
+	AccountExtraSyncBatchIDKey      = "_import_sync_batch_id"
+	AccountExtraDuplicateOfKey      = "_import_duplicate_of_account_id"
+	AccountExtraDedupFingerprintKey = "_import_dedup_fingerprint"
+)
+
+var accountInternalExtraKeys = map[string]struct{}{
+	AccountExtraSyncStateKey:        {},
+	AccountExtraSyncProgressKey:     {},
+	AccountExtraSyncMessageKey:      {},
+	AccountExtraSyncBatchIDKey:      {},
+	AccountExtraDuplicateOfKey:      {},
+	AccountExtraDedupFingerprintKey: {},
 }
 
 type TempUnschedulableRule struct {
@@ -145,6 +180,10 @@ func (a *Account) IsGemini() bool {
 	return a.Platform == PlatformGemini
 }
 
+func (a *Account) IsKiro() bool {
+	return a != nil && a.Platform == PlatformKiro
+}
+
 func (a *Account) GeminiOAuthType() string {
 	if a.Platform != PlatformGemini || a.Type != AccountTypeOAuth {
 		return ""
@@ -173,6 +212,9 @@ func (a *Account) IsGeminiCodeAssist() bool {
 }
 
 func (a *Account) CanGetUsage() bool {
+	if a.Platform == PlatformKiro {
+		return false
+	}
 	return a.Type == AccountTypeOAuth
 }
 
@@ -224,6 +266,45 @@ func (a *Account) GetCredentialAsTime(key string) *time.Time {
 		return &t
 	}
 	return nil
+}
+
+func IsAccountInternalExtraKey(key string) bool {
+	_, ok := accountInternalExtraKeys[strings.TrimSpace(key)]
+	return ok
+}
+
+func CopyExtraPreservingInternal(current, next map[string]any) map[string]any {
+	out := make(map[string]any)
+	for k, v := range next {
+		out[k] = v
+	}
+	for k, v := range current {
+		if !IsAccountInternalExtraKey(k) {
+			continue
+		}
+		if _, exists := out[k]; exists {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func FilterAccountInternalExtra(extra map[string]any) map[string]any {
+	if len(extra) == 0 {
+		if extra == nil {
+			return nil
+		}
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(extra))
+	for k, v := range extra {
+		if IsAccountInternalExtraKey(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // GetCredentialAsInt64 解析凭证中的 int64 字段
@@ -500,6 +581,57 @@ func ensureAntigravityDefaultPassthroughs(mapping map[string]string, models []st
 	}
 }
 
+func maybeNormalizeOpenAIModelCandidate(model string) (string, bool) {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if !strings.Contains(lower, "gpt") && !strings.Contains(lower, "codex") {
+		return "", false
+	}
+
+	normalized := strings.TrimSpace(normalizeCodexModel(trimmed))
+	if normalized == "" {
+		return "", false
+	}
+	return normalized, true
+}
+
+func buildOpenAIModelLookupCandidates(requestedModel string) []string {
+	appendUnique := func(out []string, seen map[string]struct{}, value string) []string {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return out
+		}
+		if _, exists := seen[value]; exists {
+			return out
+		}
+		seen[value] = struct{}{}
+		return append(out, value)
+	}
+
+	seen := make(map[string]struct{}, 4)
+	candidates := make([]string, 0, 4)
+	candidates = appendUnique(candidates, seen, requestedModel)
+
+	baseModel := ""
+	if base, _, stripped := splitOpenAIModelReasoningVariant(requestedModel); stripped {
+		baseModel = strings.TrimSpace(base)
+		candidates = appendUnique(candidates, seen, baseModel)
+	}
+
+	if normalized, ok := maybeNormalizeOpenAIModelCandidate(requestedModel); ok {
+		candidates = appendUnique(candidates, seen, normalized)
+	}
+	if normalizedBase, ok := maybeNormalizeOpenAIModelCandidate(baseModel); ok {
+		candidates = appendUnique(candidates, seen, normalizedBase)
+	}
+
+	return candidates
+}
+
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）
 func (a *Account) IsModelSupported(requestedModel string) bool {
@@ -507,14 +639,14 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	if len(mapping) == 0 {
 		return true // 无映射 = 允许所有
 	}
-	// 精确匹配
-	if _, exists := mapping[requestedModel]; exists {
-		return true
-	}
-	// 通配符匹配
-	for pattern := range mapping {
-		if matchWildcard(pattern, requestedModel) {
+	for _, candidate := range buildOpenAIModelLookupCandidates(requestedModel) {
+		if _, exists := mapping[candidate]; exists {
 			return true
+		}
+		for pattern := range mapping {
+			if matchWildcard(pattern, candidate) {
+				return true
+			}
 		}
 	}
 	return false
@@ -534,21 +666,11 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	if len(mapping) == 0 {
 		return requestedModel, false
 	}
-	// 精确匹配优先
-	if mappedModel, exists := mapping[requestedModel]; exists {
-		return mappedModel, true
-	}
-	// 通配符匹配（最长优先）
-	if mappedModel, matched = matchWildcardMappingResult(mapping, requestedModel); matched {
-		return mappedModel, true
-	}
-	// 对 OpenAI/Codex 风格的 "模型-推理强度" 变体做一次基础模型回退匹配，
-	// 让诸如 gpt-5.4-xhigh 可以命中已配置的 gpt-5.4 映射规则。
-	if baseModel, _, stripped := splitOpenAIModelReasoningVariant(requestedModel); stripped && baseModel != "" && baseModel != requestedModel {
-		if mappedModel, exists := mapping[baseModel]; exists {
+	for _, candidate := range buildOpenAIModelLookupCandidates(requestedModel) {
+		if mappedModel, exists := mapping[candidate]; exists {
 			return mappedModel, true
 		}
-		if mappedModel, matched = matchWildcardMappingResult(mapping, baseModel); matched {
+		if mappedModel, matched = matchWildcardMappingResult(mapping, candidate); matched {
 			return mappedModel, true
 		}
 	}
@@ -782,6 +904,108 @@ func (a *Account) IsInterceptWarmupEnabled() bool {
 		}
 	}
 	return false
+}
+
+func (a *Account) ApplySyncMetadataFromExtra() {
+	if a == nil {
+		return
+	}
+	a.SyncState = strings.TrimSpace(a.getExtraString(AccountExtraSyncStateKey))
+	a.SyncProgress = clampAccountSyncProgress(ParseExtraInt(a.getExtraValue(AccountExtraSyncProgressKey)))
+	a.SyncMessage = strings.TrimSpace(a.getExtraString(AccountExtraSyncMessageKey))
+	a.SyncBatchID = strings.TrimSpace(a.getExtraString(AccountExtraSyncBatchIDKey))
+	a.DedupFingerprint = strings.TrimSpace(a.getExtraString(AccountExtraDedupFingerprintKey))
+
+	if raw := strings.TrimSpace(a.getExtraString(AccountExtraDuplicateOfKey)); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			a.DuplicateOfAccountID = &parsed
+		}
+	} else if value, ok := a.getExtraValue(AccountExtraDuplicateOfKey).(float64); ok && value > 0 {
+		parsed := int64(value)
+		a.DuplicateOfAccountID = &parsed
+	}
+}
+
+func (a *Account) SetSyncMetadata(state string, progress int, message, batchID string, duplicateOf *int64) {
+	if a == nil {
+		return
+	}
+	if a.Extra == nil {
+		a.Extra = make(map[string]any)
+	}
+	progress = clampAccountSyncProgress(progress)
+	state = strings.TrimSpace(state)
+	message = strings.TrimSpace(message)
+	batchID = strings.TrimSpace(batchID)
+
+	if state == "" {
+		delete(a.Extra, AccountExtraSyncStateKey)
+		a.SyncState = ""
+	} else {
+		a.Extra[AccountExtraSyncStateKey] = state
+		a.SyncState = state
+	}
+	a.Extra[AccountExtraSyncProgressKey] = progress
+	a.SyncProgress = progress
+
+	if message == "" {
+		delete(a.Extra, AccountExtraSyncMessageKey)
+		a.SyncMessage = ""
+	} else {
+		a.Extra[AccountExtraSyncMessageKey] = message
+		a.SyncMessage = message
+	}
+
+	if batchID == "" {
+		delete(a.Extra, AccountExtraSyncBatchIDKey)
+		a.SyncBatchID = ""
+	} else {
+		a.Extra[AccountExtraSyncBatchIDKey] = batchID
+		a.SyncBatchID = batchID
+	}
+
+	if duplicateOf != nil && *duplicateOf > 0 {
+		a.Extra[AccountExtraDuplicateOfKey] = *duplicateOf
+		id := *duplicateOf
+		a.DuplicateOfAccountID = &id
+	} else {
+		delete(a.Extra, AccountExtraDuplicateOfKey)
+		a.DuplicateOfAccountID = nil
+	}
+}
+
+func (a *Account) SetDedupFingerprint(fingerprint string) {
+	if a == nil {
+		return
+	}
+	fingerprint = strings.TrimSpace(fingerprint)
+	if a.Extra == nil {
+		a.Extra = make(map[string]any)
+	}
+	if fingerprint == "" {
+		delete(a.Extra, AccountExtraDedupFingerprintKey)
+		a.DedupFingerprint = ""
+		return
+	}
+	a.Extra[AccountExtraDedupFingerprintKey] = fingerprint
+	a.DedupFingerprint = fingerprint
+}
+
+func (a *Account) getExtraValue(key string) any {
+	if a == nil || a.Extra == nil {
+		return nil
+	}
+	return a.Extra[key]
+}
+
+func clampAccountSyncProgress(progress int) int {
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
 }
 
 func (a *Account) IsBedrock() bool {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func TestProcessGeminiStream_EmitsImageEvent(t *testing.T) {
 
 	stream := strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"QUJD\"}}]}}]}\n\ndata: [DONE]\n\n")
 
-	err := svc.processGeminiStream(ctx, stream)
+	err := svc.processGeminiStream(gatewayctx.FromGin(ctx), stream)
 	require.NoError(t, err)
 
 	body := recorder.Body.String()

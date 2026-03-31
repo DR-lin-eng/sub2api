@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -536,6 +537,57 @@ func TestFrontendServer_Middleware(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/logo.png", nil)
 		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")
+	})
+}
+
+func TestFrontendServer_HandleGateway(t *testing.T) {
+	t.Run("marks_api_routes_for_fallback", func(t *testing.T) {
+		provider := &mockSettingsProvider{settings: map[string]string{"test": "value"}}
+		server, err := NewFrontendServer(provider)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+
+		server.HandleGateway(gatewayctx.FromGin(c))
+
+		raw, ok := c.Get(nativeFrontendFallbackKey)
+		require.True(t, ok)
+		require.Equal(t, true, raw)
+		require.Equal(t, 200, w.Code)
+	})
+
+	t.Run("serves_index_for_spa_routes", func(t *testing.T) {
+		provider := &mockSettingsProvider{settings: map[string]string{"test": "value"}}
+		server, err := NewFrontendServer(provider)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+		c.Set(middleware.CSPNonceKey, "test-nonce")
+
+		server.HandleGateway(gatewayctx.FromGin(c))
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
+		assert.Contains(t, w.Body.String(), "<!doctype html>")
+	})
+
+	t.Run("serves_static_assets", func(t *testing.T) {
+		provider := &mockSettingsProvider{settings: map[string]string{"test": "value"}}
+		server, err := NewFrontendServer(provider)
+		require.NoError(t, err)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/logo.png", nil)
+
+		server.HandleGateway(gatewayctx.FromGin(c))
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")

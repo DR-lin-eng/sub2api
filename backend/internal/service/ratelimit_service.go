@@ -220,8 +220,8 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		)
 		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
 	case 429:
-		if s.shouldAutoDeleteAccountOn429(ctx) {
-			return s.autoDeleteAccountForStatus(account, statusCode, upstreamMsg)
+		if s.maybeAutoDeleteAccountOn429(ctx, account, responseBody) {
+			return true
 		}
 		s.handle429(ctx, account, headers, responseBody)
 		shouldDisable = false
@@ -1628,6 +1628,15 @@ func (s *RateLimitService) shouldAutoDeleteAccountOn401(ctx context.Context) boo
 
 func (s *RateLimitService) shouldAutoDeleteAccountOn429(ctx context.Context) bool {
 	return s != nil && s.settingService != nil && s.settingService.IsAutoDelete429AccountsEnabled(ctx)
+}
+
+func (s *RateLimitService) maybeAutoDeleteAccountOn429(ctx context.Context, account *Account, responseBody []byte) bool {
+	if !s.shouldAutoDeleteAccountOn429(ctx) {
+		return false
+	}
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	return s.autoDeleteAccountForStatus(account, http.StatusTooManyRequests, upstreamMsg)
 }
 
 func (s *RateLimitService) autoDeleteAccountForStatus(account *Account, statusCode int, upstreamMsg string) bool {

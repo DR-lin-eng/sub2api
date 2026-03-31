@@ -1359,6 +1359,7 @@ func (s *AntigravityGatewayService) ForwardContext(ctx context.Context, c gatewa
 	thinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
 	billingModel := mappedModel
+	SetOpsUpstreamModelContext(c, mappedModel)
 
 	if s.tokenProvider == nil {
 		return nil, s.writeClaudeErrorContext(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
@@ -2861,6 +2862,10 @@ func (s *AntigravityGatewayService) handleUpstreamError(
 
 	// 429：尝试解析模型级限流，解析失败时兜底为账号级限流
 	if statusCode == 429 {
+		if s.rateLimitService != nil && s.rateLimitService.maybeAutoDeleteAccountOn429(ctx, account, body) {
+			logger.LegacyPrintf("service.antigravity_gateway", "%s status=429 auto_deleted account=%d", prefix, account.ID)
+			return nil
+		}
 		if logBody, maxBytes := s.getLogConfig(); logBody {
 			logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity-Debug] 429 response body: %s", truncateString(string(body), maxBytes))
 		}

@@ -25,6 +25,7 @@ const (
 	opsRealtimeAccountListTTL    = 15 * time.Second
 	opsRealtimeUserListTTL       = 15 * time.Second
 	opsSettingCacheTTL           = 30 * time.Second
+	opsRustSidecarHealthTTL      = 2 * time.Second
 )
 
 type opsCachedAccounts struct {
@@ -40,6 +41,11 @@ type opsCachedUsers struct {
 type opsCachedSetting struct {
 	Value     string
 	Found     bool
+	ExpiresAt int64
+}
+
+type opsCachedRustSidecarHealth struct {
+	Value     *RustSidecarRuntimeResponse
 	ExpiresAt int64
 }
 
@@ -110,6 +116,8 @@ type OpsService struct {
 	userListCache             atomic.Value
 	opsSettingCache           sync.Map
 	opsSettingSF              singleflight.Group
+	rustSidecarHealthCache    atomic.Value
+	rustSidecarHealthSF       singleflight.Group
 }
 
 func NewOpsService(

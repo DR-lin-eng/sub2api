@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,65 +18,73 @@ func NewJWTAuthMiddleware(authService *service.AuthService, userService *service
 // jwtAuth JWT认证中间件实现
 func jwtAuth(authService *service.AuthService, userService *service.UserService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if ApplyJWTAuthContext(authService, userService, gatewayctx.FromGin(c)) {
+			c.Next()
+		}
+	}
+}
+
+func ApplyJWTAuthContext(authService *service.AuthService, userService *service.UserService, c gatewayctx.GatewayContext) bool {
+	if c == nil {
+		return false
+	}
 		// 从Authorization header中提取token
-		authHeader := c.GetHeader("Authorization")
+		authHeader := c.HeaderValue("Authorization")
 		if authHeader == "" {
-			AbortWithError(c, 401, "UNAUTHORIZED", "Authorization header is required")
-			return
+			AbortWithErrorContext(c, 401, "UNAUTHORIZED", "Authorization header is required")
+			return false
 		}
 
 		// 验证Bearer scheme
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			AbortWithError(c, 401, "INVALID_AUTH_HEADER", "Authorization header format must be 'Bearer {token}'")
-			return
+			AbortWithErrorContext(c, 401, "INVALID_AUTH_HEADER", "Authorization header format must be 'Bearer {token}'")
+			return false
 		}
 
 		tokenString := strings.TrimSpace(parts[1])
 		if tokenString == "" {
-			AbortWithError(c, 401, "EMPTY_TOKEN", "Token cannot be empty")
-			return
+			AbortWithErrorContext(c, 401, "EMPTY_TOKEN", "Token cannot be empty")
+			return false
 		}
 
 		// 验证token
 		claims, err := authService.ValidateToken(tokenString)
 		if err != nil {
 			if errors.Is(err, service.ErrTokenExpired) {
-				AbortWithError(c, 401, "TOKEN_EXPIRED", "Token has expired")
-				return
+				AbortWithErrorContext(c, 401, "TOKEN_EXPIRED", "Token has expired")
+				return false
 			}
-			AbortWithError(c, 401, "INVALID_TOKEN", "Invalid token")
-			return
+			AbortWithErrorContext(c, 401, "INVALID_TOKEN", "Invalid token")
+			return false
 		}
 
 		// 从数据库获取最新的用户信息
-		user, err := userService.GetByID(c.Request.Context(), claims.UserID)
+		user, err := userService.GetByID(c.Request().Context(), claims.UserID)
 		if err != nil {
-			AbortWithError(c, 401, "USER_NOT_FOUND", "User not found")
-			return
+			AbortWithErrorContext(c, 401, "USER_NOT_FOUND", "User not found")
+			return false
 		}
 
 		// 检查用户状态
 		if !user.IsActive() {
-			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
-			return
+			AbortWithErrorContext(c, 401, "USER_INACTIVE", "User account is not active")
+			return false
 		}
 
 		// Security: Validate TokenVersion to ensure token hasn't been invalidated
 		// This check ensures tokens issued before a password change are rejected
 		if claims.TokenVersion != user.TokenVersion {
-			AbortWithError(c, 401, "TOKEN_REVOKED", "Token has been revoked (password changed)")
-			return
+			AbortWithErrorContext(c, 401, "TOKEN_REVOKED", "Token has been revoked (password changed)")
+			return false
 		}
 
-		c.Set(string(ContextKeyUser), AuthSubject{
+		c.SetValue(string(ContextKeyUser), AuthSubject{
 			UserID:      user.ID,
 			Concurrency: user.Concurrency,
 		})
-		c.Set(string(ContextKeyUserRole), user.Role)
-
-		c.Next()
-	}
+		c.SetValue(string(ContextKeyUserRole), user.Role)
+		return true
 }
 
 // Deprecated: prefer GetAuthSubjectFromContext in auth_subject.go.

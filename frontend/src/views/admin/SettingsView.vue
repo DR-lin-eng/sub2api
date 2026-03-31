@@ -601,7 +601,239 @@
           </div>
         </div>
 
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                  {{ t('admin.settings.tlsFingerprint.title') }}
+                </h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.tlsFingerprint.description') }}
+                </p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" @click="openCreateTLSFingerprintModal">
+                {{ t('admin.settings.tlsFingerprint.newProfile') }}
+              </button>
+            </div>
+          </div>
+          <div class="space-y-5 p-6">
+            <div v-if="tlsFingerprintLoading" class="flex items-center gap-2 text-gray-500">
+              <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+              {{ t('common.loading') }}
+            </div>
+
+            <template v-else>
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">
+                    {{ t('admin.settings.tlsFingerprint.enabled') }}
+                  </label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.tlsFingerprint.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="tlsFingerprintGlobalEnabled" />
+              </div>
+
+              <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                <button
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  :disabled="tlsFingerprintSaving"
+                  @click="saveTLSFingerprintGlobalSettings"
+                >
+                  {{ tlsFingerprintSaving ? t('common.saving') : t('common.save') }}
+                </button>
+              </div>
+
+              <div
+                v-if="tlsFingerprintProfiles.length === 0"
+                class="rounded border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-500 dark:border-dark-600 dark:text-gray-400"
+              >
+                {{ t('admin.settings.tlsFingerprint.empty') }}
+              </div>
+
+              <div v-else class="overflow-x-auto rounded-xl border border-gray-200 dark:border-dark-600">
+                <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-600">
+                  <thead class="bg-gray-50 dark:bg-dark-800/60">
+                    <tr class="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.profile') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.status') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.grease') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.cipherSuites') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.curves') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.pointFormats') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.updatedAt') }}</th>
+                      <th class="px-4 py-3">{{ t('admin.settings.tlsFingerprint.columns.actions') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900">
+                    <tr v-for="profile in tlsFingerprintProfiles" :key="profile.profile_id">
+                      <td class="px-4 py-3 align-top">
+                        <div class="font-medium text-gray-900 dark:text-white">{{ profile.name }}</div>
+                        <div class="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{{ profile.profile_id }}</div>
+                      </td>
+                      <td class="px-4 py-3 align-top">
+                        <span
+                          class="rounded-full px-2.5 py-1 text-xs font-medium"
+                          :class="profile.enabled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'"
+                        >
+                          {{ profile.enabled ? t('common.enabled') : t('common.disabled') }}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 align-top text-sm text-gray-700 dark:text-gray-300">
+                        {{ profile.enable_grease ? t('common.enabled') : t('common.disabled') }}
+                      </td>
+                      <td class="px-4 py-3 align-top text-xs text-gray-600 dark:text-gray-300">
+                        {{ profile.cipher_suites.length ? profile.cipher_suites.join(', ') : t('admin.settings.tlsFingerprint.defaultValues') }}
+                      </td>
+                      <td class="px-4 py-3 align-top text-xs text-gray-600 dark:text-gray-300">
+                        {{ profile.curves.length ? profile.curves.join(', ') : t('admin.settings.tlsFingerprint.defaultValues') }}
+                      </td>
+                      <td class="px-4 py-3 align-top text-xs text-gray-600 dark:text-gray-300">
+                        {{ profile.point_formats.length ? profile.point_formats.join(', ') : t('admin.settings.tlsFingerprint.defaultValues') }}
+                      </td>
+                      <td class="px-4 py-3 align-top text-xs text-gray-500 dark:text-gray-400">
+                        {{ profile.updated_at || '-' }}
+                      </td>
+                      <td class="px-4 py-3 align-top">
+                        <div class="flex flex-wrap gap-2">
+                          <button type="button" class="btn btn-secondary btn-xs" @click="openEditTLSFingerprintModal(profile)">
+                            {{ t('common.edit') }}
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-xs"
+                            :disabled="tlsFingerprintSaving"
+                            @click="toggleTLSFingerprintProfile(profile)"
+                          >
+                            {{ profile.enabled ? t('admin.settings.tlsFingerprint.disableProfile') : t('admin.settings.tlsFingerprint.enableProfile') }}
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-danger btn-xs"
+                            :disabled="tlsFingerprintSaving"
+                            @click="deleteTLSFingerprintProfile(profile)"
+                          >
+                            {{ t('common.delete') }}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </div>
+        </div>
+
         </div><!-- /Tab: Gateway -->
+
+        <div
+          v-if="showTLSFingerprintModal"
+          class="fixed inset-0 z-50 flex items-center justify-center p-4"
+          @mousedown.self="closeTLSFingerprintModal"
+        >
+          <div class="w-full max-w-2xl rounded-2xl bg-white shadow-2xl dark:bg-dark-800">
+            <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <div>
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+                  {{ editingTLSFingerprintProfileID ? t('admin.settings.tlsFingerprint.editTitle') : t('admin.settings.tlsFingerprint.createTitle') }}
+                </h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.tlsFingerprint.modalHint') }}
+                </p>
+              </div>
+              <button type="button" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" @click="closeTLSFingerprintModal">
+                <Icon name="x" size="sm" />
+              </button>
+            </div>
+            <div class="space-y-4 px-6 py-5">
+              <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.tlsFingerprint.profileID') }}
+                  </label>
+                  <input
+                    v-model="tlsFingerprintForm.profile_id"
+                    type="text"
+                    class="input"
+                    :disabled="Boolean(editingTLSFingerprintProfileID)"
+                  />
+                </div>
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.tlsFingerprint.profileName') }}
+                  </label>
+                  <input v-model="tlsFingerprintForm.name" type="text" class="input" />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div class="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3 dark:border-dark-600">
+                  <div>
+                    <div class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.settings.tlsFingerprint.profileEnabled') }}</div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.tlsFingerprint.profileEnabledHint') }}</div>
+                  </div>
+                  <Toggle v-model="tlsFingerprintForm.enabled" />
+                </div>
+                <div class="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3 dark:border-dark-600">
+                  <div>
+                    <div class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.settings.tlsFingerprint.enableGrease') }}</div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.tlsFingerprint.enableGreaseHint') }}</div>
+                  </div>
+                  <Toggle v-model="tlsFingerprintForm.enable_grease" />
+                </div>
+              </div>
+
+              <div>
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.tlsFingerprint.cipherSuites') }}
+                </label>
+                <textarea
+                  v-model="tlsFingerprintForm.cipher_suites_text"
+                  rows="3"
+                  class="input min-h-[84px]"
+                  :placeholder="t('admin.settings.tlsFingerprint.numberListPlaceholder')"
+                ></textarea>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.tlsFingerprint.defaultHint') }}</p>
+              </div>
+
+              <div>
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.tlsFingerprint.curves') }}
+                </label>
+                <textarea
+                  v-model="tlsFingerprintForm.curves_text"
+                  rows="3"
+                  class="input min-h-[84px]"
+                  :placeholder="t('admin.settings.tlsFingerprint.numberListPlaceholder')"
+                ></textarea>
+              </div>
+
+              <div>
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.tlsFingerprint.pointFormats') }}
+                </label>
+                <textarea
+                  v-model="tlsFingerprintForm.point_formats_text"
+                  rows="2"
+                  class="input min-h-[64px]"
+                  :placeholder="t('admin.settings.tlsFingerprint.numberListPlaceholder')"
+                ></textarea>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-dark-700">
+              <button type="button" class="btn btn-secondary" @click="closeTLSFingerprintModal">
+                {{ t('common.cancel') }}
+              </button>
+              <button type="button" class="btn btn-primary" :disabled="tlsFingerprintSaving" @click="submitTLSFingerprintProfile">
+                {{ tlsFingerprintSaving ? t('common.saving') : t('common.save') }}
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Tab: Security — Registration, Turnstile, LinuxDo -->
         <div v-show="activeTab === 'security'" class="space-y-6">
@@ -1866,7 +2098,8 @@ import { adminAPI } from '@/api'
 import type {
   SystemSettings,
   UpdateSettingsRequest,
-  DefaultSubscriptionSetting
+  DefaultSubscriptionSetting,
+  TLSFingerprintProfile
 } from '@/api/admin/settings'
 import type { AdminGroup } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -1959,6 +2192,22 @@ const betaPolicyForm = reactive({
     scope: 'all' | 'oauth' | 'apikey' | 'bedrock'
     error_message?: string
   }>
+})
+
+const tlsFingerprintLoading = ref(true)
+const tlsFingerprintSaving = ref(false)
+const tlsFingerprintProfiles = ref<TLSFingerprintProfile[]>([])
+const tlsFingerprintGlobalEnabled = ref(true)
+const showTLSFingerprintModal = ref(false)
+const editingTLSFingerprintProfileID = ref('')
+const tlsFingerprintForm = reactive({
+  profile_id: '',
+  name: '',
+  enabled: true,
+  enable_grease: false,
+  cipher_suites_text: '',
+  curves_text: '',
+  point_formats_text: ''
 })
 
 interface DefaultSubscriptionGroupOption {
@@ -2172,6 +2421,71 @@ function moveMenuItem(index: number, direction: -1 | 1) {
   items.forEach((item, i) => {
     item.sort_order = i
   })
+}
+
+function formatTLSNumberList(values: number[]): string {
+  return values.length > 0 ? values.join(', ') : ''
+}
+
+function parseTLSNumberList(raw: string, max: number, fieldKey: string): number[] {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return []
+  }
+  const tokens = trimmed
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const unique: number[] = []
+  const seen = new Set<number>()
+  for (const token of tokens) {
+    if (!/^\d+$/.test(token)) {
+      throw new Error(t(fieldKey, { value: token }))
+    }
+    const value = Number(token)
+    if (!Number.isInteger(value) || value <= 0 || value > max) {
+      throw new Error(t(fieldKey, { value: token }))
+    }
+    if (seen.has(value)) {
+      continue
+    }
+    seen.add(value)
+    unique.push(value)
+  }
+  return unique
+}
+
+function resetTLSFingerprintForm() {
+  editingTLSFingerprintProfileID.value = ''
+  tlsFingerprintForm.profile_id = ''
+  tlsFingerprintForm.name = ''
+  tlsFingerprintForm.enabled = true
+  tlsFingerprintForm.enable_grease = false
+  tlsFingerprintForm.cipher_suites_text = ''
+  tlsFingerprintForm.curves_text = ''
+  tlsFingerprintForm.point_formats_text = ''
+}
+
+function openCreateTLSFingerprintModal() {
+  resetTLSFingerprintForm()
+  showTLSFingerprintModal.value = true
+}
+
+function openEditTLSFingerprintModal(profile: TLSFingerprintProfile) {
+  editingTLSFingerprintProfileID.value = profile.profile_id
+  tlsFingerprintForm.profile_id = profile.profile_id
+  tlsFingerprintForm.name = profile.name
+  tlsFingerprintForm.enabled = profile.enabled
+  tlsFingerprintForm.enable_grease = profile.enable_grease
+  tlsFingerprintForm.cipher_suites_text = formatTLSNumberList(profile.cipher_suites)
+  tlsFingerprintForm.curves_text = formatTLSNumberList(profile.curves)
+  tlsFingerprintForm.point_formats_text = formatTLSNumberList(profile.point_formats)
+  showTLSFingerprintModal.value = true
+}
+
+function closeTLSFingerprintModal() {
+  showTLSFingerprintModal.value = false
+  resetTLSFingerprintForm()
 }
 
 async function loadSettings() {
@@ -2624,6 +2938,144 @@ async function saveBetaPolicySettings() {
   }
 }
 
+async function loadTLSFingerprintSettings() {
+  tlsFingerprintLoading.value = true
+  try {
+    const result = await adminAPI.settings.getTLSFingerprintSettings()
+    tlsFingerprintGlobalEnabled.value = result.enabled
+    tlsFingerprintProfiles.value = result.items
+  } catch (error: any) {
+    console.error('Failed to load TLS fingerprint settings:', error)
+  } finally {
+    tlsFingerprintLoading.value = false
+  }
+}
+
+async function saveTLSFingerprintGlobalSettings() {
+  tlsFingerprintSaving.value = true
+  try {
+    const updated = await adminAPI.settings.updateTLSFingerprintSettings({
+      enabled: tlsFingerprintGlobalEnabled.value
+    })
+    tlsFingerprintGlobalEnabled.value = updated.enabled
+    await loadTLSFingerprintSettings()
+    appStore.showSuccess(t('admin.settings.tlsFingerprint.saved'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.tlsFingerprint.saveFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    tlsFingerprintSaving.value = false
+  }
+}
+
+async function submitTLSFingerprintProfile() {
+  const profileID = tlsFingerprintForm.profile_id.trim()
+  const name = tlsFingerprintForm.name.trim()
+  if (!editingTLSFingerprintProfileID.value && !profileID) {
+    appStore.showError(t('admin.settings.tlsFingerprint.profileIDRequired'))
+    return
+  }
+  if (!name) {
+    appStore.showError(t('admin.settings.tlsFingerprint.profileNameRequired'))
+    return
+  }
+
+  let cipherSuites: number[]
+  let curves: number[]
+  let pointFormats: number[]
+  try {
+    cipherSuites = parseTLSNumberList(
+      tlsFingerprintForm.cipher_suites_text,
+      65535,
+      'admin.settings.tlsFingerprint.invalidUint16'
+    )
+    curves = parseTLSNumberList(
+      tlsFingerprintForm.curves_text,
+      65535,
+      'admin.settings.tlsFingerprint.invalidUint16'
+    )
+    pointFormats = parseTLSNumberList(
+      tlsFingerprintForm.point_formats_text,
+      255,
+      'admin.settings.tlsFingerprint.invalidUint8'
+    )
+  } catch (error: any) {
+    appStore.showError(error.message || t('common.unknownError'))
+    return
+  }
+
+  tlsFingerprintSaving.value = true
+  try {
+    const payload = {
+      name,
+      enabled: tlsFingerprintForm.enabled,
+      enable_grease: tlsFingerprintForm.enable_grease,
+      cipher_suites: cipherSuites,
+      curves,
+      point_formats: pointFormats
+    }
+    if (editingTLSFingerprintProfileID.value) {
+      await adminAPI.settings.updateTLSFingerprintProfile(editingTLSFingerprintProfileID.value, payload)
+      appStore.showSuccess(t('admin.settings.tlsFingerprint.profileSaved'))
+    } else {
+      await adminAPI.settings.createTLSFingerprintProfile({
+        profile_id: profileID,
+        ...payload
+      })
+      appStore.showSuccess(t('admin.settings.tlsFingerprint.profileCreated'))
+    }
+    closeTLSFingerprintModal()
+    await loadTLSFingerprintSettings()
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.tlsFingerprint.saveFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    tlsFingerprintSaving.value = false
+  }
+}
+
+async function toggleTLSFingerprintProfile(profile: TLSFingerprintProfile) {
+  tlsFingerprintSaving.value = true
+  try {
+    await adminAPI.settings.updateTLSFingerprintProfile(profile.profile_id, {
+      name: profile.name,
+      enabled: !profile.enabled,
+      enable_grease: profile.enable_grease,
+      cipher_suites: profile.cipher_suites,
+      curves: profile.curves,
+      point_formats: profile.point_formats
+    })
+    await loadTLSFingerprintSettings()
+    appStore.showSuccess(t('admin.settings.tlsFingerprint.profileSaved'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.tlsFingerprint.saveFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    tlsFingerprintSaving.value = false
+  }
+}
+
+async function deleteTLSFingerprintProfile(profile: TLSFingerprintProfile) {
+  if (!confirm(t('admin.settings.tlsFingerprint.deleteConfirm', { profileID: profile.profile_id }))) {
+    return
+  }
+  tlsFingerprintSaving.value = true
+  try {
+    await adminAPI.settings.deleteTLSFingerprintProfile(profile.profile_id)
+    await loadTLSFingerprintSettings()
+    appStore.showSuccess(t('admin.settings.tlsFingerprint.profileDeleted'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.tlsFingerprint.deleteFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    tlsFingerprintSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadSettings()
   loadSubscriptionGroups()
@@ -2632,6 +3084,7 @@ onMounted(() => {
   loadStreamTimeoutSettings()
   loadRectifierSettings()
   loadBetaPolicySettings()
+  loadTLSFingerprintSettings()
 })
 </script>
 

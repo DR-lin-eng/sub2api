@@ -86,9 +86,12 @@ type hybridRuntime struct {
 	addr     string
 	manifest RouteManifest
 
-	h2cRuntime   IngressRuntime
-	http1Runtime IngressRuntime
-	readTimeout  time.Duration
+	sidecarRuntime            IngressRuntime
+	routeH2CToSidecar         bool
+	routeResponsesWSToSidecar bool
+	h2cRuntime                IngressRuntime
+	http1Runtime              IngressRuntime
+	readTimeout               time.Duration
 
 	mu  sync.Mutex
 	mux *protocolMux
@@ -105,14 +108,38 @@ func newSplitRuntime(cfg *config.Config, base *http.Server, mode string) Ingress
 
 	manifest := routeManifestForHTTPServer(base)
 	h2cServer := cloneHTTPServer(base)
+	h2cRuntime := IngressRuntime(&netHTTPRuntime{name: config.ServerRuntimeModeNetHTTP, server: h2cServer, manifest: manifest})
+	var sidecarRuntime IngressRuntime
+	routeH2CToSidecar := false
+	routeResponsesWSToSidecar := false
+	if cfg != nil && cfg.Rust.Sidecar.Enabled && cfg.Rust.Sidecar.H2CDelegateEnabled {
+		if rt := newRustSidecarIngressRuntime(cfg, base, manifest); rt != nil {
+			h2cRuntime = rt
+			sidecarRuntime = rt
+			routeH2CToSidecar = true
+		}
+	}
+	if cfg != nil && cfg.Rust.Sidecar.Enabled && cfg.Rust.Sidecar.ResponsesWSEnabled {
+		if sidecarRuntime == nil {
+			if rt := newRustSidecarIngressRuntime(cfg, base, manifest); rt != nil {
+				sidecarRuntime = rt
+			}
+		}
+		if sidecarRuntime != nil {
+			routeResponsesWSToSidecar = true
+		}
+	}
 
 	return &hybridRuntime{
-		name:         mode,
-		addr:         base.Addr,
-		manifest:     manifest,
-		h2cRuntime:   &netHTTPRuntime{name: config.ServerRuntimeModeNetHTTP, server: h2cServer, manifest: manifest},
-		http1Runtime: newNativeGnetHTTPRuntime(cfg, base),
-		readTimeout:  base.ReadHeaderTimeout,
+		name:                      mode,
+		addr:                      base.Addr,
+		manifest:                  manifest,
+		sidecarRuntime:            sidecarRuntime,
+		routeH2CToSidecar:         routeH2CToSidecar,
+		routeResponsesWSToSidecar: routeResponsesWSToSidecar,
+		h2cRuntime:                h2cRuntime,
+		http1Runtime:              newNativeGnetHTTPRuntime(cfg, base),
+		readTimeout:               base.ReadHeaderTimeout,
 	}
 }
 
@@ -136,7 +163,7 @@ func (r *hybridRuntime) Serve(listener net.Listener) error {
 		return errors.New("hybrid runtime delegates are nil")
 	}
 
-	mux := newProtocolMux(listener, r.readTimeout)
+	mux := newProtocolMux(listener, r.readTimeout, r.sidecarRuntime != nil, r.routeH2CToSidecar, r.routeResponsesWSToSidecar)
 	r.mu.Lock()
 	r.mux = mux
 	r.mu.Unlock()
@@ -146,17 +173,27 @@ func (r *hybridRuntime) Serve(listener net.Listener) error {
 		r.mu.Unlock()
 	}()
 
-	errCh := make(chan error, 3)
+	errWorkers := 3
+	if r.sidecarRuntime != nil {
+		errWorkers++
+	}
+	errCh := make(chan error, errWorkers)
 	go func() { errCh <- normalizeServeError(mux.Serve()) }()
 	go func() { errCh <- normalizeServeError(r.h2cRuntime.Serve(mux.H2CListener())) }()
 	go func() { errCh <- normalizeServeError(r.http1Runtime.Serve(mux.HTTP1Listener())) }()
+	if r.sidecarRuntime != nil {
+		go func() { errCh <- normalizeServeError(r.sidecarRuntime.Serve(mux.SidecarListener())) }()
+	}
 
 	var firstErr error
-	for i := 0; i < 3; i++ {
+	for i := 0; i < errWorkers; i++ {
 		err := <-errCh
 		if err != nil && !isExpectedListenerClose(err) && firstErr == nil {
 			firstErr = err
 			_ = mux.Close()
+			if r.sidecarRuntime != nil {
+				_ = r.sidecarRuntime.Close()
+			}
 			_ = r.h2cRuntime.Close()
 			_ = r.http1Runtime.Close()
 		}
@@ -177,6 +214,11 @@ func (r *hybridRuntime) Shutdown(ctx context.Context) error {
 
 	if r.http1Runtime != nil {
 		if err := r.http1Runtime.Shutdown(ctx); err != nil && !isExpectedListenerClose(err) {
+			errs = append(errs, err)
+		}
+	}
+	if r.sidecarRuntime != nil && r.sidecarRuntime != r.h2cRuntime {
+		if err := r.sidecarRuntime.Shutdown(ctx); err != nil && !isExpectedListenerClose(err) {
 			errs = append(errs, err)
 		}
 	}
@@ -202,6 +244,11 @@ func (r *hybridRuntime) Close() error {
 
 	if r.http1Runtime != nil {
 		if err := r.http1Runtime.Close(); err != nil && !isExpectedListenerClose(err) {
+			errs = append(errs, err)
+		}
+	}
+	if r.sidecarRuntime != nil && r.sidecarRuntime != r.h2cRuntime {
+		if err := r.sidecarRuntime.Close(); err != nil && !isExpectedListenerClose(err) {
 			errs = append(errs, err)
 		}
 	}
@@ -264,23 +311,32 @@ type protocolTarget int
 const (
 	protocolTargetHTTP1 protocolTarget = iota + 1
 	protocolTargetH2C
+	protocolTargetSidecar
 )
 
 type protocolMux struct {
-	base        net.Listener
-	readTimeout time.Duration
-	http1       *classifiedListener
-	h2c         *classifiedListener
+	base                      net.Listener
+	readTimeout               time.Duration
+	sidecarEnabled            bool
+	routeH2CToSidecar         bool
+	routeResponsesWSToSidecar bool
+	http1                     *classifiedListener
+	h2c                       *classifiedListener
+	sidecar                   *classifiedListener
 
 	closeOnce sync.Once
 }
 
-func newProtocolMux(base net.Listener, readTimeout time.Duration) *protocolMux {
+func newProtocolMux(base net.Listener, readTimeout time.Duration, sidecarEnabled bool, routeH2CToSidecar bool, routeResponsesWSToSidecar bool) *protocolMux {
 	return &protocolMux{
-		base:        base,
-		readTimeout: readTimeout,
-		http1:       newClassifiedListener(base.Addr()),
-		h2c:         newClassifiedListener(base.Addr()),
+		base:                      base,
+		readTimeout:               readTimeout,
+		sidecarEnabled:            sidecarEnabled,
+		routeH2CToSidecar:         routeH2CToSidecar,
+		routeResponsesWSToSidecar: routeResponsesWSToSidecar,
+		http1:                     newClassifiedListener(base.Addr()),
+		h2c:                       newClassifiedListener(base.Addr()),
+		sidecar:                   newClassifiedListener(base.Addr()),
 	}
 }
 
@@ -292,12 +348,17 @@ func (m *protocolMux) H2CListener() net.Listener {
 	return m.h2c
 }
 
+func (m *protocolMux) SidecarListener() net.Listener {
+	return m.sidecar
+}
+
 func (m *protocolMux) Close() error {
 	var err error
 	m.closeOnce.Do(func() {
 		err = m.base.Close()
 		_ = m.http1.Close()
 		_ = m.h2c.Close()
+		_ = m.sidecar.Close()
 	})
 	return err
 }
@@ -313,12 +374,16 @@ func (m *protocolMux) Serve() error {
 }
 
 func (m *protocolMux) dispatch(conn net.Conn) {
-	target, wrapped, err := classifyConn(conn, m.readTimeout)
+	target, wrapped, err := classifyConn(conn, m.readTimeout, m)
 	if err != nil {
 		_ = conn.Close()
 		return
 	}
 	switch target {
+	case protocolTargetSidecar:
+		if !m.sidecar.enqueue(wrapped) {
+			_ = wrapped.Close()
+		}
 	case protocolTargetH2C:
 		if !m.h2c.enqueue(wrapped) {
 			_ = wrapped.Close()
@@ -330,7 +395,7 @@ func (m *protocolMux) dispatch(conn net.Conn) {
 	}
 }
 
-func classifyConn(conn net.Conn, timeout time.Duration) (protocolTarget, net.Conn, error) {
+func classifyConn(conn net.Conn, timeout time.Duration, mux *protocolMux) (protocolTarget, net.Conn, error) {
 	if conn == nil {
 		return protocolTargetHTTP1, nil, errors.New("conn is nil")
 	}
@@ -367,18 +432,44 @@ func classifyConn(conn net.Conn, timeout time.Duration) (protocolTarget, net.Con
 	}
 	peeked := buffer[:n]
 	wrapped := &prefixedConn{Conn: conn, prefix: bytes.NewReader(peeked)}
-	return classifyPreface(peeked), wrapped, nil
+	return classifyPrefaceWithOptions(peeked, mux), wrapped, nil
 }
 
 func classifyPreface(peeked []byte) protocolTarget {
+	return classifyPrefaceWithOptions(peeked, nil)
+}
+
+func classifyPrefaceWithOptions(peeked []byte, mux *protocolMux) protocolTarget {
 	if bytes.HasPrefix(peeked, []byte(http2.ClientPreface)) {
+		if mux != nil && mux.sidecarEnabled && mux.routeH2CToSidecar {
+			return protocolTargetSidecar
+		}
 		return protocolTargetH2C
 	}
 	lower := strings.ToLower(string(peeked))
 	if strings.Contains(lower, "upgrade: h2c") || strings.Contains(lower, "http2-settings:") {
+		if mux != nil && mux.sidecarEnabled && mux.routeH2CToSidecar {
+			return protocolTargetSidecar
+		}
+		return protocolTargetH2C
+	}
+	if mux != nil && mux.sidecarEnabled && mux.routeResponsesWSToSidecar && isOpenAIResponsesWebSocketPreface(lower) {
+		return protocolTargetSidecar
+	}
+	if strings.Contains(lower, "upgrade: h2c") || strings.Contains(lower, "http2-settings:") {
 		return protocolTargetH2C
 	}
 	return protocolTargetHTTP1
+}
+
+func isOpenAIResponsesWebSocketPreface(lower string) bool {
+	if !strings.Contains(lower, "upgrade: websocket") {
+		return false
+	}
+	if strings.HasPrefix(lower, "get /v1/responses ") || strings.HasPrefix(lower, "get /responses ") {
+		return true
+	}
+	return false
 }
 
 type prefixedConn struct {

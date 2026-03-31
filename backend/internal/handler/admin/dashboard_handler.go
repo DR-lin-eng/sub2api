@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -34,10 +36,14 @@ func NewDashboardHandler(dashboardService *service.DashboardService, aggregation
 // parseTimeRange parses start_date, end_date query parameters
 // Uses user's timezone if provided, otherwise falls back to server timezone
 func parseTimeRange(c *gin.Context) (time.Time, time.Time) {
-	userTZ := c.Query("timezone") // Get user's timezone from request
+	return parseTimeRangeGateway(gatewayctx.FromGin(c))
+}
+
+func parseTimeRangeGateway(c gatewayctx.GatewayContext) (time.Time, time.Time) {
+	userTZ := c.QueryValue("timezone") // Get user's timezone from request
 	now := timezone.NowInUserLocation(userTZ)
-	startDate := c.Query("start_date")
-	endDate := c.Query("end_date")
+	startDate := c.QueryValue("start_date")
+	endDate := c.QueryValue("end_date")
 
 	var startTime, endTime time.Time
 
@@ -67,16 +73,20 @@ func parseTimeRange(c *gin.Context) (time.Time, time.Time) {
 // GetStats handles getting dashboard statistics
 // GET /api/v1/admin/dashboard/stats
 func (h *DashboardHandler) GetStats(c *gin.Context) {
-	stats, err := h.dashboardService.GetDashboardStats(c.Request.Context())
+	h.GetStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
+	stats, err := h.dashboardService.GetDashboardStats(c.Request().Context())
 	if err != nil {
-		response.Error(c, 500, "Failed to get dashboard statistics")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get dashboard statistics")
 		return
 	}
 
 	// Calculate uptime in seconds
 	uptime := int64(time.Since(h.startTime).Seconds())
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
 		// 用户统计
 		"total_users":     stats.TotalUsers,
 		"today_new_users": stats.TodayNewUsers,
@@ -136,41 +146,45 @@ type DashboardAggregationBackfillRequest struct {
 // BackfillAggregation handles triggering aggregation backfill
 // POST /api/v1/admin/dashboard/aggregation/backfill
 func (h *DashboardHandler) BackfillAggregation(c *gin.Context) {
+	h.BackfillAggregationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) BackfillAggregationGateway(c gatewayctx.GatewayContext) {
 	if h.aggregationService == nil {
-		response.InternalError(c, "Aggregation service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Aggregation service not available")
 		return
 	}
 
 	var req DashboardAggregationBackfillRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	start, err := time.Parse(time.RFC3339, req.Start)
 	if err != nil {
-		response.BadRequest(c, "Invalid start time")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid start time")
 		return
 	}
 	end, err := time.Parse(time.RFC3339, req.End)
 	if err != nil {
-		response.BadRequest(c, "Invalid end time")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid end time")
 		return
 	}
 
 	if err := h.aggregationService.TriggerBackfill(start, end); err != nil {
 		if errors.Is(err, service.ErrDashboardBackfillDisabled) {
-			response.Forbidden(c, "Backfill is disabled")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusForbidden, "Backfill is disabled")
 			return
 		}
 		if errors.Is(err, service.ErrDashboardBackfillTooLarge) {
-			response.BadRequest(c, "Backfill range too large")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Backfill range too large")
 			return
 		}
-		response.InternalError(c, "Failed to trigger backfill")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to trigger backfill")
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"status": "accepted",
 	})
 }
@@ -178,8 +192,12 @@ func (h *DashboardHandler) BackfillAggregation(c *gin.Context) {
 // GetRealtimeMetrics handles getting real-time system metrics
 // GET /api/v1/admin/dashboard/realtime
 func (h *DashboardHandler) GetRealtimeMetrics(c *gin.Context) {
+	h.GetRealtimeMetricsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetRealtimeMetricsGateway(c gatewayctx.GatewayContext) {
 	// Return mock data for now
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
 		"active_requests":       0,
 		"requests_per_minute":   0,
 		"average_response_time": 0,
@@ -191,8 +209,12 @@ func (h *DashboardHandler) GetRealtimeMetrics(c *gin.Context) {
 // GET /api/v1/admin/dashboard/trend
 // Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), user_id, api_key_id, model, account_id, group_id, request_type, stream, billing_type
 func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
-	granularity := c.DefaultQuery("granularity", "day")
+	h.GetUsageTrendGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetUsageTrendGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
+	granularity := defaultQueryValue(c, "granularity", "day")
 
 	// Parse optional filter params
 	var userID, apiKeyID, accountID, groupID int64
@@ -201,63 +223,63 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 	var stream *bool
 	var billingType *int8
 
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
+	if userIDStr := c.QueryValue("user_id"); userIDStr != "" {
 		if id, err := strconv.ParseInt(userIDStr, 10, 64); err == nil {
 			userID = id
 		}
 	}
-	if apiKeyIDStr := c.Query("api_key_id"); apiKeyIDStr != "" {
+	if apiKeyIDStr := c.QueryValue("api_key_id"); apiKeyIDStr != "" {
 		if id, err := strconv.ParseInt(apiKeyIDStr, 10, 64); err == nil {
 			apiKeyID = id
 		}
 	}
-	if accountIDStr := c.Query("account_id"); accountIDStr != "" {
+	if accountIDStr := c.QueryValue("account_id"); accountIDStr != "" {
 		if id, err := strconv.ParseInt(accountIDStr, 10, 64); err == nil {
 			accountID = id
 		}
 	}
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group_id"); groupIDStr != "" {
 		if id, err := strconv.ParseInt(groupIDStr, 10, 64); err == nil {
 			groupID = id
 		}
 	}
-	if modelStr := c.Query("model"); modelStr != "" {
+	if modelStr := c.QueryValue("model"); modelStr != "" {
 		model = modelStr
 	}
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
 		requestType = &value
-	} else if streamStr := c.Query("stream"); streamStr != "" {
+	} else if streamStr := c.QueryValue("stream"); streamStr != "" {
 		if streamVal, err := strconv.ParseBool(streamStr); err == nil {
 			stream = &streamVal
 		} else {
-			response.BadRequest(c, "Invalid stream value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid stream value, use true or false")
 			return
 		}
 	}
-	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
+	if billingTypeStr := c.QueryValue("billing_type"); billingTypeStr != "" {
 		if v, err := strconv.ParseInt(billingTypeStr, 10, 8); err == nil {
 			bt := int8(v)
 			billingType = &bt
 		} else {
-			response.BadRequest(c, "Invalid billing_type")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid billing_type")
 			return
 		}
 	}
 
-	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
+	trend, hit, err := h.getUsageTrendCached(c.Request().Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
 	if err != nil {
-		response.Error(c, 500, "Failed to get usage trend")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get usage trend")
 		return
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"trend":       trend,
 		"start_date":  startTime.Format("2006-01-02"),
 		"end_date":    endTime.Add(-24 * time.Hour).Format("2006-01-02"),
@@ -269,7 +291,11 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 // GET /api/v1/admin/dashboard/models
 // Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type
 func (h *DashboardHandler) GetModelStats(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
+	h.GetModelStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetModelStatsGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
 
 	// Parse optional filter params
 	var userID, apiKeyID, accountID, groupID int64
@@ -278,67 +304,67 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 	var stream *bool
 	var billingType *int8
 
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
+	if userIDStr := c.QueryValue("user_id"); userIDStr != "" {
 		if id, err := strconv.ParseInt(userIDStr, 10, 64); err == nil {
 			userID = id
 		}
 	}
-	if apiKeyIDStr := c.Query("api_key_id"); apiKeyIDStr != "" {
+	if apiKeyIDStr := c.QueryValue("api_key_id"); apiKeyIDStr != "" {
 		if id, err := strconv.ParseInt(apiKeyIDStr, 10, 64); err == nil {
 			apiKeyID = id
 		}
 	}
-	if accountIDStr := c.Query("account_id"); accountIDStr != "" {
+	if accountIDStr := c.QueryValue("account_id"); accountIDStr != "" {
 		if id, err := strconv.ParseInt(accountIDStr, 10, 64); err == nil {
 			accountID = id
 		}
 	}
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group_id"); groupIDStr != "" {
 		if id, err := strconv.ParseInt(groupIDStr, 10, 64); err == nil {
 			groupID = id
 		}
 	}
-	if rawModelSource := strings.TrimSpace(c.Query("model_source")); rawModelSource != "" {
+	if rawModelSource := strings.TrimSpace(c.QueryValue("model_source")); rawModelSource != "" {
 		if !usagestats.IsValidModelSource(rawModelSource) {
-			response.BadRequest(c, "Invalid model_source, use requested/upstream/mapping")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid model_source, use requested/upstream/mapping")
 			return
 		}
 		modelSource = rawModelSource
 	}
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
 		requestType = &value
-	} else if streamStr := c.Query("stream"); streamStr != "" {
+	} else if streamStr := c.QueryValue("stream"); streamStr != "" {
 		if streamVal, err := strconv.ParseBool(streamStr); err == nil {
 			stream = &streamVal
 		} else {
-			response.BadRequest(c, "Invalid stream value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid stream value, use true or false")
 			return
 		}
 	}
-	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
+	if billingTypeStr := c.QueryValue("billing_type"); billingTypeStr != "" {
 		if v, err := strconv.ParseInt(billingTypeStr, 10, 8); err == nil {
 			bt := int8(v)
 			billingType = &bt
 		} else {
-			response.BadRequest(c, "Invalid billing_type")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid billing_type")
 			return
 		}
 	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, billingType)
+	stats, hit, err := h.getModelStatsCached(c.Request().Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, billingType)
 	if err != nil {
-		response.Error(c, 500, "Failed to get model statistics")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get model statistics")
 		return
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"models":     stats,
 		"start_date": startTime.Format("2006-01-02"),
 		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),
@@ -349,67 +375,71 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 // GET /api/v1/admin/dashboard/groups
 // Query params: start_date, end_date (YYYY-MM-DD), user_id, api_key_id, account_id, group_id, request_type, stream, billing_type
 func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
+	h.GetGroupStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetGroupStatsGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
 
 	var userID, apiKeyID, accountID, groupID int64
 	var requestType *int16
 	var stream *bool
 	var billingType *int8
 
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
+	if userIDStr := c.QueryValue("user_id"); userIDStr != "" {
 		if id, err := strconv.ParseInt(userIDStr, 10, 64); err == nil {
 			userID = id
 		}
 	}
-	if apiKeyIDStr := c.Query("api_key_id"); apiKeyIDStr != "" {
+	if apiKeyIDStr := c.QueryValue("api_key_id"); apiKeyIDStr != "" {
 		if id, err := strconv.ParseInt(apiKeyIDStr, 10, 64); err == nil {
 			apiKeyID = id
 		}
 	}
-	if accountIDStr := c.Query("account_id"); accountIDStr != "" {
+	if accountIDStr := c.QueryValue("account_id"); accountIDStr != "" {
 		if id, err := strconv.ParseInt(accountIDStr, 10, 64); err == nil {
 			accountID = id
 		}
 	}
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group_id"); groupIDStr != "" {
 		if id, err := strconv.ParseInt(groupIDStr, 10, 64); err == nil {
 			groupID = id
 		}
 	}
-	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+	if requestTypeStr := strings.TrimSpace(c.QueryValue("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
 		value := int16(parsed)
 		requestType = &value
-	} else if streamStr := c.Query("stream"); streamStr != "" {
+	} else if streamStr := c.QueryValue("stream"); streamStr != "" {
 		if streamVal, err := strconv.ParseBool(streamStr); err == nil {
 			stream = &streamVal
 		} else {
-			response.BadRequest(c, "Invalid stream value, use true or false")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid stream value, use true or false")
 			return
 		}
 	}
-	if billingTypeStr := c.Query("billing_type"); billingTypeStr != "" {
+	if billingTypeStr := c.QueryValue("billing_type"); billingTypeStr != "" {
 		if v, err := strconv.ParseInt(billingTypeStr, 10, 8); err == nil {
 			bt := int8(v)
 			billingType = &bt
 		} else {
-			response.BadRequest(c, "Invalid billing_type")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid billing_type")
 			return
 		}
 	}
 
-	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	stats, hit, err := h.getGroupStatsCached(c.Request().Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
 	if err != nil {
-		response.Error(c, 500, "Failed to get group statistics")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get group statistics")
 		return
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"groups":     stats,
 		"start_date": startTime.Format("2006-01-02"),
 		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),
@@ -420,22 +450,26 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 // GET /api/v1/admin/dashboard/api-keys-trend
 // Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), limit (default 5)
 func (h *DashboardHandler) GetAPIKeyUsageTrend(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
-	granularity := c.DefaultQuery("granularity", "day")
-	limitStr := c.DefaultQuery("limit", "5")
+	h.GetAPIKeyUsageTrendGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetAPIKeyUsageTrendGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
+	granularity := defaultQueryValue(c, "granularity", "day")
+	limitStr := defaultQueryValue(c, "limit", "5")
 	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit <= 0 {
 		limit = 5
 	}
 
-	trend, hit, err := h.getAPIKeyUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, limit)
+	trend, hit, err := h.getAPIKeyUsageTrendCached(c.Request().Context(), startTime, endTime, granularity, limit)
 	if err != nil {
-		response.Error(c, 500, "Failed to get API key usage trend")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get API key usage trend")
 		return
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"trend":       trend,
 		"start_date":  startTime.Format("2006-01-02"),
 		"end_date":    endTime.Add(-24 * time.Hour).Format("2006-01-02"),
@@ -447,22 +481,26 @@ func (h *DashboardHandler) GetAPIKeyUsageTrend(c *gin.Context) {
 // GET /api/v1/admin/dashboard/users-trend
 // Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), limit (default 12)
 func (h *DashboardHandler) GetUserUsageTrend(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
-	granularity := c.DefaultQuery("granularity", "day")
-	limitStr := c.DefaultQuery("limit", "12")
+	h.GetUserUsageTrendGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetUserUsageTrendGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
+	granularity := defaultQueryValue(c, "granularity", "day")
+	limitStr := defaultQueryValue(c, "limit", "12")
 	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit <= 0 {
 		limit = 12
 	}
 
-	trend, hit, err := h.getUserUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, limit)
+	trend, hit, err := h.getUserUsageTrendCached(c.Request().Context(), startTime, endTime, granularity, limit)
 	if err != nil {
-		response.Error(c, 500, "Failed to get user usage trend")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get user usage trend")
 		return
 	}
-	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"trend":       trend,
 		"start_date":  startTime.Format("2006-01-02"),
 		"end_date":    endTime.Add(-24 * time.Hour).Format("2006-01-02"),
@@ -493,8 +531,12 @@ func parseRankingLimit(raw string) int {
 // GetUserSpendingRanking handles getting user spending ranking data.
 // GET /api/v1/admin/dashboard/users-ranking
 func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
-	limit := parseRankingLimit(c.DefaultQuery("limit", "12"))
+	h.GetUserSpendingRankingGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetUserSpendingRankingGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
+	limit := parseRankingLimit(defaultQueryValue(c, "limit", "12"))
 
 	keyRaw, _ := json.Marshal(struct {
 		Start string `json:"start"`
@@ -507,18 +549,18 @@ func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 	if cached, ok := dashboardUsersRankingCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+		c.SetHeader("X-Snapshot-Cache", "hit")
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 		return
 	}
 
-	ranking, err := h.dashboardService.GetUserSpendingRanking(c.Request.Context(), startTime, endTime, limit)
+	ranking, err := h.dashboardService.GetUserSpendingRanking(c.Request().Context(), startTime, endTime, limit)
 	if err != nil {
-		response.Error(c, 500, "Failed to get user spending ranking")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get user spending ranking")
 		return
 	}
 
-	payload := gin.H{
+	payload := map[string]any{
 		"ranking":           ranking.Ranking,
 		"total_actual_cost": ranking.TotalActualCost,
 		"total_requests":    ranking.TotalRequests,
@@ -527,22 +569,26 @@ func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 		"end_date":          endTime.Add(-24 * time.Hour).Format("2006-01-02"),
 	}
 	dashboardUsersRankingCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.SetHeader("X-Snapshot-Cache", "miss")
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 // GetBatchUsersUsage handles getting usage stats for multiple users
 // POST /api/v1/admin/dashboard/users-usage
 func (h *DashboardHandler) GetBatchUsersUsage(c *gin.Context) {
+	h.GetBatchUsersUsageGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetBatchUsersUsageGateway(c gatewayctx.GatewayContext) {
 	var req BatchUsersUsageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	userIDs := normalizeInt64IDList(req.UserIDs)
 	if len(userIDs) == 0 {
-		response.Success(c, gin.H{"stats": map[string]any{}})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"stats": map[string]any{}})
 		return
 	}
 
@@ -553,21 +599,21 @@ func (h *DashboardHandler) GetBatchUsersUsage(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 	if cached, ok := dashboardBatchUsersUsageCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+		c.SetHeader("X-Snapshot-Cache", "hit")
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 		return
 	}
 
-	stats, err := h.dashboardService.GetBatchUserUsageStats(c.Request.Context(), userIDs, time.Time{}, time.Time{})
+	stats, err := h.dashboardService.GetBatchUserUsageStats(c.Request().Context(), userIDs, time.Time{}, time.Time{})
 	if err != nil {
-		response.Error(c, 500, "Failed to get user usage stats")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get user usage stats")
 		return
 	}
 
-	payload := gin.H{"stats": stats}
+	payload := map[string]any{"stats": stats}
 	dashboardBatchUsersUsageCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.SetHeader("X-Snapshot-Cache", "miss")
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 // BatchAPIKeysUsageRequest represents the request body for batch api key usage stats
@@ -578,15 +624,19 @@ type BatchAPIKeysUsageRequest struct {
 // GetBatchAPIKeysUsage handles getting usage stats for multiple API keys
 // POST /api/v1/admin/dashboard/api-keys-usage
 func (h *DashboardHandler) GetBatchAPIKeysUsage(c *gin.Context) {
+	h.GetBatchAPIKeysUsageGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetBatchAPIKeysUsageGateway(c gatewayctx.GatewayContext) {
 	var req BatchAPIKeysUsageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	apiKeyIDs := normalizeInt64IDList(req.APIKeyIDs)
 	if len(apiKeyIDs) == 0 {
-		response.Success(c, gin.H{"stats": map[string]any{}})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"stats": map[string]any{}})
 		return
 	}
 
@@ -597,61 +647,65 @@ func (h *DashboardHandler) GetBatchAPIKeysUsage(c *gin.Context) {
 	})
 	cacheKey := string(keyRaw)
 	if cached, ok := dashboardBatchAPIKeysUsageCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+		c.SetHeader("X-Snapshot-Cache", "hit")
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 		return
 	}
 
-	stats, err := h.dashboardService.GetBatchAPIKeyUsageStats(c.Request.Context(), apiKeyIDs, time.Time{}, time.Time{})
+	stats, err := h.dashboardService.GetBatchAPIKeyUsageStats(c.Request().Context(), apiKeyIDs, time.Time{}, time.Time{})
 	if err != nil {
-		response.Error(c, 500, "Failed to get API key usage stats")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get API key usage stats")
 		return
 	}
 
-	payload := gin.H{"stats": stats}
+	payload := map[string]any{"stats": stats}
 	dashboardBatchAPIKeysUsageCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.SetHeader("X-Snapshot-Cache", "miss")
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 // GetUserBreakdown handles getting per-user usage breakdown within a dimension.
 // GET /api/v1/admin/dashboard/user-breakdown
 // Query params: start_date, end_date, group_id, model, endpoint, endpoint_type, limit
 func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
-	startTime, endTime := parseTimeRange(c)
+	h.GetUserBreakdownGateway(gatewayctx.FromGin(c))
+}
+
+func (h *DashboardHandler) GetUserBreakdownGateway(c gatewayctx.GatewayContext) {
+	startTime, endTime := parseTimeRangeGateway(c)
 
 	dim := usagestats.UserBreakdownDimension{}
-	if v := c.Query("group_id"); v != "" {
+	if v := c.QueryValue("group_id"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			dim.GroupID = id
 		}
 	}
-	dim.Model = c.Query("model")
-	rawModelSource := strings.TrimSpace(c.DefaultQuery("model_source", usagestats.ModelSourceRequested))
+	dim.Model = c.QueryValue("model")
+	rawModelSource := strings.TrimSpace(defaultQueryValue(c, "model_source", usagestats.ModelSourceRequested))
 	if !usagestats.IsValidModelSource(rawModelSource) {
-		response.BadRequest(c, "Invalid model_source, use requested/upstream/mapping")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid model_source, use requested/upstream/mapping")
 		return
 	}
 	dim.ModelType = rawModelSource
-	dim.Endpoint = c.Query("endpoint")
-	dim.EndpointType = c.DefaultQuery("endpoint_type", "inbound")
+	dim.Endpoint = c.QueryValue("endpoint")
+	dim.EndpointType = defaultQueryValue(c, "endpoint_type", "inbound")
 
 	limit := 50
-	if v := c.Query("limit"); v != "" {
+	if v := c.QueryValue("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
 
 	stats, err := h.dashboardService.GetUserBreakdownStats(
-		c.Request.Context(), startTime, endTime, dim, limit,
+		c.Request().Context(), startTime, endTime, dim, limit,
 	)
 	if err != nil {
-		response.Error(c, 500, "Failed to get user breakdown stats")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to get user breakdown stats")
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"users":      stats,
 		"start_date": startTime.Format("2006-01-02"),
 		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),

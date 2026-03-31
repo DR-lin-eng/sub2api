@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,24 @@ type SoraClientHandler struct {
 	cachedFamilies     []service.SoraModelFamily
 	modelCacheTime     time.Time
 	modelCacheUpstream bool // 是否来自上游（决定 TTL）
+}
+
+type soraClientGatewayResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g soraClientGatewayResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g soraClientGatewayResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
 }
 
 // NewSoraClientHandler 创建 Sora 客户端 Handler。
@@ -78,15 +97,19 @@ type GenerateRequest struct {
 // Generate 异步生成 — 创建 pending 记录后立即返回。
 // POST /api/v1/sora/generate
 func (h *SoraClientHandler) Generate(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.GenerateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) GenerateGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
 	var req GenerateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "参数错误: "+err.Error())
 		return
 	}
 
@@ -96,25 +119,25 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 	req.VideoCount = normalizeVideoCount(req.MediaType, req.VideoCount)
 
 	// 并发数检查（最多 3 个）
-	activeCount, err := h.genService.CountActiveByUser(c.Request.Context(), userID)
+	activeCount, err := h.genService.CountActiveByUser(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(soraClientGatewayResponder{ctx: c}, err)
 		return
 	}
 	if activeCount >= 3 {
-		response.Error(c, http.StatusTooManyRequests, "同时进行中的任务不能超过 3 个")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusTooManyRequests, "同时进行中的任务不能超过 3 个")
 		return
 	}
 
 	// 配额检查（粗略检查，实际文件大小在上传后才知道）
 	if h.quotaService != nil {
-		if err := h.quotaService.CheckQuota(c.Request.Context(), userID, 0); err != nil {
+		if err := h.quotaService.CheckQuota(c.Request().Context(), userID, 0); err != nil {
 			var quotaErr *service.QuotaExceededError
 			if errors.As(err, &quotaErr) {
-				response.Error(c, http.StatusTooManyRequests, "存储配额已满，请删除不需要的作品释放空间")
+				response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusTooManyRequests, "存储配额已满，请删除不需要的作品释放空间")
 				return
 			}
-			response.Error(c, http.StatusForbidden, err.Error())
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusForbidden, err.Error())
 			return
 		}
 	}
@@ -125,42 +148,42 @@ func (h *SoraClientHandler) Generate(c *gin.Context) {
 
 	if req.APIKeyID != nil && h.apiKeyService != nil {
 		// 前端传递了 api_key_id，需要校验
-		apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), *req.APIKeyID)
+		apiKey, err := h.apiKeyService.GetByID(c.Request().Context(), *req.APIKeyID)
 		if err != nil {
-			response.Error(c, http.StatusBadRequest, "API Key 不存在")
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "API Key 不存在")
 			return
 		}
 		if apiKey.UserID != userID {
-			response.Error(c, http.StatusForbidden, "API Key 不属于当前用户")
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusForbidden, "API Key 不属于当前用户")
 			return
 		}
 		if apiKey.Status != service.StatusAPIKeyActive {
-			response.Error(c, http.StatusForbidden, "API Key 不可用")
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusForbidden, "API Key 不可用")
 			return
 		}
 		apiKeyID = &apiKey.ID
 		groupID = apiKey.GroupID
-	} else if id, ok := c.Get("api_key_id"); ok {
+	} else if id, ok := c.Value("api_key_id"); ok {
 		// 兼容 API Key 认证路径（/sora/v1/ 网关路由）
 		if v, ok := id.(int64); ok {
 			apiKeyID = &v
 		}
 	}
 
-	gen, err := h.genService.CreatePending(c.Request.Context(), userID, apiKeyID, req.Model, req.Prompt, req.MediaType)
+	gen, err := h.genService.CreatePending(c.Request().Context(), userID, apiKeyID, req.Model, req.Prompt, req.MediaType)
 	if err != nil {
 		if errors.Is(err, service.ErrSoraGenerationConcurrencyLimit) {
-			response.Error(c, http.StatusTooManyRequests, "同时进行中的任务不能超过 3 个")
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusTooManyRequests, "同时进行中的任务不能超过 3 个")
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(soraClientGatewayResponder{ctx: c}, err)
 		return
 	}
 
 	// 启动后台异步生成 goroutine
 	go h.processGeneration(gen.ID, userID, groupID, req.Model, req.Prompt, req.MediaType, req.ImageInput, req.VideoCount)
 
-	response.Success(c, gin.H{
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{
 		"generation_id": gen.ID,
 		"status":        gen.Status,
 	})
@@ -490,36 +513,40 @@ func parseMediaURLsFromBody(body []byte) []string {
 // ListGenerations 查询生成记录列表。
 // GET /api/v1/sora/generations
 func (h *SoraClientHandler) ListGenerations(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.ListGenerationsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) ListGenerationsGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	page, _ := strconv.Atoi(defaultQueryValue(c, "page", "1"))
+	pageSize, _ := strconv.Atoi(defaultQueryValue(c, "page_size", "20"))
 
 	params := service.SoraGenerationListParams{
 		UserID:      userID,
-		Status:      c.Query("status"),
-		StorageType: c.Query("storage_type"),
-		MediaType:   c.Query("media_type"),
+		Status:      c.QueryValue("status"),
+		StorageType: c.QueryValue("storage_type"),
+		MediaType:   c.QueryValue("media_type"),
 		Page:        page,
 		PageSize:    pageSize,
 	}
 
-	gens, total, err := h.genService.List(c.Request.Context(), params)
+	gens, total, err := h.genService.List(c.Request().Context(), params)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(soraClientGatewayResponder{ctx: c}, err)
 		return
 	}
 
 	// 为 S3 记录动态生成预签名 URL
 	for _, gen := range gens {
-		_ = h.genService.ResolveMediaURLs(c.Request.Context(), gen)
+		_ = h.genService.ResolveMediaURLs(c.Request().Context(), gen)
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{
 		"data":  gens,
 		"total": total,
 		"page":  page,
@@ -529,46 +556,54 @@ func (h *SoraClientHandler) ListGenerations(c *gin.Context) {
 // GetGeneration 查询生成记录详情。
 // GET /api/v1/sora/generations/:id
 func (h *SoraClientHandler) GetGeneration(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.GetGenerationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) GetGenerationGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.Error(c, http.StatusBadRequest, "无效的 ID")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "无效的 ID")
 		return
 	}
 
-	gen, err := h.genService.GetByID(c.Request.Context(), id, userID)
+	gen, err := h.genService.GetByID(c.Request().Context(), id, userID)
 	if err != nil {
-		response.Error(c, http.StatusNotFound, err.Error())
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusNotFound, err.Error())
 		return
 	}
 
-	_ = h.genService.ResolveMediaURLs(c.Request.Context(), gen)
-	response.Success(c, gen)
+	_ = h.genService.ResolveMediaURLs(c.Request().Context(), gen)
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gen)
 }
 
 // DeleteGeneration 删除生成记录。
 // DELETE /api/v1/sora/generations/:id
 func (h *SoraClientHandler) DeleteGeneration(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.DeleteGenerationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) DeleteGenerationGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.Error(c, http.StatusBadRequest, "无效的 ID")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "无效的 ID")
 		return
 	}
 
-	gen, err := h.genService.GetByID(c.Request.Context(), id, userID)
+	gen, err := h.genService.GetByID(c.Request().Context(), id, userID)
 	if err != nil {
-		response.Error(c, http.StatusNotFound, err.Error())
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusNotFound, err.Error())
 		return
 	}
 
@@ -583,103 +618,115 @@ func (h *SoraClientHandler) DeleteGeneration(c *gin.Context) {
 		}
 	}
 
-	if err := h.genService.Delete(c.Request.Context(), id, userID); err != nil {
-		response.Error(c, http.StatusNotFound, err.Error())
+	if err := h.genService.Delete(c.Request().Context(), id, userID); err != nil {
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusNotFound, err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "已删除"})
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{"message": "已删除"})
 }
 
 // GetQuota 查询用户存储配额。
 // GET /api/v1/sora/quota
 func (h *SoraClientHandler) GetQuota(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.GetQuotaGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) GetQuotaGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
 	if h.quotaService == nil {
-		response.Success(c, service.QuotaInfo{QuotaSource: "unlimited", Source: "unlimited"})
+		response.SuccessContext(soraClientGatewayResponder{ctx: c}, service.QuotaInfo{QuotaSource: "unlimited", Source: "unlimited"})
 		return
 	}
 
-	quota, err := h.quotaService.GetQuota(c.Request.Context(), userID)
+	quota, err := h.quotaService.GetQuota(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(soraClientGatewayResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, quota)
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, quota)
 }
 
 // CancelGeneration 取消生成任务。
 // POST /api/v1/sora/generations/:id/cancel
 func (h *SoraClientHandler) CancelGeneration(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.CancelGenerationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) CancelGenerationGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.Error(c, http.StatusBadRequest, "无效的 ID")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "无效的 ID")
 		return
 	}
 
 	// 权限校验
-	gen, err := h.genService.GetByID(c.Request.Context(), id, userID)
+	gen, err := h.genService.GetByID(c.Request().Context(), id, userID)
 	if err != nil {
-		response.Error(c, http.StatusNotFound, err.Error())
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusNotFound, err.Error())
 		return
 	}
 	_ = gen
 
-	if err := h.genService.MarkCancelled(c.Request.Context(), id); err != nil {
+	if err := h.genService.MarkCancelled(c.Request().Context(), id); err != nil {
 		if errors.Is(err, service.ErrSoraGenerationNotActive) {
-			response.Error(c, http.StatusConflict, "任务已结束，无法取消")
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusConflict, "任务已结束，无法取消")
 			return
 		}
-		response.Error(c, http.StatusBadRequest, err.Error())
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "已取消"})
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{"message": "已取消"})
 }
 
 // SaveToStorage 手动保存 upstream 记录到 S3。
 // POST /api/v1/sora/generations/:id/save
 func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
-	userID := getUserIDFromContext(c)
+	h.SaveToStorageGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) SaveToStorageGateway(c gatewayctx.GatewayContext) {
+	userID := getUserIDFromGatewayContext(c)
 	if userID == 0 {
-		response.Error(c, http.StatusUnauthorized, "未登录")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusUnauthorized, "未登录")
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.Error(c, http.StatusBadRequest, "无效的 ID")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "无效的 ID")
 		return
 	}
 
-	gen, err := h.genService.GetByID(c.Request.Context(), id, userID)
+	gen, err := h.genService.GetByID(c.Request().Context(), id, userID)
 	if err != nil {
-		response.Error(c, http.StatusNotFound, err.Error())
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusNotFound, err.Error())
 		return
 	}
 
 	if gen.StorageType != service.SoraStorageTypeUpstream {
-		response.Error(c, http.StatusBadRequest, "仅 upstream 类型的记录可手动保存")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "仅 upstream 类型的记录可手动保存")
 		return
 	}
 	if gen.MediaURL == "" {
-		response.Error(c, http.StatusBadRequest, "媒体 URL 为空，可能已过期")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "媒体 URL 为空，可能已过期")
 		return
 	}
 
-	if h.s3Storage == nil || !h.s3Storage.Enabled(c.Request.Context()) {
-		response.Error(c, http.StatusServiceUnavailable, "云存储未配置，请联系管理员")
+	if h.s3Storage == nil || !h.s3Storage.Enabled(c.Request().Context()) {
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusServiceUnavailable, "云存储未配置，请联系管理员")
 		return
 	}
 
@@ -688,7 +735,7 @@ func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
 		sourceURLs = []string{gen.MediaURL}
 	}
 	if len(sourceURLs) == 0 {
-		response.Error(c, http.StatusBadRequest, "媒体 URL 为空，可能已过期")
+		response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusBadRequest, "媒体 URL 为空，可能已过期")
 		return
 	}
 
@@ -697,24 +744,24 @@ func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
 	var totalSize int64
 
 	for _, sourceURL := range sourceURLs {
-		objectKey, fileSize, uploadErr := h.s3Storage.UploadFromURL(c.Request.Context(), userID, sourceURL)
+		objectKey, fileSize, uploadErr := h.s3Storage.UploadFromURL(c.Request().Context(), userID, sourceURL)
 		if uploadErr != nil {
 			if len(uploadedKeys) > 0 {
-				_ = h.s3Storage.DeleteObjects(c.Request.Context(), uploadedKeys)
+				_ = h.s3Storage.DeleteObjects(c.Request().Context(), uploadedKeys)
 			}
 			var upstreamErr *service.UpstreamDownloadError
 			if errors.As(uploadErr, &upstreamErr) && (upstreamErr.StatusCode == http.StatusForbidden || upstreamErr.StatusCode == http.StatusNotFound) {
-				response.Error(c, http.StatusGone, "媒体链接已过期，无法保存")
+				response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusGone, "媒体链接已过期，无法保存")
 				return
 			}
-			response.Error(c, http.StatusInternalServerError, "上传到 S3 失败: "+uploadErr.Error())
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusInternalServerError, "上传到 S3 失败: "+uploadErr.Error())
 			return
 		}
-		accessURL, err := h.s3Storage.GetAccessURL(c.Request.Context(), objectKey)
+		accessURL, err := h.s3Storage.GetAccessURL(c.Request().Context(), objectKey)
 		if err != nil {
 			uploadedKeys = append(uploadedKeys, objectKey)
-			_ = h.s3Storage.DeleteObjects(c.Request.Context(), uploadedKeys)
-			response.Error(c, http.StatusInternalServerError, "生成 S3 访问链接失败: "+err.Error())
+			_ = h.s3Storage.DeleteObjects(c.Request().Context(), uploadedKeys)
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusInternalServerError, "生成 S3 访问链接失败: "+err.Error())
 			return
 		}
 		uploadedKeys = append(uploadedKeys, objectKey)
@@ -724,21 +771,21 @@ func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
 
 	usageAdded := false
 	if totalSize > 0 && h.quotaService != nil {
-		if err := h.quotaService.AddUsage(c.Request.Context(), userID, totalSize); err != nil {
-			_ = h.s3Storage.DeleteObjects(c.Request.Context(), uploadedKeys)
+		if err := h.quotaService.AddUsage(c.Request().Context(), userID, totalSize); err != nil {
+			_ = h.s3Storage.DeleteObjects(c.Request().Context(), uploadedKeys)
 			var quotaErr *service.QuotaExceededError
 			if errors.As(err, &quotaErr) {
-				response.Error(c, http.StatusTooManyRequests, "存储配额已满，请删除不需要的作品释放空间")
+				response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusTooManyRequests, "存储配额已满，请删除不需要的作品释放空间")
 				return
 			}
-			response.Error(c, http.StatusInternalServerError, "配额更新失败: "+err.Error())
+			response.ErrorContext(soraClientGatewayResponder{ctx: c}, http.StatusInternalServerError, "配额更新失败: "+err.Error())
 			return
 		}
 		usageAdded = true
 	}
 
 	if err := h.genService.UpdateStorageForCompleted(
-		c.Request.Context(),
+		c.Request().Context(),
 		id,
 		accessURLs[0],
 		accessURLs,
@@ -746,15 +793,15 @@ func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
 		uploadedKeys,
 		totalSize,
 	); err != nil {
-		_ = h.s3Storage.DeleteObjects(c.Request.Context(), uploadedKeys)
+		_ = h.s3Storage.DeleteObjects(c.Request().Context(), uploadedKeys)
 		if usageAdded && h.quotaService != nil {
-			_ = h.quotaService.ReleaseUsage(c.Request.Context(), userID, totalSize)
+			_ = h.quotaService.ReleaseUsage(c.Request().Context(), userID, totalSize)
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(soraClientGatewayResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{
 		"message":     "已保存到 S3",
 		"object_key":  uploadedKeys[0],
 		"object_keys": uploadedKeys,
@@ -764,13 +811,17 @@ func (h *SoraClientHandler) SaveToStorage(c *gin.Context) {
 // GetStorageStatus 返回存储状态。
 // GET /api/v1/sora/storage-status
 func (h *SoraClientHandler) GetStorageStatus(c *gin.Context) {
-	s3Enabled := h.s3Storage != nil && h.s3Storage.Enabled(c.Request.Context())
+	h.GetStorageStatusGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) GetStorageStatusGateway(c gatewayctx.GatewayContext) {
+	s3Enabled := h.s3Storage != nil && h.s3Storage.Enabled(c.Request().Context())
 	s3Healthy := false
 	if s3Enabled {
-		s3Healthy = h.s3Storage.IsHealthy(c.Request.Context())
+		s3Healthy = h.s3Storage.IsHealthy(c.Request().Context())
 	}
 	localEnabled := h.mediaStorage != nil && h.mediaStorage.Enabled()
-	response.Success(c, gin.H{
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, gin.H{
 		"s3_enabled":    s3Enabled,
 		"s3_healthy":    s3Healthy,
 		"local_enabled": localEnabled,
@@ -796,11 +847,15 @@ func (h *SoraClientHandler) cleanupStoredMedia(ctx context.Context, storageType 
 
 // getUserIDFromContext 从 gin 上下文中提取用户 ID。
 func getUserIDFromContext(c *gin.Context) int64 {
-	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+	return getUserIDFromGatewayContext(gatewayctx.FromGin(c))
+}
+
+func getUserIDFromGatewayContext(c gatewayctx.GatewayContext) int64 {
+	if subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c); ok && subject.UserID > 0 {
 		return subject.UserID
 	}
 
-	if id, ok := c.Get("user_id"); ok {
+	if id, ok := c.Value("user_id"); ok {
 		switch v := id.(type) {
 		case int64:
 			return v
@@ -812,7 +867,7 @@ func getUserIDFromContext(c *gin.Context) int64 {
 		}
 	}
 	// 尝试从 JWT claims 获取
-	if id, ok := c.Get("userID"); ok {
+	if id, ok := c.Value("userID"); ok {
 		if v, ok := id.(int64); ok {
 			return v
 		}
@@ -839,8 +894,12 @@ func trimForLog(raw string, maxLen int) string {
 // 优先从上游 Sora API 同步模型列表，失败时降级到本地配置。
 // GET /api/v1/sora/models
 func (h *SoraClientHandler) GetModels(c *gin.Context) {
-	families := h.getModelFamilies(c.Request.Context())
-	response.Success(c, families)
+	h.GetModelsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SoraClientHandler) GetModelsGateway(c gatewayctx.GatewayContext) {
+	families := h.getModelFamilies(c.Request().Context())
+	response.SuccessContext(soraClientGatewayResponder{ctx: c}, families)
 }
 
 // getModelFamilies 获取模型家族列表（带缓存）。

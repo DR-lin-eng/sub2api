@@ -160,6 +160,7 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	setOpsRequestContextGateway(transportCtx, reqModel, clientStream, body)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeFromLegacy(clientStream, false)))
 
 	platform := ""
 	if forced, ok := middleware2.GetForcePlatformFromGatewayContext(transportCtx); ok {

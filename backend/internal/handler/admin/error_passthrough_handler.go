@@ -1,10 +1,13 @@
 package admin
 
 import (
+	"encoding/json"
+	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -56,42 +59,54 @@ type UpdateErrorPassthroughRuleRequest struct {
 // List 获取所有规则
 // GET /api/v1/admin/error-passthrough-rules
 func (h *ErrorPassthroughHandler) List(c *gin.Context) {
-	rules, err := h.service.List(c.Request.Context())
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ErrorPassthroughHandler) ListGateway(c gatewayctx.GatewayContext) {
+	rules, err := h.service.List(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, rules)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, rules)
 }
 
 // GetByID 根据 ID 获取规则
 // GET /api/v1/admin/error-passthrough-rules/:id
 func (h *ErrorPassthroughHandler) GetByID(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ErrorPassthroughHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid rule ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
-	rule, err := h.service.GetByID(c.Request.Context(), id)
+	rule, err := h.service.GetByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	if rule == nil {
-		response.NotFound(c, "Rule not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Rule not found")
 		return
 	}
 
-	response.Success(c, rule)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, rule)
 }
 
 // Create 创建规则
 // POST /api/v1/admin/error-passthrough-rules
 func (h *ErrorPassthroughHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ErrorPassthroughHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreateErrorPassthroughRuleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -142,42 +157,46 @@ func (h *ErrorPassthroughHandler) Create(c *gin.Context) {
 		rule.Platforms = []string{}
 	}
 
-	created, err := h.service.Create(c.Request.Context(), rule)
+	created, err := h.service.Create(c.Request().Context(), rule)
 	if err != nil {
 		if _, ok := err.(*model.ValidationError); ok {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 // Update 更新规则（支持部分更新）
 // PUT /api/v1/admin/error-passthrough-rules/:id
 func (h *ErrorPassthroughHandler) Update(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ErrorPassthroughHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid rule ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
 	var req UpdateErrorPassthroughRuleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// 先获取现有规则
-	existing, err := h.service.GetByID(c.Request.Context(), id)
+	existing, err := h.service.GetByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	if existing == nil {
-		response.NotFound(c, "Rule not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Rule not found")
 		return
 	}
 
@@ -251,32 +270,36 @@ func (h *ErrorPassthroughHandler) Update(c *gin.Context) {
 		rule.Platforms = []string{}
 	}
 
-	updated, err := h.service.Update(c.Request.Context(), rule)
+	updated, err := h.service.Update(c.Request().Context(), rule)
 	if err != nil {
 		if _, ok := err.(*model.ValidationError); ok {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, updated)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updated)
 }
 
 // Delete 删除规则
 // DELETE /api/v1/admin/error-passthrough-rules/:id
 func (h *ErrorPassthroughHandler) Delete(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ErrorPassthroughHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid rule ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
-	if err := h.service.Delete(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.service.Delete(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Rule deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Rule deleted successfully"})
 }

@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -10,10 +11,10 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 )
 
 var validOpsAlertMetricTypes = []string{
@@ -237,49 +238,62 @@ func validateOpsAlertRulePayload(raw map[string]json.RawMessage) (*opsAlertRuleV
 // ListAlertRules returns all ops alert rules.
 // GET /api/v1/admin/ops/alert-rules
 func (h *OpsHandler) ListAlertRules(c *gin.Context) {
+	h.ListAlertRulesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) ListAlertRulesGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	rules, err := h.opsService.ListAlertRules(c.Request.Context())
+	rules, err := h.opsService.ListAlertRules(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, rules)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, rules)
 }
 
 // CreateAlertRule creates an ops alert rule.
 // POST /api/v1/admin/ops/alert-rules
 func (h *OpsHandler) CreateAlertRule(c *gin.Context) {
+	h.CreateAlertRuleGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) CreateAlertRuleGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
+		return
+	}
 	var raw map[string]json.RawMessage
-	if err := c.ShouldBindBodyWith(&raw, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.Unmarshal(body, &raw); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	validated, err := validateOpsAlertRulePayload(raw)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var rule service.OpsAlertRule
-	if err := c.ShouldBindBodyWith(&rule, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.Unmarshal(body, &rule); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -294,46 +308,55 @@ func (h *OpsHandler) CreateAlertRule(c *gin.Context) {
 	rule.Enabled = validated.Enabled
 	rule.NotifyEmail = validated.NotifyEmail
 
-	created, err := h.opsService.CreateAlertRule(c.Request.Context(), &rule)
+	created, err := h.opsService.CreateAlertRule(c.Request().Context(), &rule)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 // UpdateAlertRule updates an existing ops alert rule.
 // PUT /api/v1/admin/ops/alert-rules/:id
 func (h *OpsHandler) UpdateAlertRule(c *gin.Context) {
+	h.UpdateAlertRuleGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) UpdateAlertRuleGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid rule ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
+		return
+	}
 	var raw map[string]json.RawMessage
-	if err := c.ShouldBindBodyWith(&raw, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.Unmarshal(body, &raw); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	validated, err := validateOpsAlertRulePayload(raw)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var rule service.OpsAlertRule
-	if err := c.ShouldBindBodyWith(&rule, binding.JSON); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.Unmarshal(body, &rule); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -349,97 +372,109 @@ func (h *OpsHandler) UpdateAlertRule(c *gin.Context) {
 	rule.Enabled = validated.Enabled
 	rule.NotifyEmail = validated.NotifyEmail
 
-	updated, err := h.opsService.UpdateAlertRule(c.Request.Context(), &rule)
+	updated, err := h.opsService.UpdateAlertRule(c.Request().Context(), &rule)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, updated)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updated)
 }
 
 // DeleteAlertRule deletes an ops alert rule.
 // DELETE /api/v1/admin/ops/alert-rules/:id
 func (h *OpsHandler) DeleteAlertRule(c *gin.Context) {
+	h.DeleteAlertRuleGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) DeleteAlertRuleGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid rule ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
-	if err := h.opsService.DeleteAlertRule(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.DeleteAlertRule(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"deleted": true})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"deleted": true})
 }
 
 // GetAlertEvent returns a single ops alert event.
 // GET /api/v1/admin/ops/alert-events/:id
 func (h *OpsHandler) GetAlertEvent(c *gin.Context) {
+	h.GetAlertEventGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) GetAlertEventGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid event ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid event ID")
 		return
 	}
 
-	ev, err := h.opsService.GetAlertEventByID(c.Request.Context(), id)
+	ev, err := h.opsService.GetAlertEventByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, ev)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, ev)
 }
 
 // UpdateAlertEventStatus updates an ops alert event status.
 // PUT /api/v1/admin/ops/alert-events/:id/status
 func (h *OpsHandler) UpdateAlertEventStatus(c *gin.Context) {
+	h.UpdateAlertEventStatusGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) UpdateAlertEventStatusGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil || id <= 0 {
-		response.BadRequest(c, "Invalid event ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid event ID")
 		return
 	}
 
 	var payload struct {
 		Status string `json:"status"`
 	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.NewDecoder(c.Request().Body).Decode(&payload); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	payload.Status = strings.TrimSpace(payload.Status)
 	if payload.Status == "" {
-		response.BadRequest(c, "Invalid status")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid status")
 		return
 	}
 	if payload.Status != service.OpsAlertStatusResolved && payload.Status != service.OpsAlertStatusManualResolved {
-		response.BadRequest(c, "Invalid status")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid status")
 		return
 	}
 
@@ -448,11 +483,11 @@ func (h *OpsHandler) UpdateAlertEventStatus(c *gin.Context) {
 		now := time.Now().UTC()
 		resolvedAt = &now
 	}
-	if err := h.opsService.UpdateAlertEventStatus(c.Request.Context(), id, payload.Status, resolvedAt); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.UpdateAlertEventStatus(c.Request().Context(), id, payload.Status, resolvedAt); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, gin.H{"updated": true})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"updated": true})
 }
 
 // ListAlertEvents lists recent ops alert events.
@@ -460,12 +495,16 @@ func (h *OpsHandler) UpdateAlertEventStatus(c *gin.Context) {
 // CreateAlertSilence creates a scoped silence for ops alerts.
 // POST /api/v1/admin/ops/alert-silences
 func (h *OpsHandler) CreateAlertSilence(c *gin.Context) {
+	h.CreateAlertSilenceGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) CreateAlertSilenceGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -477,18 +516,18 @@ func (h *OpsHandler) CreateAlertSilence(c *gin.Context) {
 		Until    string  `json:"until"`
 		Reason   string  `json:"reason"`
 	}
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		response.BadRequest(c, "Invalid request body")
+	if err := json.NewDecoder(c.Request().Body).Decode(&payload); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	until, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.Until))
 	if err != nil {
-		response.BadRequest(c, "Invalid until")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid until")
 		return
 	}
 
 	createdBy := (*int64)(nil)
-	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
+	if subject, ok := middleware.GetAuthSubjectFromGatewayContext(c); ok {
 		uid := subject.UserID
 		createdBy = &uid
 	}
@@ -503,29 +542,33 @@ func (h *OpsHandler) CreateAlertSilence(c *gin.Context) {
 		CreatedBy: createdBy,
 	}
 
-	created, err := h.opsService.CreateAlertSilence(c.Request.Context(), silence)
+	created, err := h.opsService.CreateAlertSilence(c.Request().Context(), silence)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
+	h.ListAlertEventsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) ListAlertEventsGateway(c gatewayctx.GatewayContext) {
 	if h.opsService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Ops service not available")
 		return
 	}
-	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.opsService.RequireMonitoringEnabled(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	limit := 20
-	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+	if raw := strings.TrimSpace(c.QueryValue("limit")); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
-			response.BadRequest(c, "Invalid limit")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid limit")
 			return
 		}
 		limit = n
@@ -533,11 +576,11 @@ func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
 
 	filter := &service.OpsAlertEventFilter{
 		Limit:    limit,
-		Status:   strings.TrimSpace(c.Query("status")),
-		Severity: strings.TrimSpace(c.Query("severity")),
+		Status:   strings.TrimSpace(c.QueryValue("status")),
+		Severity: strings.TrimSpace(c.QueryValue("severity")),
 	}
 
-	if v := strings.TrimSpace(c.Query("email_sent")); v != "" {
+	if v := strings.TrimSpace(c.QueryValue("email_sent")); v != "" {
 		vv := strings.ToLower(v)
 		switch vv {
 		case "true", "1":
@@ -547,16 +590,16 @@ func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
 			b := false
 			filter.EmailSent = &b
 		default:
-			response.BadRequest(c, "Invalid email_sent")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid email_sent")
 			return
 		}
 	}
 
 	// Cursor pagination: both params must be provided together.
-	rawTS := strings.TrimSpace(c.Query("before_fired_at"))
-	rawID := strings.TrimSpace(c.Query("before_id"))
+	rawTS := strings.TrimSpace(c.QueryValue("before_fired_at"))
+	rawID := strings.TrimSpace(c.QueryValue("before_id"))
 	if (rawTS == "") != (rawID == "") {
-		response.BadRequest(c, "before_fired_at and before_id must be provided together")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "before_fired_at and before_id must be provided together")
 		return
 	}
 	if rawTS != "" {
@@ -565,7 +608,7 @@ func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
 			if t2, err2 := time.Parse(time.RFC3339, rawTS); err2 == nil {
 				ts = t2
 			} else {
-				response.BadRequest(c, "Invalid before_fired_at")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid before_fired_at")
 				return
 			}
 		}
@@ -574,39 +617,39 @@ func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
 	if rawID != "" {
 		id, err := strconv.ParseInt(rawID, 10, 64)
 		if err != nil || id <= 0 {
-			response.BadRequest(c, "Invalid before_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid before_id")
 			return
 		}
 		filter.BeforeID = &id
 	}
 
 	// Optional global filter support (platform/group/time range).
-	if platform := strings.TrimSpace(c.Query("platform")); platform != "" {
+	if platform := strings.TrimSpace(c.QueryValue("platform")); platform != "" {
 		filter.Platform = platform
 	}
-	if v := strings.TrimSpace(c.Query("group_id")); v != "" {
+	if v := strings.TrimSpace(c.QueryValue("group_id")); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || id <= 0 {
-			response.BadRequest(c, "Invalid group_id")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid group_id")
 			return
 		}
 		filter.GroupID = &id
 	}
-	if startTime, endTime, err := parseOpsTimeRange(c, "24h"); err == nil {
+	if startTime, endTime, err := parseOpsTimeRangeGateway(c, "24h"); err == nil {
 		// Only apply when explicitly provided to avoid surprising default narrowing.
-		if strings.TrimSpace(c.Query("start_time")) != "" || strings.TrimSpace(c.Query("end_time")) != "" || strings.TrimSpace(c.Query("time_range")) != "" {
+		if strings.TrimSpace(c.QueryValue("start_time")) != "" || strings.TrimSpace(c.QueryValue("end_time")) != "" || strings.TrimSpace(c.QueryValue("time_range")) != "" {
 			filter.StartTime = &startTime
 			filter.EndTime = &endTime
 		}
 	} else {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	events, err := h.opsService.ListAlertEvents(c.Request.Context(), filter)
+	events, err := h.opsService.ListAlertEvents(c.Request().Context(), filter)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, events)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, events)
 }

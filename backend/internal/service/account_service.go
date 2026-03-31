@@ -239,7 +239,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	if req.Extra != nil {
-		account.Extra = *req.Extra
+		account.Extra = CopyExtraPreservingInternal(account.Extra, *req.Extra)
 	}
 
 	if req.ProxyID != nil {

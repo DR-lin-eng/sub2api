@@ -3,14 +3,18 @@ package server
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	appmiddleware "github.com/Wei-Shaw/sub2api/internal/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	sermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
+	"github.com/Wei-Shaw/sub2api/internal/web"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -27,6 +31,20 @@ const (
 	middlewareTagForceAG          = "force_platform_antigravity"
 	middlewareTagBodyLimitGW      = "gateway_body_limit"
 	middlewareTagMessageDispatch  = "message_dispatch"
+	middlewareTagAdminAuth        = "admin_auth"
+	middlewareTagJWTAuth          = "jwt_auth"
+	middlewareTagBackendModeAuth  = "backend_mode_auth_guard"
+	middlewareTagBackendModeUser  = "backend_mode_user_guard"
+	middlewareTagRLAuthRegister   = "rl_auth_register"
+	middlewareTagRLAuthLogin      = "rl_auth_login"
+	middlewareTagRLAuthLogin2FA   = "rl_auth_login_2fa"
+	middlewareTagRLSendVerify     = "rl_auth_send_verify_code"
+	middlewareTagRLRefresh        = "rl_auth_refresh"
+	middlewareTagRLPromo          = "rl_auth_validate_promo"
+	middlewareTagRLInvite         = "rl_auth_validate_invitation"
+	middlewareTagRLForgot         = "rl_auth_forgot_password"
+	middlewareTagRLReset          = "rl_auth_reset_password"
+	middlewareTagRLLinuxDoFinish  = "rl_auth_linuxdo_complete"
 )
 
 const nativeRouteFallbackToHTTPHandlerKey = "_native_route_fallback_http_handler"
@@ -44,6 +62,9 @@ type executableRuntimeConfig struct {
 	apiKeyService       *service.APIKeyService
 	subscriptionService *service.SubscriptionService
 	settingService      *service.SettingService
+	authService         *service.AuthService
+	userService         *service.UserService
+	redisClient         *redis.Client
 }
 
 func buildExecutableRuntimeConfig(
@@ -52,11 +73,20 @@ func buildExecutableRuntimeConfig(
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
 	settingService *service.SettingService,
+	authService *service.AuthService,
+	userService *service.UserService,
+	redisClient *redis.Client,
+	frontendServer *web.FrontendServer,
 ) *executableRuntimeConfig {
 	rawDefs := make([]gatewayctx.RouteDef, 0, 8)
 	rawDefs = append(rawDefs, routes.ExecutableCommonRoutes()...)
 	rawDefs = append(rawDefs, setup.ExecutableRoutes()...)
 	rawDefs = append(rawDefs, routes.ExecutableGatewayRoutes(handlers)...)
+	rawDefs = append(rawDefs, routes.ExecutableAdminRoutes(handlers)...)
+	rawDefs = append(rawDefs, routes.ExecutableAuthRoutes(handlers)...)
+	rawDefs = append(rawDefs, routes.ExecutableUserRoutes(handlers)...)
+	rawDefs = append(rawDefs, routes.ExecutableSoraClientRoutes(handlers)...)
+	rawDefs = append(rawDefs, web.ExecutableRoutes(frontendServer)...)
 
 	out := make([]executableRoute, 0, len(rawDefs))
 	for _, def := range rawDefs {
@@ -73,6 +103,9 @@ func buildExecutableRuntimeConfig(
 		apiKeyService:       apiKeyService,
 		subscriptionService: subscriptionService,
 		settingService:      settingService,
+		authService:         authService,
+		userService:         userService,
+		redisClient:         redisClient,
 	}
 }
 
@@ -181,6 +214,62 @@ func applyExecutableMiddlewares(runtimeCfg *executableRuntimeConfig, c gatewayct
 			}
 		case middlewareTagMessageDispatch:
 			// No-op here; route handler performs platform-aware dispatch.
+		case middlewareTagAdminAuth:
+			if runtimeCfg == nil || !sermiddleware.ApplyAdminAuthContext(runtimeCfg.authService, runtimeCfg.userService, runtimeCfg.settingService, c) {
+				return false
+			}
+		case middlewareTagJWTAuth:
+			if runtimeCfg == nil || !sermiddleware.ApplyJWTAuthContext(runtimeCfg.authService, runtimeCfg.userService, c) {
+				return false
+			}
+		case middlewareTagBackendModeAuth:
+			if runtimeCfg == nil || !sermiddleware.ApplyBackendModeAuthGuardContext(runtimeCfg.settingService, c) {
+				return false
+			}
+		case middlewareTagBackendModeUser:
+			if runtimeCfg == nil || !sermiddleware.ApplyBackendModeUserGuardContext(runtimeCfg.settingService, c) {
+				return false
+			}
+		case middlewareTagRLAuthRegister:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-register", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLAuthLogin:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLAuthLogin2FA:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-login-2fa", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLSendVerify:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-send-verify-code", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLRefresh:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "refresh-token", 30, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLPromo:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "validate-promo", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLInvite:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "validate-invitation", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLForgot:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "forgot-password", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLReset:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "reset-password", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLLinuxDoFinish:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
 		}
 	}
 	return true

@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -12,6 +15,24 @@ import (
 // RedeemHandler handles redeem code-related requests
 type RedeemHandler struct {
 	redeemService *service.RedeemService
+}
+
+type redeemGatewayResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g redeemGatewayResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g redeemGatewayResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
 }
 
 // NewRedeemHandler creates a new RedeemHandler
@@ -38,42 +59,50 @@ type RedeemResponse struct {
 // Redeem handles redeeming a code
 // POST /api/v1/redeem
 func (h *RedeemHandler) Redeem(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.RedeemGateway(gatewayctx.FromGin(c))
+}
+
+func (h *RedeemHandler) RedeemGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(redeemGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
 	var req RedeemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(redeemGatewayResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.redeemService.Redeem(c.Request.Context(), subject.UserID, req.Code)
+	result, err := h.redeemService.Redeem(c.Request().Context(), subject.UserID, req.Code)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(redeemGatewayResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.RedeemCodeFromService(result))
+	response.SuccessContext(redeemGatewayResponder{ctx: c}, dto.RedeemCodeFromService(result))
 }
 
 // GetHistory returns the user's redemption history
 // GET /api/v1/redeem/history
 func (h *RedeemHandler) GetHistory(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetHistoryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *RedeemHandler) GetHistoryGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not authenticated")
+		response.ErrorContext(redeemGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
 		return
 	}
 
 	// Default limit is 25
 	limit := 25
 
-	codes, err := h.redeemService.GetUserHistory(c.Request.Context(), subject.UserID, limit)
+	codes, err := h.redeemService.GetUserHistory(c.Request().Context(), subject.UserID, limit)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(redeemGatewayResponder{ctx: c}, err)
 		return
 	}
 
@@ -81,5 +110,5 @@ func (h *RedeemHandler) GetHistory(c *gin.Context) {
 	for i := range codes {
 		out = append(out, *dto.RedeemCodeFromService(&codes[i]))
 	}
-	response.Success(c, out)
+	response.SuccessContext(redeemGatewayResponder{ctx: c}, out)
 }

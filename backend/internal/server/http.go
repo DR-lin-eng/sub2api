@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
@@ -32,6 +33,8 @@ func ProvideRouter(
 	jwtAuth middleware2.JWTAuthMiddleware,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
+	authService *service.AuthService,
+	userService *service.UserService,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
@@ -40,6 +43,16 @@ func ProvideRouter(
 ) *gin.Engine {
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
+	}
+
+	var frontendServer *web.FrontendServer
+	if web.HasEmbeddedFrontend() {
+		fs, err := web.NewFrontendServer(settingService)
+		if err != nil {
+			log.Printf("Warning: Failed to create frontend server with settings injection: %v, using legacy mode", err)
+		} else {
+			frontendServer = fs
+		}
 	}
 
 	r := gin.New()
@@ -57,8 +70,8 @@ func ProvideRouter(
 		}
 	}
 
-	router := SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
-	registerRouterExecutableRuntimeConfig(router, buildExecutableRuntimeConfig(cfg, handlers, apiKeyService, subscriptionService, settingService))
+	router := SetupRouter(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient, frontendServer)
+	registerRouterExecutableRuntimeConfig(router, buildExecutableRuntimeConfig(cfg, handlers, apiKeyService, subscriptionService, settingService, authService, userService, redisClient, frontendServer))
 	return router
 }
 

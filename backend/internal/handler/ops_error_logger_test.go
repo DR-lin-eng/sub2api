@@ -87,6 +87,22 @@ func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
 }
 
+func TestSetOpsEndpointContext_StoresRequestTypeAndUpstreamModel(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	setOpsEndpointContext(c, "gpt-5.4-mini", int16(service.RequestTypeStream))
+
+	requestType := getOpsRequestTypeFromContext(c)
+	require.NotNil(t, requestType)
+	require.Equal(t, int16(service.RequestTypeStream), *requestType)
+	require.Equal(t, "gpt-5.4-mini", getOpsUpstreamModelFromContext(c))
+}
+
 func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	resetOpsErrorLoggerStateForTest(t)
 
@@ -126,19 +142,19 @@ func TestAttachOpsRequestBodyToEntry_EarlyReturnBranches(t *testing.T) {
 	require.Nil(t, entry.RequestBodyBytes)
 	require.False(t, entry.RequestBodyTruncated)
 
-	// 错误类型
+	// string body 也会进入 capture，但 invalid JSON 不会生成 RequestBodyJSON
 	c.Set(opsRequestBodyKey, "not-bytes")
 	attachOpsRequestBodyToEntry(c, entry)
 	require.Nil(t, entry.RequestBodyJSON)
-	require.Nil(t, entry.RequestBodyBytes)
+	require.NotNil(t, entry.RequestBodyBytes)
 
 	// 空 bytes
 	c.Set(opsRequestBodyKey, []byte{})
 	attachOpsRequestBodyToEntry(c, entry)
 	require.Nil(t, entry.RequestBodyJSON)
-	require.Nil(t, entry.RequestBodyBytes)
+	require.NotNil(t, entry.RequestBodyBytes)
 
-	require.Equal(t, int64(0), OpsErrorLogSanitizedTotal())
+	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
 }
 
 func TestEnqueueOpsErrorLog_EarlyReturnBranches(t *testing.T) {

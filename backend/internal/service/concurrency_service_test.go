@@ -7,7 +7,9 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -229,6 +231,26 @@ func TestGetAccountsLoadBatch_ReturnsCorrectData(t *testing.T) {
 	require.Equal(t, expected, result)
 }
 
+func TestGetAccountsLoadBatchUsesLocalCache(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+
+	accounts := []AccountWithConcurrency{{ID: 1, MaxConcurrency: 10}}
+	first, err := svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+	require.Equal(t, 2, first[1].CurrentConcurrency)
+
+	cache.loadBatch[1] = &AccountLoadInfo{AccountID: 1, CurrentConcurrency: 9, WaitingCount: 9}
+	second, err := svc.GetAccountsLoadBatch(context.Background(), accounts)
+	require.NoError(t, err)
+	require.Equal(t, 2, second[1].CurrentConcurrency)
+	require.Equal(t, 1, second[1].WaitingCount)
+}
+
 func TestGetAccountsLoadBatch_NilCache(t *testing.T) {
 	svc := &ConcurrencyService{cache: nil}
 
@@ -244,6 +266,85 @@ func TestIncrementWaitCount_Success(t *testing.T) {
 	allowed, err := svc.IncrementWaitCount(context.Background(), 1, 25)
 	require.NoError(t, err)
 	require.True(t, allowed)
+}
+
+func TestGetAccountWaitingCountUsesLocalCache(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{waitCount: 3}
+	svc := NewConcurrencyService(cache)
+
+	first, err := svc.GetAccountWaitingCount(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, 3, first)
+
+	cache.waitCount = 9
+	second, err := svc.GetAccountWaitingCount(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, 3, second)
+}
+
+func TestRegisterLocalWaitTurnFIFO(t *testing.T) {
+	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
+
+	ch1, release1 := svc.RegisterLocalWaitTurn("account", 7)
+	ch2, release2 := svc.RegisterLocalWaitTurn("account", 7)
+	defer release1()
+	defer release2()
+
+	select {
+	case <-ch1:
+	default:
+		t.Fatal("first waiter should receive turn immediately")
+	}
+
+	select {
+	case <-ch2:
+		t.Fatal("second waiter should not receive turn before first releases")
+	default:
+	}
+
+	release1()
+
+	select {
+	case <-ch2:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("second waiter should receive turn after first releases")
+	}
+}
+
+func TestGetUsersLoadBatchSingleflightDedupesConcurrentCalls(t *testing.T) {
+	cache := &countingUserLoadConcurrencyCache{
+		stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{
+			usersLoadBatch: map[int64]*UserLoadInfo{
+				1: {UserID: 1, CurrentConcurrency: 2, WaitingCount: 1},
+			},
+		},
+	}
+	svc := NewConcurrencyService(cache)
+	users := []UserWithConcurrency{{ID: 1, MaxConcurrency: 10}}
+
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			_, err := svc.GetUsersLoadBatch(context.Background(), users)
+			require.NoError(t, err)
+			done <- struct{}{}
+		}()
+	}
+	<-done
+	<-done
+
+	require.Equal(t, int32(1), cache.userLoadCalls.Load())
+}
+
+type countingUserLoadConcurrencyCache struct {
+	stubConcurrencyCacheForTest
+	userLoadCalls atomic.Int32
+}
+
+func (c *countingUserLoadConcurrencyCache) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	c.userLoadCalls.Add(1)
+	time.Sleep(20 * time.Millisecond)
+	return c.usersLoadBatch, c.usersLoadErr
 }
 
 func TestIncrementWaitCount_QueueFull(t *testing.T) {

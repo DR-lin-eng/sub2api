@@ -20,6 +20,7 @@ import (
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -177,6 +178,7 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 
 	transportCtx.SetRequest(transportCtx.Request().WithContext(service.WithThinkingEnabled(transportCtx.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled())))
 	setOpsRequestContextGateway(transportCtx, reqModel, reqStream, body)
+	setOpsEndpointContextGateway(transportCtx, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	if reqModel == "" {
 		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
@@ -735,6 +737,13 @@ func (h *GatewayHandler) ModelsGateway(c gatewayctx.GatewayContext) {
 		})
 		return
 	}
+	if platform == service.PlatformKiro {
+		c.WriteJSON(http.StatusOK, gin.H{
+			"object": "list",
+			"data":   kiro.DefaultModels,
+		})
+		return
+	}
 
 	availableModels := h.gatewayService.GetAvailableModels(c.Request().Context(), groupID, platform)
 
@@ -1184,7 +1193,7 @@ func (h *GatewayHandler) handleStreamingAwareErrorContext(c gatewayctx.GatewayCo
 	if c == nil {
 		return
 	}
-	if streamStarted {
+	if streamStarted || service.RequestUsesOpenAISSE(c) {
 		_ = gatewayctx.WriteSSEEvent(c, "", gin.H{
 			"type": "error",
 			"error": gin.H{
@@ -1205,7 +1214,10 @@ func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarte
 }
 
 func (h *GatewayHandler) ensureForwardErrorResponseContext(c gatewayctx.GatewayContext, streamStarted bool) bool {
-	if c == nil || c.ResponseWritten() {
+	if c == nil || service.RequestPayloadStarted(c) {
+		return false
+	}
+	if c.ResponseWritten() && !streamStarted && !service.RequestUsesOpenAISSE(c) && !service.RequestUsesBufferedJSON(c) {
 		return false
 	}
 	h.handleStreamingAwareErrorContext(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)

@@ -93,6 +93,32 @@ func (r *Registry) RegisterProfile(name string, profile *Profile) {
 	}
 }
 
+// ReplaceProfiles atomically replaces all profiles in the registry.
+// The built-in default profile is always preserved.
+func (r *Registry) ReplaceProfiles(profiles map[string]*Profile) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.profiles = make(map[string]*Profile)
+	r.profileNames = make([]string, 0)
+
+	defaultProfile := &Profile{
+		Name:         "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)",
+		EnableGREASE: false,
+	}
+	r.profiles[DefaultProfileName] = defaultProfile
+	r.profileNames = append(r.profileNames, DefaultProfileName)
+
+	for name, profile := range profiles {
+		if name == "" || profile == nil || name == DefaultProfileName {
+			continue
+		}
+		r.profiles[name] = profile
+		r.profileNames = append(r.profileNames, name)
+	}
+	sort.Strings(r.profileNames)
+}
+
 // GetProfile returns a profile by name.
 // Returns nil if the profile does not exist.
 func (r *Registry) GetProfile(name string) *Profile {
@@ -110,11 +136,17 @@ func (r *Registry) GetDefaultProfile() *Profile {
 // The profile is selected using: profileNames[accountID % len(profiles)]
 // This ensures deterministic profile assignment for each account.
 func (r *Registry) GetProfileByAccountID(accountID int64) *Profile {
+	_, profile := r.GetProfileEntryByAccountID(accountID)
+	return profile
+}
+
+// GetProfileEntryByAccountID returns the registry key and profile for the given account ID.
+func (r *Registry) GetProfileEntryByAccountID(accountID int64) (string, *Profile) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	if len(r.profileNames) == 0 {
-		return nil
+		return "", nil
 	}
 
 	// Use modulo to select profile index
@@ -126,7 +158,7 @@ func (r *Registry) GetProfileByAccountID(accountID int64) *Profile {
 	selectedIndex := int(idx % int64(len(r.profileNames)))
 	selectedName := r.profileNames[selectedIndex]
 
-	return r.profiles[selectedName]
+	return selectedName, r.profiles[selectedName]
 }
 
 // ProfileCount returns the number of registered profiles.
@@ -168,4 +200,11 @@ func InitGlobalRegistry(cfg *config.TLSFingerprintConfig) *Registry {
 		globalRegistry = NewRegistryFromConfig(cfg)
 	})
 	return globalRegistry
+}
+
+// ReplaceGlobalRegistryProfiles atomically replaces the global registry profiles.
+func ReplaceGlobalRegistryProfiles(profiles map[string]*Profile) *Registry {
+	registry := GlobalRegistry()
+	registry.ReplaceProfiles(profiles)
+	return registry
 }

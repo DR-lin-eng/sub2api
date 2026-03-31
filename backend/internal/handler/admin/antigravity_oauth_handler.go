@@ -1,7 +1,11 @@
 package admin
 
 import (
+	"encoding/json"
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -21,19 +25,23 @@ type AntigravityGenerateAuthURLRequest struct {
 // GenerateAuthURL generates Google OAuth authorization URL
 // POST /api/v1/admin/antigravity/oauth/auth-url
 func (h *AntigravityOAuthHandler) GenerateAuthURL(c *gin.Context) {
+	h.GenerateAuthURLGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AntigravityOAuthHandler) GenerateAuthURLGateway(c gatewayctx.GatewayContext) {
 	var req AntigravityGenerateAuthURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "请求无效: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "请求无效: "+err.Error())
 		return
 	}
 
-	result, err := h.antigravityOAuthService.GenerateAuthURL(c.Request.Context(), req.ProxyID)
+	result, err := h.antigravityOAuthService.GenerateAuthURL(c.Request().Context(), req.ProxyID)
 	if err != nil {
-		response.InternalError(c, "生成授权链接失败: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "生成授权链接失败: "+err.Error())
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 type AntigravityExchangeCodeRequest struct {
@@ -46,24 +54,28 @@ type AntigravityExchangeCodeRequest struct {
 // ExchangeCode 用 authorization code 交换 token
 // POST /api/v1/admin/antigravity/oauth/exchange-code
 func (h *AntigravityOAuthHandler) ExchangeCode(c *gin.Context) {
+	h.ExchangeCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AntigravityOAuthHandler) ExchangeCodeGateway(c gatewayctx.GatewayContext) {
 	var req AntigravityExchangeCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "请求无效: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "请求无效: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.antigravityOAuthService.ExchangeCode(c.Request.Context(), &service.AntigravityExchangeCodeInput{
+	tokenInfo, err := h.antigravityOAuthService.ExchangeCode(c.Request().Context(), &service.AntigravityExchangeCodeInput{
 		SessionID: req.SessionID,
 		State:     req.State,
 		Code:      req.Code,
 		ProxyID:   req.ProxyID,
 	})
 	if err != nil {
-		response.BadRequest(c, "Token 交换失败: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Token 交换失败: "+err.Error())
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // AntigravityRefreshTokenRequest represents the request for validating Antigravity refresh token
@@ -75,17 +87,21 @@ type AntigravityRefreshTokenRequest struct {
 // RefreshToken validates an Antigravity refresh token and returns full token info
 // POST /api/v1/admin/antigravity/oauth/refresh-token
 func (h *AntigravityOAuthHandler) RefreshToken(c *gin.Context) {
+	h.RefreshTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AntigravityOAuthHandler) RefreshTokenGateway(c gatewayctx.GatewayContext) {
 	var req AntigravityRefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "请求无效: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "请求无效: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.antigravityOAuthService.ValidateRefreshToken(c.Request.Context(), req.RefreshToken, req.ProxyID)
+	tokenInfo, err := h.antigravityOAuthService.ValidateRefreshToken(c.Request().Context(), req.RefreshToken, req.ProxyID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }

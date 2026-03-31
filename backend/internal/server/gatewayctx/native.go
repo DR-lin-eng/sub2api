@@ -3,8 +3,15 @@ package gatewayctx
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	coderws "github.com/coder/websocket"
 )
 
 type nativeGatewayContext struct {
@@ -143,6 +150,17 @@ func (c *nativeGatewayContext) BindJSON(target any) error {
 	return json.NewDecoder(c.req.Body).Decode(target)
 }
 
+func (c *nativeGatewayContext) CookieValue(name string) (string, error) {
+	if c == nil || c.req == nil {
+		return "", http.ErrNoCookie
+	}
+	cookie, err := c.req.Cookie(name)
+	if err != nil {
+		return "", err
+	}
+	return cookie.Value, nil
+}
+
 func (c *nativeGatewayContext) Abort() {
 	if c == nil {
 		return
@@ -169,6 +187,20 @@ func (c *nativeGatewayContext) SetStatus(status int) {
 	if hw, ok := c.writer.(nativeHeaderWriter); ok {
 		hw.WriteHeader(status)
 	}
+}
+
+func (c *nativeGatewayContext) SetCookie(cookie *http.Cookie) {
+	if c == nil || cookie == nil {
+		return
+	}
+	http.SetCookie(c.responseWriter(), cookie)
+}
+
+func (c *nativeGatewayContext) Redirect(status int, location string) {
+	if c == nil {
+		return
+	}
+	http.Redirect(c.responseWriter(), c.req, location, status)
 }
 
 func (c *nativeGatewayContext) ResponseWritten() bool {
@@ -206,6 +238,49 @@ func (c *nativeGatewayContext) WriteBytes(status int, payload []byte) (int, erro
 	return hw.Write(payload)
 }
 
+func (c *nativeGatewayContext) WriteReader(status int, contentType string, reader io.Reader, size int64) error {
+	if c == nil {
+		return nil
+	}
+	if strings.TrimSpace(contentType) != "" {
+		c.SetHeader("Content-Type", contentType)
+	}
+	if size >= 0 {
+		c.SetHeader("Content-Length", strconv.FormatInt(size, 10))
+	}
+	if status > 0 {
+		c.SetStatus(status)
+	}
+	_, err := io.Copy(c.responseWriter(), reader)
+	return err
+}
+
+func (c *nativeGatewayContext) ServeFile(path string) error {
+	if c == nil || c.req == nil {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	http.ServeFile(c.responseWriter(), c.req, path)
+	return nil
+}
+
+func (c *nativeGatewayContext) ServeFileAttachment(path, filename string) error {
+	if c == nil || c.req == nil {
+		return nil
+	}
+	if strings.TrimSpace(filename) == "" {
+		filename = filepath.Base(path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	c.SetHeader("Content-Disposition", `attachment; filename="`+filename+`"`)
+	http.ServeFile(c.responseWriter(), c.req, path)
+	return nil
+}
+
 func (c *nativeGatewayContext) Flush() error {
 	if flusher, ok := c.writer.(nativeFlusher); ok {
 		flusher.Flush()
@@ -230,7 +305,17 @@ func (c *nativeGatewayContext) WriteSSEComment(comment string) error {
 }
 
 func (c *nativeGatewayContext) AcceptWebSocket(opts WebSocketAcceptOptions) (WebSocketConn, error) {
-	return nil, ErrWebSocketNotSupported
+	if c == nil || c.req == nil {
+		return nil, ErrWebSocketNotSupported
+	}
+	conn, err := coderws.Accept(c.responseWriter(), c.req, &coderws.AcceptOptions{
+		CompressionMode: websocketCompressionMode(opts.CompressionEnabled),
+		Subprotocols:    opts.Subprotocols,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &coderWebSocketConn{conn: conn}, nil
 }
 
 func (c *nativeGatewayContext) Native() any {
@@ -238,6 +323,38 @@ func (c *nativeGatewayContext) Native() any {
 		return nil
 	}
 	return c.writer
+}
+
+func (c *nativeGatewayContext) responseWriter() http.ResponseWriter {
+	if rw, ok := c.writer.(http.ResponseWriter); ok {
+		return rw
+	}
+	return nativeHTTPResponseWriterAdapter{ctx: c}
+}
+
+type nativeHTTPResponseWriterAdapter struct {
+	ctx *nativeGatewayContext
+}
+
+func (w nativeHTTPResponseWriterAdapter) Header() http.Header {
+	if w.ctx == nil {
+		return http.Header{}
+	}
+	return w.ctx.Header()
+}
+
+func (w nativeHTTPResponseWriterAdapter) WriteHeader(statusCode int) {
+	if w.ctx == nil {
+		return
+	}
+	w.ctx.SetStatus(statusCode)
+}
+
+func (w nativeHTTPResponseWriterAdapter) Write(payload []byte) (int, error) {
+	if w.ctx == nil {
+		return 0, nil
+	}
+	return w.ctx.WriteBytes(0, payload)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

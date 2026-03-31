@@ -81,6 +81,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContextGateway(c, reqModel, reqStream, body)
+	setOpsEndpointContextGateway(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughServiceContext(c, h.errorPassthroughService)
@@ -142,10 +143,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				defaultModel := ""
-				if apiKey.Group != nil {
-					defaultModel = apiKey.Group.DefaultMappedModel
-				}
+				defaultModel := resolveOpenAISelectionFallbackModel(apiKey, reqModel)
 				if defaultModel != "" && defaultModel != reqModel {
 					reqLog.Info("openai_chat_completions.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
@@ -168,12 +166,27 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 					return
 				}
 			} else {
-				if lastFailoverErr != nil {
-					h.handleFailoverExhaustedContext(c, lastFailoverErr, streamStarted)
-				} else {
-					h.handleStreamingAwareErrorContext(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+				var action FailoverAction
+				failedAccountIDs, action = handleOpenAISelectionExhausted(
+					c.Context(),
+					failedAccountIDs,
+					lastFailoverErr,
+					switchCount,
+					maxAccountSwitches,
+				)
+				switch action {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					if lastFailoverErr != nil {
+						h.handleFailoverExhaustedContext(c, lastFailoverErr, streamStarted)
+					} else {
+						h.handleStreamingAwareErrorContext(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+					}
+					return
 				}
-				return
 			}
 		}
 		if selection == nil || selection.Account == nil {

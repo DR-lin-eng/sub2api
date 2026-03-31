@@ -110,6 +110,9 @@ const labelClass = computed(() => {
   if (props.platform === 'anthropic') {
     return `${base} bg-orange-200/60 text-orange-800 dark:bg-orange-800/40 dark:text-orange-300`
   }
+  if (props.platform === 'kiro') {
+    return `${base} bg-cyan-200/60 text-cyan-800 dark:bg-cyan-800/40 dark:text-cyan-300`
+  }
   if (props.platform === 'openai') {
     return `${base} bg-emerald-200/60 text-emerald-800 dark:bg-emerald-800/40 dark:text-emerald-300`
   }
@@ -129,6 +132,10 @@ const badgeClass = computed(() => {
     return isSubscription.value
       ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
       : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
+  } else if (props.platform === 'kiro') {
+    return isSubscription.value
+      ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400'
+      : 'bg-cyan-50 text-cyan-700 dark:bg-cyan-900/20 dark:text-cyan-400'
   } else if (props.platform === 'openai') {
     // OpenAI: green theme
     return isSubscription.value

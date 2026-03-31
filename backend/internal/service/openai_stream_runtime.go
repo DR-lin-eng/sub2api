@@ -328,6 +328,9 @@ func (s *OpenAIGatewayService) applyOpenAITransportOverride(req *http.Request, b
 		return req
 	}
 	if !reqStream {
+		if isOpenAIResponsesCompactRequest(req) {
+			return s.applyOpenAICompactTransportOverride(req)
+		}
 		return req
 	}
 	budget := s.openAIStreamingPhaseBudget()
@@ -360,6 +363,26 @@ func (s *OpenAIGatewayService) applyOpenAITransportOverride(req *http.Request, b
 	}
 	ctx := WithUpstreamTransportOverride(req.Context(), override)
 	return req.WithContext(ctx)
+}
+
+func (s *OpenAIGatewayService) applyOpenAICompactTransportOverride(req *http.Request) *http.Request {
+	if req == nil {
+		return req
+	}
+	override := UpstreamTransportOverride{
+		DialTimeout:           defaultOpenAIStreamingConnectQuickFail,
+		ResponseHeaderTimeout: resolveOpenAICompactResponseHeaderTimeout(s.cfg),
+	}
+	ctx := WithUpstreamTransportOverride(req.Context(), override)
+	return req.WithContext(ctx)
+}
+
+func isOpenAIResponsesCompactRequest(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	path := strings.TrimSpace(req.URL.Path)
+	return strings.HasSuffix(path, "/responses/compact") || strings.Contains(path, "/responses/compact/")
 }
 
 func withOpenAIReasoningEffort(ctx context.Context, reasoningEffort *string) context.Context {

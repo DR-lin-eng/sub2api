@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -35,6 +38,24 @@ type SubscriptionHandler struct {
 	subscriptionService *service.SubscriptionService
 }
 
+type subscriptionGatewayResponder struct {
+	ctx gatewayctx.GatewayContext
+}
+
+func (g subscriptionGatewayResponder) Request() *http.Request {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Request()
+}
+
+func (g subscriptionGatewayResponder) WriteJSON(status int, payload any) {
+	if g.ctx == nil {
+		return
+	}
+	g.ctx.WriteJSON(status, payload)
+}
+
 // NewSubscriptionHandler creates a new user subscription handler
 func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *SubscriptionHandler {
 	return &SubscriptionHandler{
@@ -45,15 +66,19 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 // List handles listing current user's subscriptions
 // GET /api/v1/subscriptions
 func (h *SubscriptionHandler) List(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SubscriptionHandler) ListGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
+		response.ErrorContext(subscriptionGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not found in context")
 		return
 	}
 
-	subscriptions, err := h.subscriptionService.ListUserSubscriptions(c.Request.Context(), subject.UserID)
+	subscriptions, err := h.subscriptionService.ListUserSubscriptions(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(subscriptionGatewayResponder{ctx: c}, err)
 		return
 	}
 
@@ -61,21 +86,25 @@ func (h *SubscriptionHandler) List(c *gin.Context) {
 	for i := range subscriptions {
 		out = append(out, *dto.UserSubscriptionFromService(&subscriptions[i]))
 	}
-	response.Success(c, out)
+	response.SuccessContext(subscriptionGatewayResponder{ctx: c}, out)
 }
 
 // GetActive handles getting current user's active subscriptions
 // GET /api/v1/subscriptions/active
 func (h *SubscriptionHandler) GetActive(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetActiveGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SubscriptionHandler) GetActiveGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
+		response.ErrorContext(subscriptionGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not found in context")
 		return
 	}
 
-	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request.Context(), subject.UserID)
+	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(subscriptionGatewayResponder{ctx: c}, err)
 		return
 	}
 
@@ -83,29 +112,33 @@ func (h *SubscriptionHandler) GetActive(c *gin.Context) {
 	for i := range subscriptions {
 		out = append(out, *dto.UserSubscriptionFromService(&subscriptions[i]))
 	}
-	response.Success(c, out)
+	response.SuccessContext(subscriptionGatewayResponder{ctx: c}, out)
 }
 
 // GetProgress handles getting subscription progress for current user
 // GET /api/v1/subscriptions/progress
 func (h *SubscriptionHandler) GetProgress(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetProgressGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SubscriptionHandler) GetProgressGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
+		response.ErrorContext(subscriptionGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not found in context")
 		return
 	}
 
 	// Get all active subscriptions with progress
-	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request.Context(), subject.UserID)
+	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(subscriptionGatewayResponder{ctx: c}, err)
 		return
 	}
 
 	result := make([]SubscriptionProgressInfo, 0, len(subscriptions))
 	for i := range subscriptions {
 		sub := &subscriptions[i]
-		progress, err := h.subscriptionService.GetSubscriptionProgress(c.Request.Context(), sub.ID)
+		progress, err := h.subscriptionService.GetSubscriptionProgress(c.Request().Context(), sub.ID)
 		if err != nil {
 			// Skip subscriptions with errors
 			continue
@@ -116,22 +149,26 @@ func (h *SubscriptionHandler) GetProgress(c *gin.Context) {
 		})
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(subscriptionGatewayResponder{ctx: c}, result)
 }
 
 // GetSummary handles getting a summary of current user's subscription status
 // GET /api/v1/subscriptions/summary
 func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	h.GetSummaryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *SubscriptionHandler) GetSummaryGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
+		response.ErrorContext(subscriptionGatewayResponder{ctx: c}, http.StatusUnauthorized, "User not found in context")
 		return
 	}
 
 	// Get all active subscriptions
-	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request.Context(), subject.UserID)
+	subscriptions, err := h.subscriptionService.ListActiveUserSubscriptions(c.Request().Context(), subject.UserID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(subscriptionGatewayResponder{ctx: c}, err)
 		return
 	}
 
@@ -184,5 +221,5 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 		Subscriptions: items,
 	}
 
-	response.Success(c, summary)
+	response.SuccessContext(subscriptionGatewayResponder{ctx: c}, summary)
 }

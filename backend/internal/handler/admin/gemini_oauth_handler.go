@@ -1,10 +1,13 @@
 package admin
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -21,8 +24,12 @@ func NewGeminiOAuthHandler(geminiOAuthService *service.GeminiOAuthService) *Gemi
 // GetCapabilities returns the Gemini OAuth configuration capabilities.
 // GET /api/v1/admin/gemini/oauth/capabilities
 func (h *GeminiOAuthHandler) GetCapabilities(c *gin.Context) {
+	h.GetCapabilitiesGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GeminiOAuthHandler) GetCapabilitiesGateway(c gatewayctx.GatewayContext) {
 	cfg := h.geminiOAuthService.GetOAuthConfig()
-	response.Success(c, cfg)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, cfg)
 }
 
 type GeminiGenerateAuthURLRequest struct {
@@ -38,9 +45,13 @@ type GeminiGenerateAuthURLRequest struct {
 // GenerateAuthURL generates Google OAuth authorization URL for Gemini.
 // POST /api/v1/admin/gemini/oauth/auth-url
 func (h *GeminiOAuthHandler) GenerateAuthURL(c *gin.Context) {
+	h.GenerateAuthURLGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GeminiOAuthHandler) GenerateAuthURLGateway(c gatewayctx.GatewayContext) {
 	var req GeminiGenerateAuthURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -50,14 +61,14 @@ func (h *GeminiOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		oauthType = "code_assist"
 	}
 	if oauthType != "code_assist" && oauthType != "google_one" && oauthType != "ai_studio" {
-		response.BadRequest(c, "Invalid oauth_type: must be 'code_assist', 'google_one', or 'ai_studio'")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid oauth_type: must be 'code_assist', 'google_one', or 'ai_studio'")
 		return
 	}
 
 	// Always pass the "hosted" callback URI; the OAuth service may override it depending on
 	// oauth_type and whether the built-in Gemini CLI OAuth client is used.
-	redirectURI := deriveGeminiRedirectURI(c)
-	result, err := h.geminiOAuthService.GenerateAuthURL(c.Request.Context(), req.ProxyID, redirectURI, req.ProjectID, oauthType, req.TierID)
+	redirectURI := deriveGeminiRedirectURIGateway(c)
+	result, err := h.geminiOAuthService.GenerateAuthURL(c.Request().Context(), req.ProxyID, redirectURI, req.ProjectID, oauthType, req.TierID)
 	if err != nil {
 		msg := err.Error()
 		// Treat missing/invalid OAuth client configuration as a user/config error.
@@ -66,14 +77,14 @@ func (h *GeminiOAuthHandler) GenerateAuthURL(c *gin.Context) {
 			strings.Contains(msg, "requires a custom OAuth Client") ||
 			strings.Contains(msg, "GEMINI_CLI_OAUTH_CLIENT_SECRET_MISSING") ||
 			strings.Contains(msg, "built-in Gemini CLI OAuth client_secret is not configured") {
-			response.BadRequest(c, "Failed to generate auth URL: "+msg)
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Failed to generate auth URL: "+msg)
 			return
 		}
-		response.InternalError(c, "Failed to generate auth URL: "+msg)
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to generate auth URL: "+msg)
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 type GeminiExchangeCodeRequest struct {
@@ -91,9 +102,13 @@ type GeminiExchangeCodeRequest struct {
 // ExchangeCode exchanges authorization code for tokens.
 // POST /api/v1/admin/gemini/oauth/exchange-code
 func (h *GeminiOAuthHandler) ExchangeCode(c *gin.Context) {
+	h.ExchangeCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *GeminiOAuthHandler) ExchangeCodeGateway(c gatewayctx.GatewayContext) {
 	var req GeminiExchangeCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -103,11 +118,11 @@ func (h *GeminiOAuthHandler) ExchangeCode(c *gin.Context) {
 		oauthType = "code_assist"
 	}
 	if oauthType != "code_assist" && oauthType != "google_one" && oauthType != "ai_studio" {
-		response.BadRequest(c, "Invalid oauth_type: must be 'code_assist', 'google_one', or 'ai_studio'")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid oauth_type: must be 'code_assist', 'google_one', or 'ai_studio'")
 		return
 	}
 
-	tokenInfo, err := h.geminiOAuthService.ExchangeCode(c.Request.Context(), &service.GeminiExchangeCodeInput{
+	tokenInfo, err := h.geminiOAuthService.ExchangeCode(c.Request().Context(), &service.GeminiExchangeCodeInput{
 		SessionID: req.SessionID,
 		State:     req.State,
 		Code:      req.Code,
@@ -116,11 +131,11 @@ func (h *GeminiOAuthHandler) ExchangeCode(c *gin.Context) {
 		TierID:    req.TierID,
 	})
 	if err != nil {
-		response.BadRequest(c, "Failed to exchange code: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Failed to exchange code: "+err.Error())
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 func deriveGeminiRedirectURI(c *gin.Context) string {
@@ -139,6 +154,28 @@ func deriveGeminiRedirectURI(c *gin.Context) string {
 
 	host := strings.TrimSpace(c.Request.Host)
 	if xfHost := strings.TrimSpace(c.GetHeader("X-Forwarded-Host")); xfHost != "" {
+		host = strings.TrimSpace(strings.Split(xfHost, ",")[0])
+	}
+
+	return fmt.Sprintf("%s://%s/auth/callback", scheme, host)
+}
+
+func deriveGeminiRedirectURIGateway(c gatewayctx.GatewayContext) string {
+	origin := strings.TrimSpace(c.HeaderValue("Origin"))
+	if origin != "" {
+		return strings.TrimRight(origin, "/") + "/auth/callback"
+	}
+
+	scheme := "http"
+	if req := c.Request(); req != nil && req.TLS != nil {
+		scheme = "https"
+	}
+	if xfProto := strings.TrimSpace(c.HeaderValue("X-Forwarded-Proto")); xfProto != "" {
+		scheme = strings.TrimSpace(strings.Split(xfProto, ",")[0])
+	}
+
+	host := strings.TrimSpace(c.Request().Host)
+	if xfHost := strings.TrimSpace(c.HeaderValue("X-Forwarded-Host")); xfHost != "" {
 		host = strings.TrimSpace(strings.Split(xfHost, ",")[0])
 	}
 

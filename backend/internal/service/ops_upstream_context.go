@@ -16,6 +16,8 @@ const (
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
+	OpsUpstreamModelKey        = "ops_upstream_model"
+	OpsRequestTypeKey          = "ops_request_type"
 
 	// Best-effort capture of the current upstream request body so ops can
 	// retry the specific upstream attempt (not just the client request).
@@ -71,6 +73,32 @@ func SetOpsLatencyMsContext(c gatewayctx.GatewayContext, key string, value int64
 		return
 	}
 	c.SetValue(key, value)
+}
+
+func SetOpsUpstreamModel(c *gin.Context, upstreamModel string) {
+	SetOpsUpstreamModelContext(gatewayctx.FromGin(c), upstreamModel)
+}
+
+func SetOpsUpstreamModelContext(c gatewayctx.GatewayContext, upstreamModel string) {
+	if c == nil {
+		return
+	}
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return
+	}
+	c.SetValue(OpsUpstreamModelKey, upstreamModel)
+}
+
+func SetOpsRequestType(c *gin.Context, requestType RequestType) {
+	SetOpsRequestTypeContext(gatewayctx.FromGin(c), requestType)
+}
+
+func SetOpsRequestTypeContext(c gatewayctx.GatewayContext, requestType RequestType) {
+	if c == nil {
+		return
+	}
+	c.SetValue(OpsRequestTypeKey, int16(requestType.Normalize()))
 }
 
 // SetOpsUpstreamError is the exported wrapper for setOpsUpstreamError, used by

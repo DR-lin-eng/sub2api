@@ -7,6 +7,8 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	ffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
+	rustsidecar "github.com/Wei-Shaw/sub2api/internal/rustbridge/sidecar"
 )
 
 type GatewaySchedulerRuntimeEntry struct {
@@ -47,8 +49,36 @@ type OpenAIWSRuntimeResponse struct {
 	Transport            OpenAIWSTransportMetricsSnapshot `json:"transport"`
 	Passthrough          map[string]int64                 `json:"passthrough,omitempty"`
 	Relay                OpenAIStreamRelayMetricsSnapshot `json:"relay"`
+	RustFFI              ffi.MetricsSnapshot              `json:"rust_ffi"`
+	RustSidecar          *RustSidecarRuntimeResponse      `json:"rust_sidecar,omitempty"`
 	Circuits             OpenAICircuitRuntimeSnapshot     `json:"circuits"`
 	Timestamp            time.Time                        `json:"timestamp"`
+}
+
+type RustSidecarRuntimeResponse struct {
+	Enabled                        bool   `json:"enabled"`
+	Available                      bool   `json:"available"`
+	Status                         string `json:"status,omitempty"`
+	Service                        string `json:"service,omitempty"`
+	Version                        string `json:"version,omitempty"`
+	ActiveConnections              int64  `json:"active_connections,omitempty"`
+	TotalConnections               int64  `json:"total_connections,omitempty"`
+	ActiveUpgrades                 int64  `json:"active_upgrades,omitempty"`
+	TotalUpgrades                  int64  `json:"total_upgrades,omitempty"`
+	TotalRequests                  int64  `json:"total_requests,omitempty"`
+	TotalRequestErrors             int64  `json:"total_request_errors,omitempty"`
+	UpstreamUnavailableTotal       int64  `json:"upstream_unavailable_total,omitempty"`
+	UpstreamHandshakeFailedTotal   int64  `json:"upstream_handshake_failed_total,omitempty"`
+	UpstreamRequestFailedTotal     int64  `json:"upstream_request_failed_total,omitempty"`
+	UpgradeErrorsTotal             int64  `json:"upgrade_errors_total,omitempty"`
+	RelayBytesDownstreamToUpstream int64  `json:"relay_bytes_downstream_to_upstream,omitempty"`
+	RelayBytesUpstreamToDownstream int64  `json:"relay_bytes_upstream_to_downstream,omitempty"`
+	RelayFramesDownstreamToUpstream int64 `json:"relay_frames_downstream_to_upstream,omitempty"`
+	RelayFramesUpstreamToDownstream int64 `json:"relay_frames_upstream_to_downstream,omitempty"`
+	RelayCloseFramesTotal           int64 `json:"relay_close_frames_total,omitempty"`
+	RelayPingFramesTotal            int64 `json:"relay_ping_frames_total,omitempty"`
+	RelayPongFramesTotal            int64 `json:"relay_pong_frames_total,omitempty"`
+	Error                          string `json:"error,omitempty"`
 }
 
 func (s *OpsService) GetGatewaySchedulerRuntime(
@@ -179,8 +209,86 @@ func (s *OpsService) GetOpenAIWSRuntime(
 			"incomplete_close_total":            snapshot.Passthrough.IncompleteCloseTotal,
 			"stream_closed_after_content_total": snapshot.Passthrough.StreamClosedAfterContentTotal,
 		},
-		Relay:     snapshot.Relay,
-		Circuits:  snapshot.Circuits,
-		Timestamp: time.Now().UTC(),
+		RustFFI:     snapshot.RustFFI,
+		RustSidecar: s.getRustSidecarRuntime(ctx),
+		Relay:       snapshot.Relay,
+		Circuits:    snapshot.Circuits,
+		Timestamp:   time.Now().UTC(),
 	}, nil
+}
+
+func (s *OpsService) getRustSidecarRuntime(ctx context.Context) *RustSidecarRuntimeResponse {
+	resp := &RustSidecarRuntimeResponse{}
+	if s == nil || s.cfg == nil {
+		return resp
+	}
+	resp.Enabled = s.cfg.Rust.Sidecar.Enabled
+	if !resp.Enabled {
+		return resp
+	}
+	if cached, ok := s.rustSidecarHealthCache.Load().(*opsCachedRustSidecarHealth); ok && cached != nil && time.Now().UnixNano() < cached.ExpiresAt && cached.Value != nil {
+		cloned := *cached.Value
+		return &cloned
+	}
+	value, _, _ := s.rustSidecarHealthSF.Do("rust_sidecar_health", func() (any, error) {
+		next := &RustSidecarRuntimeResponse{Enabled: true}
+		client, err := rustsidecar.NewClient(s.cfg.Rust.Sidecar)
+		if err != nil {
+			next.Error = err.Error()
+			s.rustSidecarHealthCache.Store(&opsCachedRustSidecarHealth{
+				Value:     next,
+				ExpiresAt: time.Now().Add(opsRustSidecarHealthTTL).UnixNano(),
+			})
+			return next, nil
+		}
+		timeout := time.Duration(s.cfg.Rust.Sidecar.HealthcheckTimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		healthCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		health, err := client.Health(healthCtx)
+		if err != nil {
+			next.Error = err.Error()
+			s.rustSidecarHealthCache.Store(&opsCachedRustSidecarHealth{
+				Value:     next,
+				ExpiresAt: time.Now().Add(opsRustSidecarHealthTTL).UnixNano(),
+			})
+			return next, nil
+		}
+		next.Available = true
+		next.Status = health.Status
+		next.Service = health.Service
+		next.Version = health.Version
+		next.ActiveConnections = health.ActiveConnections
+		next.TotalConnections = health.TotalConnections
+		next.ActiveUpgrades = health.ActiveUpgrades
+		next.TotalUpgrades = health.TotalUpgrades
+		next.TotalRequests = health.TotalRequests
+		next.TotalRequestErrors = health.TotalRequestErrors
+		next.UpstreamUnavailableTotal = health.UpstreamUnavailableTotal
+		next.UpstreamHandshakeFailedTotal = health.UpstreamHandshakeFailedTotal
+		next.UpstreamRequestFailedTotal = health.UpstreamRequestFailedTotal
+		next.UpgradeErrorsTotal = health.UpgradeErrorsTotal
+		next.RelayBytesDownstreamToUpstream = health.RelayBytesDownstreamToUpstream
+		next.RelayBytesUpstreamToDownstream = health.RelayBytesUpstreamToDownstream
+		next.RelayFramesDownstreamToUpstream = health.RelayFramesDownstreamToUpstream
+		next.RelayFramesUpstreamToDownstream = health.RelayFramesUpstreamToDownstream
+		next.RelayCloseFramesTotal = health.RelayCloseFramesTotal
+		next.RelayPingFramesTotal = health.RelayPingFramesTotal
+		next.RelayPongFramesTotal = health.RelayPongFramesTotal
+		s.rustSidecarHealthCache.Store(&opsCachedRustSidecarHealth{
+			Value:     next,
+			ExpiresAt: time.Now().Add(opsRustSidecarHealthTTL).UnixNano(),
+		})
+		return next, nil
+	})
+	if cachedResp, ok := value.(*RustSidecarRuntimeResponse); ok && cachedResp != nil {
+		cloned := *cachedResp
+		return &cloned
+	}
+	return resp
 }

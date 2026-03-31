@@ -8,6 +8,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -48,6 +49,39 @@ func executeAdminIdempotent(
 		Method:         c.Request.Method,
 		Route:          c.FullPath(),
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
+		Payload:        payload,
+		RequireKey:     true,
+		TTL:            ttl,
+	}, execute)
+}
+
+func executeAdminIdempotentGateway(
+	c gatewayctx.GatewayContext,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	execute func(context.Context) (any, error),
+) (*service.IdempotencyExecuteResult, error) {
+	coordinator := service.DefaultIdempotencyCoordinator()
+	if coordinator == nil {
+		data, err := execute(c.Request().Context())
+		if err != nil {
+			return nil, err
+		}
+		return &service.IdempotencyExecuteResult{Data: data}, nil
+	}
+
+	actorScope := "admin:0"
+	if subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c); ok {
+		actorScope = "admin:" + strconv.FormatInt(subject.UserID, 10)
+	}
+
+	return coordinator.Execute(c.Request().Context(), service.IdempotencyExecuteOptions{
+		Scope:          scope,
+		ActorScope:     actorScope,
+		Method:         c.Request().Method,
+		Route:          c.Path(),
+		IdempotencyKey: c.HeaderValue("Idempotency-Key"),
 		Payload:        payload,
 		RequireKey:     true,
 		TTL:            ttl,
@@ -112,4 +146,55 @@ func executeAdminIdempotentJSONWithMode(
 		c.Header("X-Idempotency-Replayed", "true")
 	}
 	response.Success(c, result.Data)
+}
+
+func executeAdminIdempotentGatewayJSON(
+	c gatewayctx.GatewayContext,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	execute func(context.Context) (any, error),
+) {
+	executeAdminIdempotentGatewayJSONWithMode(c, scope, payload, ttl, idempotencyStoreUnavailableFailClose, execute)
+}
+
+func executeAdminIdempotentGatewayJSONWithMode(
+	c gatewayctx.GatewayContext,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	mode idempotencyStoreUnavailableMode,
+	execute func(context.Context) (any, error),
+) {
+	result, err := executeAdminIdempotentGateway(c, scope, payload, ttl, execute)
+	responder := gatewayJSONResponder{ctx: c}
+	if err != nil {
+		if infraerrors.Code(err) == infraerrors.Code(service.ErrIdempotencyStoreUnavail) {
+			strategy := "fail_close"
+			if mode == idempotencyStoreUnavailableFailOpen {
+				strategy = "fail_open"
+			}
+			service.RecordIdempotencyStoreUnavailable(c.Path(), scope, "handler_"+strategy)
+			logger.LegacyPrintf("handler.idempotency", "[Idempotency] store unavailable: method=%s route=%s scope=%s strategy=%s", c.Request().Method, c.Path(), scope, strategy)
+			if mode == idempotencyStoreUnavailableFailOpen {
+				data, fallbackErr := execute(c.Request().Context())
+				if fallbackErr != nil {
+					response.ErrorFromContext(responder, fallbackErr)
+					return
+				}
+				c.SetHeader("X-Idempotency-Degraded", "store-unavailable")
+				response.SuccessContext(responder, data)
+				return
+			}
+		}
+		if retryAfter := service.RetryAfterSecondsFromError(err); retryAfter > 0 {
+			c.SetHeader("Retry-After", strconv.Itoa(retryAfter))
+		}
+		response.ErrorFromContext(responder, err)
+		return
+	}
+	if result != nil && result.Replayed {
+		c.SetHeader("X-Idempotency-Replayed", "true")
+	}
+	response.SuccessContext(responder, result.Data)
 }

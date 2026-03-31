@@ -3,16 +3,17 @@ package dto
 import "time"
 
 type User struct {
-	ID            int64     `json:"id"`
-	Email         string    `json:"email"`
-	Username      string    `json:"username"`
-	Role          string    `json:"role"`
-	Balance       float64   `json:"balance"`
-	Concurrency   int       `json:"concurrency"`
-	Status        string    `json:"status"`
-	AllowedGroups []int64   `json:"allowed_groups"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                   int64     `json:"id"`
+	Email                string    `json:"email"`
+	Username             string    `json:"username"`
+	Role                 string    `json:"role"`
+	Balance              float64   `json:"balance"`
+	Concurrency          int       `json:"concurrency"`
+	UnlimitedConcurrency bool      `json:"unlimited_concurrency"`
+	Status               string    `json:"status"`
+	AllowedGroups        []int64   `json:"allowed_groups"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 
 	APIKeys       []APIKey           `json:"api_keys,omitempty"`
 	Subscriptions []UserSubscription `json:"subscriptions,omitempty"`
@@ -165,6 +166,12 @@ type Account struct {
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`
+
+	SyncState            string `json:"sync_state,omitempty"`
+	SyncProgress         int    `json:"sync_progress,omitempty"`
+	SyncMessage          string `json:"sync_message,omitempty"`
+	SyncBatchID          string `json:"sync_batch_id,omitempty"`
+	DuplicateOfAccountID *int64 `json:"duplicate_of_account_id,omitempty"`
 
 	// 5h窗口费用控制（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 从 extra 字段提取，方便前端显示和编辑

@@ -3,8 +3,6 @@ package admin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,9 +19,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -223,185 +224,186 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 // List handles listing all accounts with pagination
 // GET /api/v1/admin/accounts
 func (h *AccountHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
-	platform := c.Query("platform")
-	accountType := c.Query("type")
-	status := c.Query("status")
-	search := c.Query("search")
-	plan := c.Query("plan")
-	oauthType := c.Query("oauth_type")
-	tierID := c.Query("tier_id")
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+	platform := c.QueryValue("platform")
+	accountType := c.QueryValue("type")
+	status := c.QueryValue("status")
+	search := c.QueryValue("search")
+	plan := c.QueryValue("plan")
+	oauthType := c.QueryValue("oauth_type")
+	tierID := c.QueryValue("tier_id")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)
 	if len(search) > 100 {
 		search = search[:100]
 	}
-	lite := parseBoolQueryWithDefault(c.Query("lite"), false)
+	lite := parseBoolQueryWithDefault(c.QueryValue("lite"), false)
 
 	var groupID int64
-	if groupIDStr := c.Query("group"); groupIDStr != "" {
+	if groupIDStr := c.QueryValue("group"); groupIDStr != "" {
 		if groupIDStr == accountListGroupUngroupedQueryValue {
 			groupID = service.AccountListGroupUngrouped
 		} else {
 			parsedGroupID, parseErr := strconv.ParseInt(groupIDStr, 10, 64)
 			if parseErr != nil {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
 				return
 			}
 			if parsedGroupID < 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
 				return
 			}
 			groupID = parsedGroupID
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, groupID)
+	cachedPayload, hit, err := h.getAccountListCached(
+		c.Request().Context(),
+		page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, groupID, lite,
+		func(ctx context.Context) ([]AccountWithConcurrency, int64, error) {
+			accounts, total, err := h.adminService.ListAccounts(ctx, page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, groupID)
+			if err != nil {
+				return nil, 0, err
+			}
+
+			accountIDs := make([]int64, len(accounts))
+			for i, acc := range accounts {
+				accountIDs[i] = acc.ID
+			}
+
+			concurrencyCounts := make(map[int64]int)
+			var windowCosts map[int64]float64
+			var activeSessions map[int64]int
+			var rpmCounts map[int64]int
+
+			if h.concurrencyService != nil {
+				if cc, ccErr := h.concurrencyService.GetAccountConcurrencyBatch(ctx, accountIDs); ccErr == nil && cc != nil {
+					concurrencyCounts = cc
+				}
+			}
+
+			windowCostAccountIDs := make([]int64, 0)
+			sessionLimitAccountIDs := make([]int64, 0)
+			rpmAccountIDs := make([]int64, 0)
+			sessionIdleTimeouts := make(map[int64]time.Duration)
+			for i := range accounts {
+				acc := &accounts[i]
+				if acc.IsAnthropicOAuthOrSetupToken() {
+					if acc.GetWindowCostLimit() > 0 {
+						windowCostAccountIDs = append(windowCostAccountIDs, acc.ID)
+					}
+					if acc.GetMaxSessions() > 0 {
+						sessionLimitAccountIDs = append(sessionLimitAccountIDs, acc.ID)
+						sessionIdleTimeouts[acc.ID] = time.Duration(acc.GetSessionIdleTimeoutMinutes()) * time.Minute
+					}
+					if acc.GetBaseRPM() > 0 {
+						rpmAccountIDs = append(rpmAccountIDs, acc.ID)
+					}
+				}
+			}
+
+			if len(rpmAccountIDs) > 0 && h.rpmCache != nil {
+				rpmCounts, _ = h.rpmCache.GetRPMBatch(ctx, rpmAccountIDs)
+				if rpmCounts == nil {
+					rpmCounts = make(map[int64]int)
+				}
+			}
+
+			if len(sessionLimitAccountIDs) > 0 && h.sessionLimitCache != nil {
+				activeSessions, _ = h.sessionLimitCache.GetActiveSessionCountBatch(ctx, sessionLimitAccountIDs, sessionIdleTimeouts)
+				if activeSessions == nil {
+					activeSessions = make(map[int64]int)
+				}
+			}
+
+			if len(windowCostAccountIDs) > 0 && h.accountUsageService != nil {
+				windowCosts = make(map[int64]float64, len(windowCostAccountIDs))
+				idsByWindowStart := make(map[int64][]int64)
+				windowStartTimes := make(map[int64]time.Time)
+				for i := range accounts {
+					acc := &accounts[i]
+					if !acc.IsAnthropicOAuthOrSetupToken() || acc.GetWindowCostLimit() <= 0 {
+						continue
+					}
+					startTime := acc.GetCurrentWindowStartTime()
+					windowStartKey := startTime.Unix()
+					idsByWindowStart[windowStartKey] = append(idsByWindowStart[windowStartKey], acc.ID)
+					windowStartTimes[windowStartKey] = startTime
+				}
+
+				var mu sync.Mutex
+				g, gctx := errgroup.WithContext(ctx)
+				g.SetLimit(4)
+
+				for windowStartKey, ids := range idsByWindowStart {
+					startTime := windowStartTimes[windowStartKey]
+					idsCopy := append([]int64(nil), ids...)
+					g.Go(func() error {
+						statsByAccount, err := h.accountUsageService.GetAccountWindowStatsBatch(gctx, idsCopy, startTime)
+						if err != nil {
+							return nil
+						}
+						mu.Lock()
+						for accountID, stats := range statsByAccount {
+							if stats != nil {
+								windowCosts[accountID] = stats.StandardCost
+							}
+						}
+						mu.Unlock()
+						return nil
+					})
+				}
+				_ = g.Wait()
+			}
+
+			result := make([]AccountWithConcurrency, len(accounts))
+			for i := range accounts {
+				acc := &accounts[i]
+				item := AccountWithConcurrency{
+					Account:            dto.AccountFromService(acc),
+					CurrentConcurrency: concurrencyCounts[acc.ID],
+				}
+				if windowCosts != nil {
+					if cost, ok := windowCosts[acc.ID]; ok {
+						item.CurrentWindowCost = &cost
+					}
+				}
+				if activeSessions != nil {
+					if count, ok := activeSessions[acc.ID]; ok {
+						item.ActiveSessions = &count
+					}
+				}
+				if rpmCounts != nil {
+					if rpm, ok := rpmCounts[acc.ID]; ok {
+						item.CurrentRPM = &rpm
+					}
+				}
+				result[i] = item
+			}
+			return result, total, nil
+		},
+	)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	// Get current concurrency counts for all accounts
-	accountIDs := make([]int64, len(accounts))
-	for i, acc := range accounts {
-		accountIDs[i] = acc.ID
-	}
-
-	concurrencyCounts := make(map[int64]int)
-	var windowCosts map[int64]float64
-	var activeSessions map[int64]int
-	var rpmCounts map[int64]int
-
-	// 始终获取并发数（Redis ZCARD，极低开销）
-	if h.concurrencyService != nil {
-		if cc, ccErr := h.concurrencyService.GetAccountConcurrencyBatch(c.Request.Context(), accountIDs); ccErr == nil && cc != nil {
-			concurrencyCounts = cc
-		}
-	}
-
-	// 识别需要查询窗口费用、会话数和 RPM 的账号（Anthropic OAuth/SetupToken 且启用了相应功能）
-	windowCostAccountIDs := make([]int64, 0)
-	sessionLimitAccountIDs := make([]int64, 0)
-	rpmAccountIDs := make([]int64, 0)
-	sessionIdleTimeouts := make(map[int64]time.Duration) // 各账号的会话空闲超时配置
-	for i := range accounts {
-		acc := &accounts[i]
-		if acc.IsAnthropicOAuthOrSetupToken() {
-			if acc.GetWindowCostLimit() > 0 {
-				windowCostAccountIDs = append(windowCostAccountIDs, acc.ID)
-			}
-			if acc.GetMaxSessions() > 0 {
-				sessionLimitAccountIDs = append(sessionLimitAccountIDs, acc.ID)
-				sessionIdleTimeouts[acc.ID] = time.Duration(acc.GetSessionIdleTimeoutMinutes()) * time.Minute
-			}
-			if acc.GetBaseRPM() > 0 {
-				rpmAccountIDs = append(rpmAccountIDs, acc.ID)
-			}
-		}
-	}
-
-	// 始终获取 RPM 计数（Redis GET，极低开销）
-	if len(rpmAccountIDs) > 0 && h.rpmCache != nil {
-		rpmCounts, _ = h.rpmCache.GetRPMBatch(c.Request.Context(), rpmAccountIDs)
-		if rpmCounts == nil {
-			rpmCounts = make(map[int64]int)
-		}
-	}
-
-	// 始终获取活跃会话数（Redis ZCARD，低开销）
-	if len(sessionLimitAccountIDs) > 0 && h.sessionLimitCache != nil {
-		activeSessions, _ = h.sessionLimitCache.GetActiveSessionCountBatch(c.Request.Context(), sessionLimitAccountIDs, sessionIdleTimeouts)
-		if activeSessions == nil {
-			activeSessions = make(map[int64]int)
-		}
-	}
-
-	// 始终获取窗口费用（按窗口起点分组批量聚合）
-	if len(windowCostAccountIDs) > 0 && h.accountUsageService != nil {
-		windowCosts = make(map[int64]float64, len(windowCostAccountIDs))
-		idsByWindowStart := make(map[int64][]int64)
-		windowStartTimes := make(map[int64]time.Time)
-		for i := range accounts {
-			acc := &accounts[i]
-			if !acc.IsAnthropicOAuthOrSetupToken() || acc.GetWindowCostLimit() <= 0 {
-				continue
-			}
-			startTime := acc.GetCurrentWindowStartTime()
-			windowStartKey := startTime.Unix()
-			idsByWindowStart[windowStartKey] = append(idsByWindowStart[windowStartKey], acc.ID)
-			windowStartTimes[windowStartKey] = startTime
-		}
-
-		var mu sync.Mutex
-		g, gctx := errgroup.WithContext(c.Request.Context())
-		g.SetLimit(4)
-
-		for windowStartKey, ids := range idsByWindowStart {
-			startTime := windowStartTimes[windowStartKey]
-			idsCopy := append([]int64(nil), ids...)
-			g.Go(func() error {
-				statsByAccount, err := h.accountUsageService.GetAccountWindowStatsBatch(gctx, idsCopy, startTime)
-				if err != nil {
-					return nil
-				}
-				mu.Lock()
-				for accountID, stats := range statsByAccount {
-					if stats != nil {
-						windowCosts[accountID] = stats.StandardCost
-					}
-				}
-				mu.Unlock()
-				return nil // 不返回错误，允许部分失败
-			})
-		}
-		_ = g.Wait()
-	}
-
-	// Build response with concurrency info
-	result := make([]AccountWithConcurrency, len(accounts))
-	for i := range accounts {
-		acc := &accounts[i]
-		item := AccountWithConcurrency{
-			Account:            dto.AccountFromService(acc),
-			CurrentConcurrency: concurrencyCounts[acc.ID],
-		}
-
-		// 添加窗口费用（仅当启用时）
-		if windowCosts != nil {
-			if cost, ok := windowCosts[acc.ID]; ok {
-				item.CurrentWindowCost = &cost
-			}
-		}
-
-		// 添加活跃会话数（仅当启用时）
-		if activeSessions != nil {
-			if count, ok := activeSessions[acc.ID]; ok {
-				item.ActiveSessions = &count
-			}
-		}
-
-		// 添加 RPM 计数（仅当启用时）
-		if rpmCounts != nil {
-			if rpm, ok := rpmCounts[acc.ID]; ok {
-				item.CurrentRPM = &rpm
-			}
-		}
-
-		result[i] = item
-	}
-
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, lite)
+	c.SetHeader("X-Snapshot-Cache", cacheStatusValue(hit))
+	etag := buildAccountsListETag(cachedPayload.Items, cachedPayload.Total, page, pageSize, platform, accountType, status, search, plan, oauthType, tierID, lite)
 	if etag != "" {
-		c.Header("ETag", etag)
-		c.Header("Vary", "If-None-Match")
-		if ifNoneMatchMatched(c.GetHeader("If-None-Match"), etag) {
-			c.Status(http.StatusNotModified)
+		c.SetHeader("ETag", etag)
+		c.SetHeader("Vary", "If-None-Match")
+		if ifNoneMatchMatched(c.HeaderValue("If-None-Match"), etag) {
+			_, _ = c.WriteBytes(http.StatusNotModified, nil)
 			return
 		}
 	}
 
-	response.Paginated(c, result, total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, cachedPayload.Items, cachedPayload.Total, page, pageSize)
 }
 
 func buildAccountsListETag(
@@ -442,8 +444,7 @@ func buildAccountsListETag(
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256(raw)
-	return "\"" + hex.EncodeToString(sum[:]) + "\""
+	return ffi.BuildETagFromBytes(raw)
 }
 
 func ifNoneMatchMatched(ifNoneMatch, etag string) bool {
@@ -468,32 +469,40 @@ func ifNoneMatchMatched(ifNoneMatch, etag string) bool {
 // GetByID handles getting an account by ID
 // GET /api/v1/admin/accounts/:id
 func (h *AccountHandler) GetByID(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // CheckMixedChannel handles checking mixed channel risk for account-group binding.
 // POST /api/v1/admin/accounts/check-mixed-channel
 func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
+	h.CheckMixedChannelGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) CheckMixedChannelGateway(c gatewayctx.GatewayContext) {
 	var req CheckMixedChannelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	if len(req.GroupIDs) == 0 {
-		response.Success(c, gin.H{"has_risk": false})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"has_risk": false})
 		return
 	}
 
@@ -502,15 +511,15 @@ func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
 		accountID = *req.AccountID
 	}
 
-	err := h.adminService.CheckMixedChannelRisk(c.Request.Context(), accountID, req.Platform, req.GroupIDs)
+	err := h.adminService.CheckMixedChannelRisk(c.Request().Context(), accountID, req.Platform, req.GroupIDs)
 	if err != nil {
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
-			response.Success(c, gin.H{
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 				"has_risk": true,
 				"error":    "mixed_channel_warning",
 				"message":  mixedErr.Error(),
-				"details": gin.H{
+				"details": map[string]any{
 					"group_id":         mixedErr.GroupID,
 					"group_name":       mixedErr.GroupName,
 					"current_platform": mixedErr.CurrentPlatform,
@@ -520,23 +529,27 @@ func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
 			return
 		}
 
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"has_risk": false})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"has_risk": false})
 }
 
 // Create handles creating a new account
 // POST /api/v1/admin/accounts
 func (h *AccountHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreateAccountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
-		response.BadRequest(c, "rate_multiplier must be >= 0")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "rate_multiplier must be >= 0")
 		return
 	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
@@ -545,7 +558,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
-	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	result, err := executeAdminIdempotentGateway(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 			Name:                  req.Name,
 			Notes:                 req.Notes,
@@ -573,7 +586,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
 			// 创建接口仅返回最小必要字段，详细信息由专门检查接口提供
-			c.JSON(409, gin.H{
+			c.WriteJSON(409, map[string]any{
 				"error":   "mixed_channel_warning",
 				"message": mixedErr.Error(),
 			})
@@ -581,34 +594,38 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		}
 
 		if retryAfter := service.RetryAfterSecondsFromError(err); retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.SetHeader("Retry-After", strconv.Itoa(retryAfter))
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	if result != nil && result.Replayed {
-		c.Header("X-Idempotency-Replayed", "true")
+		c.SetHeader("X-Idempotency-Replayed", "true")
 	}
-	response.Success(c, result.Data)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result.Data)
 }
 
 // Update handles updating an account
 // PUT /api/v1/admin/accounts/:id
 func (h *AccountHandler) Update(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	var req UpdateAccountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
-		response.BadRequest(c, "rate_multiplier must be >= 0")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "rate_multiplier must be >= 0")
 		return
 	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
@@ -617,7 +634,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
-	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+	account, err := h.adminService.UpdateAccount(c.Request().Context(), accountID, &service.UpdateAccountInput{
 		Name:                  req.Name,
 		Notes:                 req.Notes,
 		Type:                  req.Type,
@@ -639,36 +656,40 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
 			// 更新接口仅返回最小必要字段，详细信息由专门检查接口提供
-			c.JSON(409, gin.H{
+			c.WriteJSON(409, map[string]any{
 				"error":   "mixed_channel_warning",
 				"message": mixedErr.Error(),
 			})
 			return
 		}
 
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // Delete handles deleting an account
 // DELETE /api/v1/admin/accounts/:id
 func (h *AccountHandler) Delete(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	err = h.adminService.DeleteAccount(c.Request.Context(), accountID)
+	err = h.adminService.DeleteAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Account deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Account deleted successfully"})
 }
 
 // TestAccountRequest represents the request body for testing an account
@@ -792,15 +813,21 @@ func buildClaudeModelsFromIDs(ids []string) []claude.Model {
 // Test handles testing account connectivity with SSE streaming
 // POST /api/v1/admin/accounts/:id/test
 func (h *AccountHandler) Test(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.TestGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) TestGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	var req TestAccountRequest
 	// Allow empty body, model_id is optional
-	_ = c.ShouldBindJSON(&req)
+	if c.Request() != nil && c.Request().ContentLength > 0 {
+		_ = json.NewDecoder(c.Request().Body).Decode(&req)
+	}
 
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt); err != nil {
@@ -809,8 +836,8 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	}
 
 	if h.rateLimitService != nil {
-		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
-			_ = c.Error(err)
+		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request().Context(), accountID); err != nil {
+			log.Printf("[WARN] failed to recover account after successful test: %v", err)
 		}
 	}
 }
@@ -818,25 +845,29 @@ func (h *AccountHandler) Test(c *gin.Context) {
 // BatchTest handles batch account liveness tests.
 // POST /api/v1/admin/accounts/batch-test
 func (h *AccountHandler) BatchTest(c *gin.Context) {
+	h.BatchTestGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchTestGateway(c gatewayctx.GatewayContext) {
 	var req BatchTestAccountsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if h.accountTestService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Account test service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Account test service unavailable")
 		return
 	}
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
 	if len(accountIDs) == 0 {
-		response.BadRequest(c, "account_ids is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "account_ids is required")
 		return
 	}
 
-	accounts, err := h.adminService.GetAccountsByIDs(c.Request.Context(), accountIDs)
+	accounts, err := h.adminService.GetAccountsByIDs(c.Request().Context(), accountIDs)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -849,7 +880,7 @@ func (h *AccountHandler) BatchTest(c *gin.Context) {
 	}
 
 	const maxConcurrency = 10
-	g, gctx := errgroup.WithContext(c.Request.Context())
+	g, gctx := errgroup.WithContext(c.Request().Context())
 	g.SetLimit(maxConcurrency)
 
 	resultsByID := make(map[int64]BatchTestAccountResult, len(accountIDs))
@@ -904,7 +935,7 @@ func (h *AccountHandler) BatchTest(c *gin.Context) {
 	}
 
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -928,7 +959,7 @@ func (h *AccountHandler) BatchTest(c *gin.Context) {
 		results = append(results, item)
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"total":   len(accountIDs),
 		"success": successCount,
 		"failed":  failedCount,
@@ -939,39 +970,47 @@ func (h *AccountHandler) BatchTest(c *gin.Context) {
 // RecoverState handles unified recovery of recoverable account runtime state.
 // POST /api/v1/admin/accounts/:id/recover-state
 func (h *AccountHandler) RecoverState(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.RecoverStateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) RecoverStateGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	if h.rateLimitService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Rate limit service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Rate limit service unavailable")
 		return
 	}
 
-	if _, err := h.rateLimitService.RecoverAccountState(c.Request.Context(), accountID, service.AccountRecoveryOptions{
+	if _, err := h.rateLimitService.RecoverAccountState(c.Request().Context(), accountID, service.AccountRecoveryOptions{
 		InvalidateToken: true,
 	}); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // SyncFromCRS handles syncing accounts from claude-relay-service (CRS)
 // POST /api/v1/admin/accounts/sync/crs
 func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
+	h.SyncFromCRSGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) SyncFromCRSGateway(c gatewayctx.GatewayContext) {
 	var req SyncFromCRSRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -981,7 +1020,7 @@ func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
 		syncProxies = *req.SyncProxies
 	}
 
-	result, err := h.crsSyncService.SyncFromCRS(c.Request.Context(), service.SyncFromCRSInput{
+	result, err := h.crsSyncService.SyncFromCRS(c.Request().Context(), service.SyncFromCRSInput{
 		BaseURL:            req.BaseURL,
 		Username:           req.Username,
 		Password:           req.Password,
@@ -990,33 +1029,37 @@ func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
 	})
 	if err != nil {
 		// Provide detailed error message for CRS sync failures
-		response.InternalError(c, "CRS sync failed: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "CRS sync failed: "+err.Error())
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // PreviewFromCRS handles previewing accounts from CRS before sync
 // POST /api/v1/admin/accounts/sync/crs/preview
 func (h *AccountHandler) PreviewFromCRS(c *gin.Context) {
+	h.PreviewFromCRSGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) PreviewFromCRSGateway(c gatewayctx.GatewayContext) {
 	var req PreviewFromCRSRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.crsSyncService.PreviewFromCRS(c.Request.Context(), service.SyncFromCRSInput{
+	result, err := h.crsSyncService.PreviewFromCRS(c.Request().Context(), service.SyncFromCRSInput{
 		BaseURL:  req.BaseURL,
 		Username: req.Username,
 		Password: req.Password,
 	})
 	if err != nil {
-		response.InternalError(c, "CRS preview failed: "+err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "CRS preview failed: "+err.Error())
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // refreshSingleAccount refreshes credentials for a single OAuth account.
@@ -1139,48 +1182,56 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 // Refresh handles refreshing account credentials
 // POST /api/v1/admin/accounts/:id/refresh
 func (h *AccountHandler) Refresh(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.RefreshGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) RefreshGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	// Get account
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.NotFound(c, "Account not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Account not found")
 		return
 	}
 
-	updatedAccount, warning, err := h.refreshSingleAccount(c.Request.Context(), account)
+	updatedAccount, warning, err := h.refreshSingleAccount(c.Request().Context(), account)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	if warning == "missing_project_id_temporary" {
-		response.Success(c, gin.H{
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 			"message": "Token refreshed successfully, but project_id could not be retrieved (will retry automatically)",
 			"warning": "missing_project_id_temporary",
 		})
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), updatedAccount))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), updatedAccount))
 }
 
 // GetStats handles getting account statistics
 // GET /api/v1/admin/accounts/:id/stats
 func (h *AccountHandler) GetStats(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	// Parse days parameter (default 30)
 	days := 30
-	if daysStr := c.Query("days"); daysStr != "" {
+	if daysStr := c.QueryValue("days"); daysStr != "" {
 		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 90 {
 			days = d
 		}
@@ -1191,57 +1242,65 @@ func (h *AccountHandler) GetStats(c *gin.Context) {
 	endTime := timezone.StartOfDay(now.AddDate(0, 0, 1))
 	startTime := timezone.StartOfDay(now.AddDate(0, 0, -days+1))
 
-	stats, err := h.accountUsageService.GetAccountUsageStats(c.Request.Context(), accountID, startTime, endTime)
+	stats, err := h.accountUsageService.GetAccountUsageStats(c.Request().Context(), accountID, startTime, endTime)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, stats)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, stats)
 }
 
 // ClearError handles clearing account error
 // POST /api/v1/admin/accounts/:id/clear-error
 func (h *AccountHandler) ClearError(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ClearErrorGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ClearErrorGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	account, err := h.adminService.ClearAccountError(c.Request.Context(), accountID)
+	account, err := h.adminService.ClearAccountError(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	// 清除错误后，同时清除 token 缓存，确保下次请求会获取最新的 token（触发刷新或从 DB 读取）
 	// 这解决了管理员重置账号状态后，旧的失效 token 仍在缓存中导致立即再次 401 的问题
 	if h.tokenCacheInvalidator != nil && account.IsOAuth() {
-		if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(c.Request.Context(), account); invalidateErr != nil {
+		if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(c.Request().Context(), account); invalidateErr != nil {
 			log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", accountID, invalidateErr)
 		}
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // BatchClearError handles batch clearing account errors
 // POST /api/v1/admin/accounts/batch-clear-error
 func (h *AccountHandler) BatchClearError(c *gin.Context) {
+	h.BatchClearErrorGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchClearErrorGateway(c gatewayctx.GatewayContext) {
 	var req struct {
 		AccountIDs []int64 `json:"account_ids"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if len(req.AccountIDs) == 0 {
-		response.BadRequest(c, "account_ids is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "account_ids is required")
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 
 	const maxConcurrency = 10
 	g, gctx := errgroup.WithContext(ctx)
@@ -1249,7 +1308,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 
 	var mu sync.Mutex
 	var successCount, failedCount int
-	var errors []gin.H
+	var errors []map[string]any
 
 	// 注意：所有 goroutine 必须 return nil，避免 errgroup cancel 其他并发任务
 	for _, id := range req.AccountIDs {
@@ -1259,7 +1318,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 			if err != nil {
 				mu.Lock()
 				failedCount++
-				errors = append(errors, gin.H{
+				errors = append(errors, map[string]any{
 					"account_id": accountID,
 					"error":      err.Error(),
 				})
@@ -1282,11 +1341,11 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	}
 
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"total":   len(req.AccountIDs),
 		"success": successCount,
 		"failed":  failedCount,
@@ -1297,23 +1356,27 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 // BatchRefresh handles batch refreshing account credentials
 // POST /api/v1/admin/accounts/batch-refresh
 func (h *AccountHandler) BatchRefresh(c *gin.Context) {
+	h.BatchRefreshGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchRefreshGateway(c gatewayctx.GatewayContext) {
 	var req struct {
 		AccountIDs []int64 `json:"account_ids"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if len(req.AccountIDs) == 0 {
-		response.BadRequest(c, "account_ids is required")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "account_ids is required")
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 
 	accounts, err := h.adminService.GetAccountsByIDs(ctx, req.AccountIDs)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -1331,14 +1394,14 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 
 	var mu sync.Mutex
 	var successCount, failedCount int
-	var errors []gin.H
-	var warnings []gin.H
+	var errors []map[string]any
+	var warnings []map[string]any
 
 	// 将不存在的账号 ID 标记为失败
 	for _, id := range req.AccountIDs {
 		if !foundIDs[id] {
 			failedCount++
-			errors = append(errors, gin.H{
+			errors = append(errors, map[string]any{
 				"account_id": id,
 				"error":      "account not found",
 			})
@@ -1356,14 +1419,14 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 			mu.Lock()
 			if err != nil {
 				failedCount++
-				errors = append(errors, gin.H{
+				errors = append(errors, map[string]any{
 					"account_id": acc.ID,
 					"error":      err.Error(),
 				})
 			} else {
 				successCount++
 				if warning != "" {
-					warnings = append(warnings, gin.H{
+					warnings = append(warnings, map[string]any{
 						"account_id": acc.ID,
 						"warning":    warning,
 					})
@@ -1375,11 +1438,11 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	}
 
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"total":    len(req.AccountIDs),
 		"success":  successCount,
 		"failed":   failedCount,
@@ -1391,23 +1454,27 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 // BatchCreate handles batch creating accounts
 // POST /api/v1/admin/accounts/batch
 func (h *AccountHandler) BatchCreate(c *gin.Context) {
+	h.BatchCreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchCreateGateway(c gatewayctx.GatewayContext) {
 	var req struct {
 		Accounts []CreateAccountRequest `json:"accounts" binding:"required,min=1"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	executeAdminIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminIdempotentGatewayJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		success := 0
 		failed := 0
-		results := make([]gin.H, 0, len(req.Accounts))
+		results := make([]map[string]any, 0, len(req.Accounts))
 
 		for _, item := range req.Accounts {
 			if item.RateMultiplier != nil && *item.RateMultiplier < 0 {
 				failed++
-				results = append(results, gin.H{
+				results = append(results, map[string]any{
 					"name":    item.Name,
 					"success": false,
 					"error":   "rate_multiplier must be >= 0",
@@ -1438,7 +1505,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 			})
 			if err != nil {
 				failed++
-				results = append(results, gin.H{
+				results = append(results, map[string]any{
 					"name":    item.Name,
 					"success": false,
 					"error":   err.Error(),
@@ -1446,14 +1513,14 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				continue
 			}
 			success++
-			results = append(results, gin.H{
+			results = append(results, map[string]any{
 				"name":    item.Name,
 				"id":      account.ID,
 				"success": true,
 			})
 		}
 
-		return gin.H{
+		return map[string]any{
 			"success": success,
 			"failed":  failed,
 			"results": results,
@@ -1471,9 +1538,13 @@ type BatchUpdateCredentialsRequest struct {
 // BatchUpdateCredentials handles batch updating credentials fields
 // POST /api/v1/admin/accounts/batch-update-credentials
 func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
+	h.BatchUpdateCredentialsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchUpdateCredentialsGateway(c gatewayctx.GatewayContext) {
 	var req BatchUpdateCredentialsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -1481,20 +1552,20 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	if req.Field == "intercept_warmup_requests" {
 		// Must be boolean
 		if _, ok := req.Value.(bool); !ok {
-			response.BadRequest(c, "intercept_warmup_requests must be boolean")
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "intercept_warmup_requests must be boolean")
 			return
 		}
 	} else {
 		// account_uuid and org_uuid can be string or null
 		if req.Value != nil {
 			if _, ok := req.Value.(string); !ok {
-				response.BadRequest(c, req.Field+" must be string or null")
+				response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, req.Field+" must be string or null")
 				return
 			}
 		}
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 
 	// 阶段一：预验证所有账号存在，收集 credentials
 	type accountUpdate struct {
@@ -1505,7 +1576,7 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	for _, accountID := range req.AccountIDs {
 		account, err := h.adminService.GetAccount(ctx, accountID)
 		if err != nil {
-			response.Error(c, 404, fmt.Sprintf("Account %d not found", accountID))
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, 404, fmt.Sprintf("Account %d not found", accountID))
 			return
 		}
 		if account.Credentials == nil {
@@ -1520,13 +1591,13 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	failed := 0
 	successIDs := make([]int64, 0, len(updates))
 	failedIDs := make([]int64, 0, len(updates))
-	results := make([]gin.H, 0, len(updates))
+	results := make([]map[string]any, 0, len(updates))
 	for _, u := range updates {
 		updateInput := &service.UpdateAccountInput{Credentials: u.Credentials}
 		if _, err := h.adminService.UpdateAccount(ctx, u.ID, updateInput); err != nil {
 			failed++
 			failedIDs = append(failedIDs, u.ID)
-			results = append(results, gin.H{
+			results = append(results, map[string]any{
 				"account_id": u.ID,
 				"success":    false,
 				"error":      err.Error(),
@@ -1535,13 +1606,13 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 		}
 		success++
 		successIDs = append(successIDs, u.ID)
-		results = append(results, gin.H{
+		results = append(results, map[string]any{
 			"account_id": u.ID,
 			"success":    true,
 		})
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"success":     success,
 		"failed":      failed,
 		"success_ids": successIDs,
@@ -1553,13 +1624,17 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 // BulkUpdate handles bulk updating accounts with selected fields/credentials.
 // POST /api/v1/admin/accounts/bulk-update
 func (h *AccountHandler) BulkUpdate(c *gin.Context) {
+	h.BulkUpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BulkUpdateGateway(c gatewayctx.GatewayContext) {
 	var req BulkUpdateAccountsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
-		response.BadRequest(c, "rate_multiplier must be >= 0")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "rate_multiplier must be >= 0")
 		return
 	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
@@ -1581,11 +1656,11 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		len(req.Extra) > 0
 
 	if !hasUpdates {
-		response.BadRequest(c, "No updates provided")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "No updates provided")
 		return
 	}
 
-	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
+	result, err := h.adminService.BulkUpdateAccounts(c.Request().Context(), &service.BulkUpdateAccountsInput{
 		AccountIDs:            req.AccountIDs,
 		Name:                  req.Name,
 		ProxyID:               req.ProxyID,
@@ -1603,17 +1678,17 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 	if err != nil {
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
-			c.JSON(409, gin.H{
+			c.WriteJSON(409, map[string]any{
 				"error":   "mixed_channel_warning",
 				"message": mixedErr.Error(),
 			})
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // ========== OAuth Handlers ==========
@@ -1626,37 +1701,45 @@ type GenerateAuthURLRequest struct {
 // GenerateAuthURL generates OAuth authorization URL with full scope
 // POST /api/v1/admin/accounts/generate-auth-url
 func (h *OAuthHandler) GenerateAuthURL(c *gin.Context) {
+	h.GenerateAuthURLGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) GenerateAuthURLGateway(c gatewayctx.GatewayContext) {
 	var req GenerateAuthURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		// Allow empty body
 		req = GenerateAuthURLRequest{}
 	}
 
-	result, err := h.oauthService.GenerateAuthURL(c.Request.Context(), req.ProxyID)
+	result, err := h.oauthService.GenerateAuthURL(c.Request().Context(), req.ProxyID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // GenerateSetupTokenURL generates OAuth authorization URL for setup token (inference only)
 // POST /api/v1/admin/accounts/generate-setup-token-url
 func (h *OAuthHandler) GenerateSetupTokenURL(c *gin.Context) {
+	h.GenerateSetupTokenURLGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) GenerateSetupTokenURLGateway(c gatewayctx.GatewayContext) {
 	var req GenerateAuthURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		// Allow empty body
 		req = GenerateAuthURLRequest{}
 	}
 
-	result, err := h.oauthService.GenerateSetupTokenURL(c.Request.Context(), req.ProxyID)
+	result, err := h.oauthService.GenerateSetupTokenURL(c.Request().Context(), req.ProxyID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // ExchangeCodeRequest represents the request for exchanging auth code
@@ -1669,45 +1752,53 @@ type ExchangeCodeRequest struct {
 // ExchangeCode exchanges authorization code for tokens
 // POST /api/v1/admin/accounts/exchange-code
 func (h *OAuthHandler) ExchangeCode(c *gin.Context) {
+	h.ExchangeCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) ExchangeCodeGateway(c gatewayctx.GatewayContext) {
 	var req ExchangeCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.ExchangeCode(c.Request.Context(), &service.ExchangeCodeInput{
+	tokenInfo, err := h.oauthService.ExchangeCode(c.Request().Context(), &service.ExchangeCodeInput{
 		SessionID: req.SessionID,
 		Code:      req.Code,
 		ProxyID:   req.ProxyID,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // ExchangeSetupTokenCode exchanges authorization code for setup token
 // POST /api/v1/admin/accounts/exchange-setup-token-code
 func (h *OAuthHandler) ExchangeSetupTokenCode(c *gin.Context) {
+	h.ExchangeSetupTokenCodeGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) ExchangeSetupTokenCodeGateway(c gatewayctx.GatewayContext) {
 	var req ExchangeCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.ExchangeCode(c.Request.Context(), &service.ExchangeCodeInput{
+	tokenInfo, err := h.oauthService.ExchangeCode(c.Request().Context(), &service.ExchangeCodeInput{
 		SessionID: req.SessionID,
 		Code:      req.Code,
 		ProxyID:   req.ProxyID,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // CookieAuthRequest represents the request for cookie-based authentication
@@ -1719,140 +1810,164 @@ type CookieAuthRequest struct {
 // CookieAuth performs OAuth using sessionKey (cookie-based auto-auth)
 // POST /api/v1/admin/accounts/cookie-auth
 func (h *OAuthHandler) CookieAuth(c *gin.Context) {
+	h.CookieAuthGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) CookieAuthGateway(c gatewayctx.GatewayContext) {
 	var req CookieAuthRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
+	tokenInfo, err := h.oauthService.CookieAuth(c.Request().Context(), &service.CookieAuthInput{
 		SessionKey: req.SessionKey,
 		ProxyID:    req.ProxyID,
 		Scope:      "full",
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // SetupTokenCookieAuth performs OAuth using sessionKey for setup token (inference only)
 // POST /api/v1/admin/accounts/setup-token-cookie-auth
 func (h *OAuthHandler) SetupTokenCookieAuth(c *gin.Context) {
+	h.SetupTokenCookieAuthGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OAuthHandler) SetupTokenCookieAuthGateway(c gatewayctx.GatewayContext) {
 	var req CookieAuthRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
+	tokenInfo, err := h.oauthService.CookieAuth(c.Request().Context(), &service.CookieAuthInput{
 		SessionKey: req.SessionKey,
 		ProxyID:    req.ProxyID,
 		Scope:      "inference",
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, tokenInfo)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
 // GetUsage handles getting account usage information
 // GET /api/v1/admin/accounts/:id/usage?source=passive|active
 func (h *AccountHandler) GetUsage(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetUsageGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetUsageGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	source := c.DefaultQuery("source", "active")
+	source := defaultQueryValue(c, "source", "active")
 
 	var usage *service.UsageInfo
 	if source == "passive" {
-		usage, err = h.accountUsageService.GetPassiveUsage(c.Request.Context(), accountID)
+		usage, err = h.accountUsageService.GetPassiveUsage(c.Request().Context(), accountID)
 	} else {
-		usage, err = h.accountUsageService.GetUsage(c.Request.Context(), accountID)
+		usage, err = h.accountUsageService.GetUsage(c.Request().Context(), accountID)
 	}
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, usage)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, usage)
 }
 
 // ClearRateLimit handles clearing account rate limit status
 // POST /api/v1/admin/accounts/:id/clear-rate-limit
 func (h *AccountHandler) ClearRateLimit(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ClearRateLimitGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ClearRateLimitGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	err = h.rateLimitService.ClearRateLimit(c.Request.Context(), accountID)
+	err = h.rateLimitService.ClearRateLimit(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // ResetQuota handles resetting account quota usage
 // POST /api/v1/admin/accounts/:id/reset-quota
 func (h *AccountHandler) ResetQuota(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ResetQuotaGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ResetQuotaGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	if err := h.adminService.ResetAccountQuota(c.Request.Context(), accountID); err != nil {
-		response.InternalError(c, "Failed to reset account quota: "+err.Error())
+	if err := h.adminService.ResetAccountQuota(c.Request().Context(), accountID); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusInternalServerError, "Failed to reset account quota: "+err.Error())
 		return
 	}
 
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // GetTempUnschedulable handles getting temporary unschedulable status
 // GET /api/v1/admin/accounts/:id/temp-unschedulable
 func (h *AccountHandler) GetTempUnschedulable(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetTempUnschedulableGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetTempUnschedulableGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	state, err := h.rateLimitService.GetTempUnschedStatus(c.Request.Context(), accountID)
+	state, err := h.rateLimitService.GetTempUnschedStatus(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	if state == nil || state.UntilUnix <= time.Now().Unix() {
-		response.Success(c, gin.H{"active": false})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"active": false})
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"active": true,
 		"state":  state,
 	})
@@ -1861,36 +1976,44 @@ func (h *AccountHandler) GetTempUnschedulable(c *gin.Context) {
 // ClearTempUnschedulable handles clearing temporary unschedulable status
 // DELETE /api/v1/admin/accounts/:id/temp-unschedulable
 func (h *AccountHandler) ClearTempUnschedulable(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ClearTempUnschedulableGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) ClearTempUnschedulableGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	if err := h.rateLimitService.ClearTempUnschedulable(c.Request.Context(), accountID); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.rateLimitService.ClearTempUnschedulable(c.Request().Context(), accountID); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Temp unschedulable cleared successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"message": "Temp unschedulable cleared successfully"})
 }
 
 // GetTodayStats handles getting account today statistics
 // GET /api/v1/admin/accounts/:id/today-stats
 func (h *AccountHandler) GetTodayStats(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetTodayStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetTodayStatsGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	stats, err := h.accountUsageService.GetTodayStats(c.Request.Context(), accountID)
+	stats, err := h.accountUsageService.GetTodayStats(c.Request().Context(), accountID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, stats)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, stats)
 }
 
 // BatchTodayStatsRequest 批量今日统计请求体。
@@ -1901,47 +2024,51 @@ type BatchTodayStatsRequest struct {
 // GetBatchTodayStats 批量获取多个账号的今日统计。
 // POST /api/v1/admin/accounts/today-stats/batch
 func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
+	h.GetBatchTodayStatsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetBatchTodayStatsGateway(c gatewayctx.GatewayContext) {
 	var req BatchTodayStatsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
 	if len(accountIDs) == 0 {
-		response.Success(c, gin.H{"stats": map[string]any{}})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{"stats": map[string]any{}})
 		return
 	}
 
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
 	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
 		if cached.ETag != "" {
-			c.Header("ETag", cached.ETag)
-			c.Header("Vary", "If-None-Match")
-			if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
-				c.Status(http.StatusNotModified)
+			c.SetHeader("ETag", cached.ETag)
+			c.SetHeader("Vary", "If-None-Match")
+			if ifNoneMatchMatched(c.HeaderValue("If-None-Match"), cached.ETag) {
+				_, _ = c.WriteBytes(http.StatusNotModified, nil)
 				return
 			}
 		}
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
+		c.SetHeader("X-Snapshot-Cache", "hit")
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, cached.Payload)
 		return
 	}
 
-	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
+	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request().Context(), accountIDs)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	payload := gin.H{"stats": stats}
+	payload := map[string]any{"stats": stats}
 	cached := accountTodayStatsBatchCache.Set(cacheKey, payload)
 	if cached.ETag != "" {
-		c.Header("ETag", cached.ETag)
-		c.Header("Vary", "If-None-Match")
+		c.SetHeader("ETag", cached.ETag)
+		c.SetHeader("Vary", "If-None-Match")
 	}
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.SetHeader("X-Snapshot-Cache", "miss")
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 // SetSchedulableRequest represents the request body for setting schedulable status
@@ -1952,48 +2079,56 @@ type SetSchedulableRequest struct {
 // SetSchedulable handles toggling account schedulable status
 // POST /api/v1/admin/accounts/:id/schedulable
 func (h *AccountHandler) SetSchedulable(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.SetSchedulableGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) SetSchedulableGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	var req SetSchedulableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	account, err := h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, req.Schedulable)
+	account, err := h.adminService.SetAccountSchedulable(c.Request().Context(), accountID, req.Schedulable)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, h.buildAccountResponseWithRuntime(c.Request().Context(), account))
 }
 
 // GetAvailableModels handles getting available models for an account
 // GET /api/v1/admin/accounts/:id/models
 func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetAvailableModelsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetAvailableModelsGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err := h.adminService.GetAccount(c.Request().Context(), accountID)
 	if err != nil {
-		response.NotFound(c, "Account not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Account not found")
 		return
 	}
 
 	fetchedModelIDs := account.GetFetchedModelIDs()
 	if account.ShouldRefreshFetchedModels(time.Now()) && h.accountTestService != nil {
-		if refreshed, refreshErr := h.accountTestService.FetchAndCacheAvailableModels(c.Request.Context(), accountID); refreshErr == nil && refreshed != nil {
+		if refreshed, refreshErr := h.accountTestService.FetchAndCacheAvailableModels(c.Request().Context(), accountID); refreshErr == nil && refreshed != nil {
 			fetchedModelIDs = refreshed.Models
 		}
-		if refreshedAccount, getErr := h.adminService.GetAccount(c.Request.Context(), accountID); getErr == nil && refreshedAccount != nil {
+		if refreshedAccount, getErr := h.adminService.GetAccount(c.Request().Context(), accountID); getErr == nil && refreshedAccount != nil {
 			account = refreshedAccount
 			if refreshed := account.GetFetchedModelIDs(); len(refreshed) > 0 {
 				fetchedModelIDs = refreshed
@@ -2004,140 +2139,153 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
 		if len(fetchedModelIDs) > 0 {
-			response.Success(c, buildOpenAIModelsFromIDs(fetchedModelIDs))
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, buildOpenAIModelsFromIDs(fetchedModelIDs))
 			return
 		}
 
 		// OpenAI 自动透传会绕过常规模型改写；未拉取到真实模型列表时回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, openai.DefaultModels)
 			return
 		}
 
 		modelIDs := mappingKeys(account.GetModelMapping())
 		if len(modelIDs) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, openai.DefaultModels)
 			return
 		}
-		response.Success(c, buildOpenAIModelsFromIDs(modelIDs))
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, buildOpenAIModelsFromIDs(modelIDs))
 		return
 	}
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
 		if len(fetchedModelIDs) > 0 {
-			response.Success(c, buildGeminiModelsFromIDs(fetchedModelIDs))
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, buildGeminiModelsFromIDs(fetchedModelIDs))
 			return
 		}
 
 		// For OAuth accounts: return default Gemini models
 		if account.IsOAuth() {
-			response.Success(c, geminicli.DefaultModels)
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, geminicli.DefaultModels)
 			return
 		}
 
 		modelIDs := mappingKeys(account.GetModelMapping())
 		if len(modelIDs) == 0 {
-			response.Success(c, geminicli.DefaultModels)
+			response.SuccessContext(gatewayJSONResponder{ctx: c}, geminicli.DefaultModels)
 			return
 		}
 
-		response.Success(c, buildGeminiModelsFromIDs(modelIDs))
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, buildGeminiModelsFromIDs(modelIDs))
 		return
 	}
 
 	// Handle Antigravity accounts: return Claude + Gemini models
 	if account.Platform == service.PlatformAntigravity {
 		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, antigravity.DefaultModels())
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, antigravity.DefaultModels())
 		return
 	}
 
 	// Handle Sora accounts
 	if account.Platform == service.PlatformSora {
-		response.Success(c, service.DefaultSoraModels(nil))
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, service.DefaultSoraModels(nil))
+		return
+	}
+
+	if account.Platform == service.PlatformKiro {
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, kiro.DefaultModels)
 		return
 	}
 
 	// Handle Claude/Anthropic accounts
 	if len(fetchedModelIDs) > 0 {
-		response.Success(c, buildClaudeModelsFromIDs(fetchedModelIDs))
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, buildClaudeModelsFromIDs(fetchedModelIDs))
 		return
 	}
 
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
-		response.Success(c, claude.DefaultModels)
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, claude.DefaultModels)
 		return
 	}
 
 	modelIDs := mappingKeys(account.GetModelMapping())
 	if len(modelIDs) == 0 {
 		// No mapping configured, return default models
-		response.Success(c, claude.DefaultModels)
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, claude.DefaultModels)
 		return
 	}
 
-	response.Success(c, buildClaudeModelsFromIDs(modelIDs))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, buildClaudeModelsFromIDs(modelIDs))
 }
 
 // RefreshModels handles manually refreshing an account's fetched model list.
 // POST /api/v1/admin/accounts/:id/models/refresh
 func (h *AccountHandler) RefreshModels(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.RefreshModelsGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) RefreshModelsGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
 	if h.accountTestService == nil {
-		response.Error(c, http.StatusServiceUnavailable, "Account model refresh service unavailable")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Account model refresh service unavailable")
 		return
 	}
 
-	result, err := h.accountTestService.FetchAndCacheAvailableModels(c.Request.Context(), accountID)
+	result, err := h.accountTestService.FetchAndCacheAvailableModels(c.Request().Context(), accountID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "does not support model refresh") {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
-		response.Error(c, http.StatusBadGateway, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 // RefreshTier handles refreshing Google One tier for a single account
 // POST /api/v1/admin/accounts/:id/refresh-tier
 func (h *AccountHandler) RefreshTier(c *gin.Context) {
-	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.RefreshTierGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) RefreshTierGateway(c gatewayctx.GatewayContext) {
+	accountID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid account ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid account ID")
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 	account, err := h.adminService.GetAccount(ctx, accountID)
 	if err != nil {
-		response.NotFound(c, "Account not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Account not found")
 		return
 	}
 
 	if account.Platform != service.PlatformGemini || account.Type != service.AccountTypeOAuth {
-		response.BadRequest(c, "Only Gemini OAuth accounts support tier refresh")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Only Gemini OAuth accounts support tier refresh")
 		return
 	}
 
 	oauthType, _ := account.Credentials["oauth_type"].(string)
 	if oauthType != "google_one" {
-		response.BadRequest(c, "Only google_one OAuth accounts support tier refresh")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Only google_one OAuth accounts support tier refresh")
 		return
 	}
 
 	tierID, extra, creds, err := h.geminiOAuthService.RefreshAccountGoogleOneTier(ctx, account)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -2146,11 +2294,11 @@ func (h *AccountHandler) RefreshTier(c *gin.Context) {
 		Extra:       extra,
 	})
 	if updateErr != nil {
-		response.ErrorFrom(c, updateErr)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, updateErr)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"tier_id":             tierID,
 		"storage_info":        extra,
 		"drive_storage_limit": extra["drive_storage_limit"],
@@ -2167,18 +2315,22 @@ type BatchRefreshTierRequest struct {
 // BatchRefreshTier handles batch refreshing Google One tier
 // POST /api/v1/admin/accounts/batch-refresh-tier
 func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
+	h.BatchRefreshTierGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) BatchRefreshTierGateway(c gatewayctx.GatewayContext) {
 	var req BatchRefreshTierRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		req = BatchRefreshTierRequest{}
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 	accounts := make([]*service.Account, 0)
 
 	if len(req.AccountIDs) == 0 {
 		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", "", "", "", 0)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
 		for i := range allAccounts {
@@ -2191,7 +2343,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	} else {
 		fetched, err := h.adminService.GetAccountsByIDs(ctx, req.AccountIDs)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
 
@@ -2216,7 +2368,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 
 	var mu sync.Mutex
 	var successCount, failedCount int
-	var errors []gin.H
+	var errors []map[string]any
 
 	for _, account := range accounts {
 		acc := account // 闭包捕获
@@ -2225,7 +2377,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 			if err != nil {
 				mu.Lock()
 				failedCount++
-				errors = append(errors, gin.H{
+				errors = append(errors, map[string]any{
 					"account_id": acc.ID,
 					"error":      err.Error(),
 				})
@@ -2241,7 +2393,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 			mu.Lock()
 			if updateErr != nil {
 				failedCount++
-				errors = append(errors, gin.H{
+				errors = append(errors, map[string]any{
 					"account_id": acc.ID,
 					"error":      updateErr.Error(),
 				})
@@ -2255,24 +2407,28 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	}
 
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	results := gin.H{
+	results := map[string]any{
 		"total":   len(accounts),
 		"success": successCount,
 		"failed":  failedCount,
 		"errors":  errors,
 	}
 
-	response.Success(c, results)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, results)
 }
 
 // GetAntigravityDefaultModelMapping 获取 Antigravity 平台的默认模型映射
 // GET /api/v1/admin/accounts/antigravity/default-model-mapping
 func (h *AccountHandler) GetAntigravityDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultAntigravityModelMapping)
+	h.GetAntigravityDefaultModelMappingGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AccountHandler) GetAntigravityDefaultModelMappingGateway(c gatewayctx.GatewayContext) {
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, domain.DefaultAntigravityModelMapping)
 }
 
 // sanitizeExtraBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。

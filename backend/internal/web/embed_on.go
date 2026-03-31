@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -20,6 +23,7 @@ import (
 const (
 	// NonceHTMLPlaceholder is the placeholder for nonce in HTML script tags
 	NonceHTMLPlaceholder = "__CSP_NONCE_VALUE__"
+	nativeFrontendFallbackKey = "_native_route_fallback_http_handler"
 )
 
 //go:embed all:dist
@@ -37,6 +41,26 @@ type FrontendServer struct {
 	baseHTML   []byte
 	cache      *HTMLCache
 	settings   PublicSettingsProvider
+}
+
+func ExecutableRoutes(server *FrontendServer) []gatewayctx.RouteDef {
+	if server == nil {
+		return nil
+	}
+	return []gatewayctx.RouteDef{
+		{
+			Method:     http.MethodGet,
+			Path:       "/",
+			Handler:    server.HandleGateway,
+			Middleware: []string{"request_logger", "cors", "security_headers"},
+		},
+		{
+			Method:     http.MethodGet,
+			Path:       "/*path",
+			Handler:    server.HandleGateway,
+			Middleware: []string{"request_logger", "cors", "security_headers"},
+		},
+	}
 }
 
 // NewFrontendServer creates a new frontend server with settings injection
@@ -102,6 +126,31 @@ func (s *FrontendServer) Middleware() gin.HandlerFunc {
 		// Serve static files normally
 		s.fileServer.ServeHTTP(c.Writer, c.Request)
 		c.Abort()
+	}
+}
+
+func (s *FrontendServer) HandleGateway(c gatewayctx.GatewayContext) {
+	if c == nil {
+		return
+	}
+	path := c.Path()
+	if shouldBypassEmbeddedFrontend(path) {
+		c.SetValue(nativeFrontendFallbackKey, true)
+		return
+	}
+
+	cleanPath := strings.TrimPrefix(path, "/")
+	if cleanPath == "" {
+		cleanPath = "index.html"
+	}
+
+	if cleanPath == "index.html" || !s.fileExists(cleanPath) {
+		s.serveIndexHTMLGateway(c)
+		return
+	}
+
+	if err := s.serveStaticFileGateway(c, cleanPath); err != nil {
+		c.WriteJSON(http.StatusNotFound, map[string]any{"error": "Frontend asset not found"})
 	}
 }
 
@@ -171,6 +220,70 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", content)
 	c.Abort()
+}
+
+func (s *FrontendServer) serveIndexHTMLGateway(c gatewayctx.GatewayContext) {
+	nonce := middleware.GetNonceFromGatewayContext(c)
+
+	cached := s.cache.Get()
+	if cached != nil {
+		if match := c.HeaderValue("If-None-Match"); match == cached.ETag {
+			c.SetStatus(http.StatusNotModified)
+			return
+		}
+
+		content := replaceNoncePlaceholder(cached.Content, nonce)
+		c.SetHeader("ETag", cached.ETag)
+		c.SetHeader("Cache-Control", "no-cache")
+		_, _ = c.WriteBytes(http.StatusOK, content)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
+	defer cancel()
+
+	settings, err := s.settings.GetPublicSettingsForInjection(ctx)
+	if err != nil {
+		_, _ = c.WriteBytes(http.StatusOK, s.baseHTML)
+		return
+	}
+
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		_, _ = c.WriteBytes(http.StatusOK, s.baseHTML)
+		return
+	}
+
+	rendered := s.injectSettings(settingsJSON)
+	s.cache.Set(rendered, settingsJSON)
+	content := replaceNoncePlaceholder(rendered, nonce)
+	cached = s.cache.Get()
+	if cached != nil {
+		c.SetHeader("ETag", cached.ETag)
+	}
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Content-Type", "text/html; charset=utf-8")
+	_, _ = c.WriteBytes(http.StatusOK, content)
+}
+
+func (s *FrontendServer) serveStaticFileGateway(c gatewayctx.GatewayContext, cleanPath string) error {
+	file, err := s.distFS.Open(cleanPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(cleanPath))
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	c.SetHeader("Content-Type", contentType)
+	_, err = c.WriteBytes(http.StatusOK, data)
+	return err
 }
 
 func (s *FrontendServer) injectSettings(settingsJSON []byte) []byte {

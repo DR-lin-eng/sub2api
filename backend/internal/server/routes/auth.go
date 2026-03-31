@@ -1,16 +1,199 @@
 package routes
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
+
+func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
+	if h == nil {
+		return nil
+	}
+	defs := make([]gatewayctx.RouteDef, 0, 16)
+	if h.Setting != nil {
+		defs = append(defs, gatewayctx.RouteDef{
+			Method:  http.MethodGet,
+			Path:    "/api/v1/settings/public",
+			Handler: h.Setting.GetPublicSettingsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+			},
+		})
+	}
+	if h.Auth != nil {
+		defs = append(defs,
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/register",
+				Handler: h.Auth.RegisterGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_register",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/login",
+				Handler: h.Auth.LoginGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_login",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/login/2fa",
+				Handler: h.Auth.Login2FAGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_login_2fa",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/send-verify-code",
+				Handler: h.Auth.SendVerifyCodeGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_send_verify_code",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/refresh",
+				Handler: h.Auth.RefreshTokenGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_refresh",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/logout",
+				Handler: h.Auth.LogoutGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/validate-promo-code",
+				Handler: h.Auth.ValidatePromoCodeGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_validate_promo",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/validate-invitation-code",
+				Handler: h.Auth.ValidateInvitationCodeGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_validate_invitation",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/forgot-password",
+				Handler: h.Auth.ForgotPasswordGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_forgot_password",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/reset-password",
+				Handler: h.Auth.ResetPasswordGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_reset_password",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/auth/oauth/linuxdo/start",
+				Handler: h.Auth.LinuxDoOAuthStartGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/auth/oauth/linuxdo/callback",
+				Handler: h.Auth.LinuxDoOAuthCallbackGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/oauth/linuxdo/complete-registration",
+				Handler: h.Auth.CompleteLinuxDoOAuthRegistrationGateway,
+				Middleware: []string{
+					"request_logger", "cors", "security_headers", "client_request_id",
+					"backend_mode_auth_guard", "rl_auth_linuxdo_complete",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/auth/me",
+				Handler: h.Auth.GetCurrentUserGateway,
+				Middleware: []string{
+					"request_logger",
+					"cors",
+					"security_headers",
+					"client_request_id",
+					"jwt_auth",
+					"backend_mode_user_guard",
+				},
+			},
+			gatewayctx.RouteDef{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/auth/revoke-all-sessions",
+				Handler: h.Auth.RevokeAllSessionsGateway,
+				Middleware: []string{
+					"request_logger",
+					"cors",
+					"security_headers",
+					"client_request_id",
+					"jwt_auth",
+					"backend_mode_user_guard",
+				},
+			},
+		)
+	}
+	if h.Admin != nil && h.Admin.Account != nil {
+		defs = append(defs, gatewayctx.RouteDef{
+			Method:  http.MethodGet,
+			Path:    "/api/v1/public/account-export-tasks/:task_id/download",
+			Handler: h.Admin.Account.DownloadExportTaskGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+			},
+		})
+	}
+	return defs
+}
 
 // RegisterAuthRoutes 注册认证相关路由
 func RegisterAuthRoutes(

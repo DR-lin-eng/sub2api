@@ -58,6 +58,68 @@ server:
     max_upload_buffer_per_stream: 524288
 
 # =============================================================================
+# Rust Integration Configuration
+# Rust 集成配置
+# =============================================================================
+rust:
+  sidecar:
+    # Enable external Rust sidecar integration
+    # 启用外部 Rust sidecar 集成
+    enabled: false
+    # Auto-start the sidecar process from the main Go process
+    # 是否由 Go 主进程自动拉起 sidecar 进程
+    auto_start: false
+    # Sidecar executable path
+    # sidecar 可执行文件路径
+    binary_path: ""
+    # Additional command arguments
+    # 额外启动参数
+    args: []
+    # Unix socket path used to reach the sidecar
+    # sidecar 的 Unix socket 路径
+    socket_path: "/tmp/sub2api-rust-sidecar.sock"
+    # Unix socket path of the internal Go upstream exposed to the sidecar
+    # 提供给 sidecar 回环访问的 Go 内部 Unix socket 路径
+    upstream_socket_path: "/tmp/sub2api-rust-upstream.sock"
+    # Request timeout when Go talks to the sidecar (seconds)
+    # Go 访问 sidecar 的请求超时（秒）
+    request_timeout_seconds: 30
+    # Upgrade/WebSocket relay idle timeout inside sidecar (seconds)
+    # sidecar 内部 upgrade/WebSocket relay 空闲超时（秒）
+    upgrade_idle_timeout_seconds: 120
+    # Maximum websocket message size handled by Rust sidecar relay (bytes)
+    # Rust sidecar WebSocket relay 允许的最大消息大小（字节）
+    websocket_max_message_bytes: 67108864
+    # Health check timeout (seconds)
+    # 健康检查超时（秒）
+    healthcheck_timeout_seconds: 3
+    # Fail closed when sidecar-backed features are enabled but unavailable
+    # 当启用 sidecar 特性但 sidecar 不可用时，是否直接失败
+    fail_closed: true
+    # Route h2c/http2 ingress to Rust sidecar
+    # 是否将 h2c/http2 入口委托给 Rust sidecar
+    h2c_delegate_enabled: false
+    # Route Responses WebSocket ingress to Rust sidecar
+    # 是否将 Responses WebSocket 入口委托给 Rust sidecar
+    responses_ws_enabled: false
+  ffi:
+    # Enable in-process Rust FFI acceleration
+    # 启用进程内 Rust FFI 加速
+    enabled: false
+    # Path to the compiled cdylib
+    # 编译后的动态库路径
+    library_path: ""
+    # Enable hash/etag acceleration
+    # 启用 hash/etag 加速
+    hash_enabled: false
+    # Enable stream/frame parsing acceleration
+    # 启用流式/帧解析加速
+    streaming_enabled: false
+    # Enable compression/decompression acceleration
+    # 启用压缩/解压加速
+    compression_enabled: false
+
+# =============================================================================
 # Process Model Configuration
 # 进程模型配置
 # =============================================================================
@@ -384,8 +446,8 @@ gateway:
     lb_top_k: 5
     # 通用 Gateway 运行时指标的 EWMA 平滑系数（0-1]
     runtime_stats_alpha: 0.2
-    # 是否启用 ticket 化公平等待队列（默认关闭，按需灰度）
-    fair_wait_queue_enabled: false
+    # 是否启用 ticket 化公平等待队列（默认开启，降低 Redis 轮询风暴）
+    fair_wait_queue_enabled: true
     scheduler_score_weights:
       priority: 1.0
       load: 1.0
@@ -621,6 +683,26 @@ api_key_auth_cache:
   # Enable singleflight for cache misses
   # 缓存未命中时启用 singleflight 合并回源
   singleflight: true
+
+# =============================================================================
+# Account Import Configuration
+# 账号导入配置
+# =============================================================================
+account_import:
+  # 后台导入 worker 数量
+  worker_count: 2
+  # 每个 chunk 处理的账号数量
+  chunk_size: 100
+  # Redis 批次元数据保留时间
+  queue_ttl: 24h
+  # 快路径单次最多允许写入的账号数
+  max_fast_path_rows: 5000
+  # worker 领取 chunk 后的租约 TTL
+  claim_ttl: 2m
+  # 过期租约回收扫描周期
+  recovery_interval: 30s
+  # 每个 chunk 最大重试次数
+  max_chunk_attempts: 5
 
 # =============================================================================
 # Dashboard Cache Configuration

@@ -2,11 +2,14 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -77,9 +80,13 @@ type UpdateBalanceRequest struct {
 //   - attr[{id}]: filter by custom attribute value, e.g. attr[1]=company
 //   - group_name: fuzzy filter by allowed group name
 func (h *UserHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
+	h.ListGateway(gatewayctx.FromGin(c))
+}
 
-	search := c.Query("search")
+func (h *UserHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+
+	search := c.QueryValue("search")
 	// 标准化和验证 search 参数
 	search = strings.TrimSpace(search)
 	if runes := []rune(search); len(runes) > 100 {
@@ -87,20 +94,20 @@ func (h *UserHandler) List(c *gin.Context) {
 	}
 
 	filters := service.UserListFilters{
-		Status:     c.Query("status"),
-		Role:       c.Query("role"),
+		Status:     c.QueryValue("status"),
+		Role:       c.QueryValue("role"),
 		Search:     search,
-		GroupName:  strings.TrimSpace(c.Query("group_name")),
-		Attributes: parseAttributeFilters(c),
+		GroupName:  strings.TrimSpace(c.QueryValue("group_name")),
+		Attributes: parseAttributeFiltersGateway(c),
 	}
-	if raw, ok := c.GetQuery("include_subscriptions"); ok {
+	if raw := strings.TrimSpace(c.QueryValue("include_subscriptions")); raw != "" {
 		includeSubscriptions := parseBoolQueryWithDefault(raw, true)
 		filters.IncludeSubscriptions = &includeSubscriptions
 	}
 
-	users, total, err := h.adminService.ListUsers(c.Request.Context(), page, pageSize, filters)
+	users, total, err := h.adminService.ListUsers(c.Request().Context(), page, pageSize, filters)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -114,7 +121,7 @@ func (h *UserHandler) List(c *gin.Context) {
 				MaxConcurrency: users[i].Concurrency,
 			}
 		}
-		loadInfo, _ = h.concurrencyService.GetUsersLoadBatch(c.Request.Context(), usersConcurrency)
+		loadInfo, _ = h.concurrencyService.GetUsersLoadBatch(c.Request().Context(), usersConcurrency)
 	}
 
 	// Build response with concurrency info
@@ -128,16 +135,23 @@ func (h *UserHandler) List(c *gin.Context) {
 		}
 	}
 
-	response.Paginated(c, out, total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, total, page, pageSize)
 }
 
 // parseAttributeFilters extracts attribute filters from query params
 // Format: attr[{attributeID}]=value, e.g. attr[1]=company&attr[2]=developer
 func parseAttributeFilters(c *gin.Context) map[int64]string {
+	return parseAttributeFiltersGateway(gatewayctx.FromGin(c))
+}
+
+func parseAttributeFiltersGateway(c gatewayctx.GatewayContext) map[int64]string {
 	result := make(map[int64]string)
+	if c == nil || c.Request() == nil || c.Request().URL == nil {
+		return result
+	}
 
 	// Get all query params and look for attr[*] pattern
-	for key, values := range c.Request.URL.Query() {
+	for key, values := range c.Request().URL.Query() {
 		if len(values) == 0 || values[0] == "" {
 			continue
 		}
@@ -157,31 +171,39 @@ func parseAttributeFilters(c *gin.Context) map[int64]string {
 // GetByID handles getting a user by ID
 // GET /api/v1/admin/users/:id
 func (h *UserHandler) GetByID(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	user, err := h.adminService.GetUser(c.Request.Context(), userID)
+	user, err := h.adminService.GetUser(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.UserFromServiceAdmin(user))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromServiceAdmin(user))
 }
 
 // Create handles creating a new user
 // POST /api/v1/admin/users
 func (h *UserHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	user, err := h.adminService.CreateUser(c.Request.Context(), &service.CreateUserInput{
+	user, err := h.adminService.CreateUser(c.Request().Context(), &service.CreateUserInput{
 		Email:                 req.Email,
 		Password:              req.Password,
 		Username:              req.Username,
@@ -192,30 +214,34 @@ func (h *UserHandler) Create(c *gin.Context) {
 		SoraStorageQuotaBytes: req.SoraStorageQuotaBytes,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.UserFromServiceAdmin(user))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromServiceAdmin(user))
 }
 
 // Update handles updating a user
 // PUT /api/v1/admin/users/:id
 func (h *UserHandler) Update(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	var req UpdateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
 	// 使用指针类型直接传递，nil 表示未提供该字段
-	user, err := h.adminService.UpdateUser(c.Request.Context(), userID, &service.UpdateUserInput{
+	user, err := h.adminService.UpdateUser(c.Request().Context(), userID, &service.UpdateUserInput{
 		Email:                 req.Email,
 		Password:              req.Password,
 		Username:              req.Username,
@@ -228,43 +254,51 @@ func (h *UserHandler) Update(c *gin.Context) {
 		SoraStorageQuotaBytes: req.SoraStorageQuotaBytes,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, dto.UserFromServiceAdmin(user))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromServiceAdmin(user))
 }
 
 // Delete handles deleting a user
 // DELETE /api/v1/admin/users/:id
 func (h *UserHandler) Delete(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	err = h.adminService.DeleteUser(c.Request.Context(), userID)
+	err = h.adminService.DeleteUser(c.Request().Context(), userID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "User deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"message": "User deleted successfully"})
 }
 
 // UpdateBalance handles updating user balance
 // POST /api/v1/admin/users/:id/balance
 func (h *UserHandler) UpdateBalance(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateBalanceGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) UpdateBalanceGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	var req UpdateBalanceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -275,7 +309,7 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		UserID: userID,
 		Body:   req,
 	}
-	executeAdminIdempotentJSON(c, "admin.users.balance.update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminIdempotentGatewayJSON(c, "admin.users.balance.update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, req.Balance, req.Operation, req.Notes)
 		if execErr != nil {
 			return nil, execErr
@@ -287,17 +321,21 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 // GetUserAPIKeys handles getting user's API keys
 // GET /api/v1/admin/users/:id/api-keys
 func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetUserAPIKeysGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetUserAPIKeysGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	page, pageSize := response.ParsePagination(c)
+	page, pageSize := response.ParsePaginationValues(c)
 
-	keys, total, err := h.adminService.GetUserAPIKeys(c.Request.Context(), userID, page, pageSize)
+	keys, total, err := h.adminService.GetUserAPIKeys(c.Request().Context(), userID, page, pageSize)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -305,27 +343,31 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 	for i := range keys {
 		out = append(out, *dto.APIKeyFromService(&keys[i]))
 	}
-	response.Paginated(c, out, total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, total, page, pageSize)
 }
 
 // GetUserUsage handles getting user's usage statistics
 // GET /api/v1/admin/users/:id/usage
 func (h *UserHandler) GetUserUsage(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetUserUsageGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetUserUsageGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	period := c.DefaultQuery("period", "month")
+	period := defaultQueryValue(c, "period", "month")
 
-	stats, err := h.adminService.GetUserUsageStats(c.Request.Context(), userID, period)
+	stats, err := h.adminService.GetUserUsageStats(c.Request().Context(), userID, period)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, stats)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, stats)
 }
 
 // GetBalanceHistory handles getting user's balance/concurrency change history
@@ -333,18 +375,22 @@ func (h *UserHandler) GetUserUsage(c *gin.Context) {
 // Query params:
 //   - type: filter by record type (balance, admin_balance, concurrency, admin_concurrency, subscription)
 func (h *UserHandler) GetBalanceHistory(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetBalanceHistoryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetBalanceHistoryGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
-	page, pageSize := response.ParsePagination(c)
-	codeType := c.Query("type")
+	page, pageSize := response.ParsePaginationValues(c)
+	codeType := c.QueryValue("type")
 
-	codes, total, totalRecharged, err := h.adminService.GetUserBalanceHistory(c.Request.Context(), userID, page, pageSize, codeType)
+	codes, total, totalRecharged, err := h.adminService.GetUserBalanceHistory(c.Request().Context(), userID, page, pageSize, codeType)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -359,7 +405,7 @@ func (h *UserHandler) GetBalanceHistory(c *gin.Context) {
 	if pages < 1 {
 		pages = 1
 	}
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"items":           out,
 		"total":           total,
 		"page":            page,
@@ -378,25 +424,29 @@ type ReplaceGroupRequest struct {
 // ReplaceGroup handles replacing a user's exclusive group
 // POST /api/v1/admin/users/:id/replace-group
 func (h *UserHandler) ReplaceGroup(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.ReplaceGroupGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) ReplaceGroupGateway(c gatewayctx.GatewayContext) {
+	userID, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "Invalid user ID")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	var req ReplaceGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.adminService.ReplaceUserGroup(c.Request.Context(), userID, req.OldGroupID, req.NewGroupID)
+	result, err := h.adminService.ReplaceUserGroup(c.Request().Context(), userID, req.OldGroupID, req.NewGroupID)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
 		"migrated_keys": result.MigratedKeys,
 	})
 }

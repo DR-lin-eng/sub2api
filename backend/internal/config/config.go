@@ -90,6 +90,8 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	AccountImport           AccountImportConfig           `mapstructure:"account_import"`
+	Rust                    RustConfig                    `mapstructure:"rust"`
 }
 
 type LogConfig struct {
@@ -173,6 +175,16 @@ type IdempotencyConfig struct {
 	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
 	// CleanupBatchSize 每次清理的最大记录数。
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
+type AccountImportConfig struct {
+	WorkerCount      int           `mapstructure:"worker_count"`
+	ChunkSize        int           `mapstructure:"chunk_size"`
+	QueueTTL         time.Duration `mapstructure:"queue_ttl"`
+	MaxFastPathRows  int           `mapstructure:"max_fast_path_rows"`
+	ClaimTTL         time.Duration `mapstructure:"claim_ttl"`
+	RecoveryInterval time.Duration `mapstructure:"recovery_interval"`
+	MaxChunkAttempts int           `mapstructure:"max_chunk_attempts"`
 }
 
 type LinuxDoConnectConfig struct {
@@ -377,6 +389,38 @@ type SoraStorageCleanupConfig struct {
 	Enabled       bool   `mapstructure:"enabled"`
 	Schedule      string `mapstructure:"schedule"`
 	RetentionDays int    `mapstructure:"retention_days"`
+}
+
+// RustConfig Rust sidecar/FFI integration configuration.
+type RustConfig struct {
+	Sidecar RustSidecarConfig `mapstructure:"sidecar"`
+	FFI     RustFFIConfig     `mapstructure:"ffi"`
+}
+
+// RustSidecarConfig controls external Rust protocol sidecar integration.
+type RustSidecarConfig struct {
+	Enabled                   bool   `mapstructure:"enabled"`
+	AutoStart                 bool   `mapstructure:"auto_start"`
+	BinaryPath                string `mapstructure:"binary_path"`
+	Args                      []string `mapstructure:"args"`
+	SocketPath                string `mapstructure:"socket_path"`
+	UpstreamSocketPath        string `mapstructure:"upstream_socket_path"`
+	RequestTimeoutSeconds     int    `mapstructure:"request_timeout_seconds"`
+	UpgradeIdleTimeoutSeconds int    `mapstructure:"upgrade_idle_timeout_seconds"`
+	WebSocketMaxMessageBytes  int    `mapstructure:"websocket_max_message_bytes"`
+	HealthcheckTimeoutSeconds int    `mapstructure:"healthcheck_timeout_seconds"`
+	FailClosed                bool   `mapstructure:"fail_closed"`
+	H2CDelegateEnabled        bool   `mapstructure:"h2c_delegate_enabled"`
+	ResponsesWSEnabled        bool   `mapstructure:"responses_ws_enabled"`
+}
+
+// RustFFIConfig controls optional in-process Rust acceleration hooks.
+type RustFFIConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`
+	LibraryPath        string `mapstructure:"library_path"`
+	HashEnabled        bool   `mapstructure:"hash_enabled"`
+	StreamingEnabled   bool   `mapstructure:"streaming_enabled"`
+	CompressionEnabled bool   `mapstructure:"compression_enabled"`
 }
 
 // GatewayConfig API网关相关配置
@@ -1227,6 +1271,24 @@ func setDefaults() {
 	viper.SetDefault("server.h2c.max_read_frame_size", 1<<20)              // 1MB（够用）
 	viper.SetDefault("server.h2c.max_upload_buffer_per_connection", 2<<20) // 2MB
 	viper.SetDefault("server.h2c.max_upload_buffer_per_stream", 512<<10)   // 512KB
+	viper.SetDefault("rust.sidecar.enabled", false)
+	viper.SetDefault("rust.sidecar.auto_start", false)
+	viper.SetDefault("rust.sidecar.binary_path", "")
+	viper.SetDefault("rust.sidecar.args", []string{})
+	viper.SetDefault("rust.sidecar.socket_path", "/tmp/sub2api-rust-sidecar.sock")
+	viper.SetDefault("rust.sidecar.upstream_socket_path", "/tmp/sub2api-rust-upstream.sock")
+	viper.SetDefault("rust.sidecar.request_timeout_seconds", 30)
+	viper.SetDefault("rust.sidecar.upgrade_idle_timeout_seconds", 120)
+	viper.SetDefault("rust.sidecar.websocket_max_message_bytes", 64<<20)
+	viper.SetDefault("rust.sidecar.healthcheck_timeout_seconds", 3)
+	viper.SetDefault("rust.sidecar.fail_closed", true)
+	viper.SetDefault("rust.sidecar.h2c_delegate_enabled", false)
+	viper.SetDefault("rust.sidecar.responses_ws_enabled", false)
+	viper.SetDefault("rust.ffi.enabled", false)
+	viper.SetDefault("rust.ffi.library_path", "")
+	viper.SetDefault("rust.ffi.hash_enabled", false)
+	viper.SetDefault("rust.ffi.streaming_enabled", false)
+	viper.SetDefault("rust.ffi.compression_enabled", false)
 
 	// Log
 	viper.SetDefault("log.level", "info")
@@ -1534,7 +1596,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.lb_top_k", 5)
 	viper.SetDefault("gateway.scheduling.runtime_stats_alpha", 0.2)
-	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", false)
+	viper.SetDefault("gateway.scheduling.fair_wait_queue_enabled", true)
 	viper.SetDefault("gateway.scheduling.runtime_sync_batch_ms", 1000)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.priority", 1.0)
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.load", 1.0)
@@ -1641,6 +1703,13 @@ func setDefaults() {
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
 	viper.SetDefault("subscription_maintenance.queue_size", 1024)
+	viper.SetDefault("account_import.worker_count", 2)
+	viper.SetDefault("account_import.chunk_size", 100)
+	viper.SetDefault("account_import.queue_ttl", "24h")
+	viper.SetDefault("account_import.max_fast_path_rows", 5000)
+	viper.SetDefault("account_import.claim_ttl", "2m")
+	viper.SetDefault("account_import.recovery_interval", "30s")
+	viper.SetDefault("account_import.max_chunk_attempts", 5)
 
 }
 
@@ -1738,6 +1807,42 @@ func (c *Config) Validate() error {
 	case ServerRuntimeModeNetHTTP, ServerRuntimeModeHybrid, ServerRuntimeModeGnet:
 	default:
 		return fmt.Errorf("server.runtime_mode must be one of: %s/%s/%s", ServerRuntimeModeNetHTTP, ServerRuntimeModeHybrid, ServerRuntimeModeGnet)
+	}
+	if c.Rust.Sidecar.RequestTimeoutSeconds <= 0 {
+		return fmt.Errorf("rust.sidecar.request_timeout_seconds must be positive")
+	}
+	if c.Rust.Sidecar.UpgradeIdleTimeoutSeconds <= 0 {
+		return fmt.Errorf("rust.sidecar.upgrade_idle_timeout_seconds must be positive")
+	}
+	if c.Rust.Sidecar.WebSocketMaxMessageBytes <= 0 {
+		return fmt.Errorf("rust.sidecar.websocket_max_message_bytes must be positive")
+	}
+	if c.Rust.Sidecar.HealthcheckTimeoutSeconds <= 0 {
+		return fmt.Errorf("rust.sidecar.healthcheck_timeout_seconds must be positive")
+	}
+	if c.Rust.Sidecar.Enabled && strings.TrimSpace(c.Rust.Sidecar.SocketPath) == "" {
+		return fmt.Errorf("rust.sidecar.socket_path is required when rust.sidecar.enabled=true")
+	}
+	if c.Rust.Sidecar.Enabled && strings.TrimSpace(c.Rust.Sidecar.UpstreamSocketPath) == "" {
+		return fmt.Errorf("rust.sidecar.upstream_socket_path is required when rust.sidecar.enabled=true")
+	}
+	if c.Rust.Sidecar.AutoStart && !c.Rust.Sidecar.Enabled {
+		return fmt.Errorf("rust.sidecar.enabled must be true when rust.sidecar.auto_start=true")
+	}
+	if c.Rust.Sidecar.AutoStart && strings.TrimSpace(c.Rust.Sidecar.BinaryPath) == "" {
+		return fmt.Errorf("rust.sidecar.binary_path is required when rust.sidecar.auto_start=true")
+	}
+	if (c.Rust.Sidecar.H2CDelegateEnabled || c.Rust.Sidecar.ResponsesWSEnabled) && !c.Rust.Sidecar.Enabled {
+		return fmt.Errorf("rust.sidecar.enabled must be true when any rust.sidecar feature is enabled")
+	}
+	if c.Rust.Sidecar.H2CDelegateEnabled && !c.Server.H2C.Enabled {
+		return fmt.Errorf("server.h2c.enabled must be true when rust.sidecar.h2c_delegate_enabled=true")
+	}
+	if c.Rust.Sidecar.Enabled && c.Process.Mode != ProcessModeSingle {
+		return fmt.Errorf("rust.sidecar currently supports process.mode=single only")
+	}
+	if c.Rust.FFI.Enabled && strings.TrimSpace(c.Rust.FFI.LibraryPath) == "" {
+		return fmt.Errorf("rust.ffi.library_path is required when rust.ffi.enabled=true")
 	}
 	switch c.Process.Mode {
 	case ProcessModeSingle, ProcessModeMasterWorker:
@@ -2489,6 +2594,27 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	if c.AccountImport.WorkerCount <= 0 {
+		return fmt.Errorf("account_import.worker_count must be positive")
+	}
+	if c.AccountImport.ChunkSize <= 0 {
+		return fmt.Errorf("account_import.chunk_size must be positive")
+	}
+	if c.AccountImport.QueueTTL <= 0 {
+		return fmt.Errorf("account_import.queue_ttl must be positive")
+	}
+	if c.AccountImport.MaxFastPathRows <= 0 {
+		return fmt.Errorf("account_import.max_fast_path_rows must be positive")
+	}
+	if c.AccountImport.ClaimTTL <= 0 {
+		return fmt.Errorf("account_import.claim_ttl must be positive")
+	}
+	if c.AccountImport.RecoveryInterval <= 0 {
+		return fmt.Errorf("account_import.recovery_interval must be positive")
+	}
+	if c.AccountImport.MaxChunkAttempts <= 0 {
+		return fmt.Errorf("account_import.max_chunk_attempts must be positive")
 	}
 	return nil
 }

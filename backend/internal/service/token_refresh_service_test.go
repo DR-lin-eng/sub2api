@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -16,9 +17,16 @@ type tokenRefreshAccountRepo struct {
 	mockAccountRepoForGemini
 	updateCalls    int
 	setErrorCalls  int
+	tempCalls      int
+	deleteCalls    int
 	clearTempCalls int
 	lastAccount    *Account
+	lastErrorMsg   string
+	lastTempReason string
+	lastTempUntil  *time.Time
+	lastDeletedID  int64
 	updateErr      error
+	deleteErr      error
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -29,11 +37,44 @@ func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) 
 
 func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
 	r.setErrorCalls++
+	r.lastErrorMsg = errorMsg
+	if acc, ok := r.accountsByID[id]; ok && acc != nil {
+		acc.Status = StatusError
+		acc.ErrorMessage = errorMsg
+	}
+	return nil
+}
+
+func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	r.tempCalls++
+	r.lastTempReason = reason
+	copyUntil := until
+	r.lastTempUntil = &copyUntil
+	if acc, ok := r.accountsByID[id]; ok && acc != nil {
+		acc.TempUnschedulableUntil = &copyUntil
+		acc.TempUnschedulableReason = reason
+	}
+	return nil
+}
+
+func (r *tokenRefreshAccountRepo) Delete(ctx context.Context, id int64) error {
+	r.deleteCalls++
+	r.lastDeletedID = id
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	if r.accountsByID != nil {
+		delete(r.accountsByID, id)
+	}
 	return nil
 }
 
 func (r *tokenRefreshAccountRepo) ClearTempUnschedulable(ctx context.Context, id int64) error {
 	r.clearTempCalls++
+	if acc, ok := r.accountsByID[id]; ok && acc != nil {
+		acc.TempUnschedulableUntil = nil
+		acc.TempUnschedulableReason = ""
+	}
 	return nil
 }
 
@@ -49,9 +90,16 @@ func (s *tokenCacheInvalidatorStub) InvalidateToken(ctx context.Context, account
 
 type tempUnschedCacheStub struct {
 	deleteCalls int
+	setCalls    int
+	lastState   *TempUnschedState
 }
 
 func (s *tempUnschedCacheStub) SetTempUnsched(ctx context.Context, accountID int64, state *TempUnschedState) error {
+	s.setCalls++
+	if state != nil {
+		cloned := *state
+		s.lastState = &cloned
+	}
 	return nil
 }
 
@@ -390,7 +438,7 @@ func TestTokenRefreshService_RefreshWithRetry_ClearsTempUnschedulable(t *testing
 	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
 	require.NoError(t, err)
 	require.Equal(t, 1, repo.updateCalls)
-	require.Equal(t, 1, repo.clearTempCalls)  // DB 清除
+	require.Equal(t, 1, repo.clearTempCalls)   // DB 清除
 	require.Equal(t, 1, tempCache.deleteCalls) // Redis 缓存也应清除
 }
 
@@ -665,4 +713,78 @@ func TestPathA_DBUpdateFailed(t *testing.T) {
 	require.Contains(t, err.Error(), "DB update failed")
 	require.Equal(t, 1, repo.updateCalls)  // DB 更新被尝试
 	require.Equal(t, 0, invalidator.calls) // DB 失败时不应触发缓存失效
+}
+
+func TestTokenRefreshService_ProcessSchedulerAdmissionTest_502SetsTempUnschedulable(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	account := &Account{
+		ID:          201,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"refresh_token": "rt-201",
+		},
+	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	tempCache := &tempUnschedCacheStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, tempCache)
+	refresher := &tokenRefresherStub{err: errors.New("token refresh failed: status 502, body: bad gateway")}
+	service.refreshers = []TokenRefresher{refresher}
+	service.executors = []OAuthRefreshExecutor{refresher}
+
+	service.processSchedulerAdmissionTest(account.ID)
+
+	require.Equal(t, 1, repo.tempCalls)
+	require.NotNil(t, repo.lastTempUntil)
+	require.Contains(t, repo.lastTempReason, "scheduler admission refresh probe failed")
+	require.Equal(t, 1, tempCache.setCalls)
+	require.NotNil(t, tempCache.lastState)
+	require.Equal(t, http.StatusBadGateway, tempCache.lastState.StatusCode)
+}
+
+func TestTokenRefreshService_ProcessSchedulerAdmissionTest_401UsesExistingDeleteStrategy(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	account := &Account{
+		ID:          202,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"refresh_token": "rt-202",
+		},
+	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	refresher := &tokenRefresherStub{err: errors.New("token refresh failed: status 401, body: unauthorized")}
+	service.refreshers = []TokenRefresher{refresher}
+	service.executors = []OAuthRefreshExecutor{refresher}
+
+	settingSvc := NewSettingService(&settingRepoStub{values: map[string]string{
+		SettingKeyAutoDelete401Accounts: "true",
+	}}, &config.Config{})
+	rateSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	rateSvc.SetSettingService(settingSvc)
+	service.SetRateLimitService(rateSvc)
+
+	service.processSchedulerAdmissionTest(account.ID)
+
+	require.Equal(t, 1, repo.deleteCalls)
+	require.Equal(t, account.ID, repo.lastDeletedID)
+	_, ok := repo.accountsByID[account.ID]
+	require.False(t, ok)
 }

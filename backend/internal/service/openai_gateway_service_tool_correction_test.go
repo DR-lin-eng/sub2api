@@ -77,6 +77,27 @@ func TestOpenAIGatewayService_ToolCorrection(t *testing.T) {
 	}
 }
 
+func TestOpenAIGatewayService_CorrectToolCallsInSSEBody(t *testing.T) {
+	service := &OpenAIGatewayService{
+		toolCorrector: NewCodexToolCorrector(),
+	}
+
+	body := strings.Join([]string{
+		`event: message`,
+		`data: {"tool_calls":[{"function":{"name":"apply_patch"}}]}`,
+		``,
+		`data: [DONE]`,
+	}, "\n")
+
+	result := service.correctToolCallsInSSEBody(body)
+	if !strings.Contains(result, `"name":"edit"`) {
+		t.Fatalf("expected SSE body tool correction, got %q", result)
+	}
+	if !strings.Contains(result, "event: message") || !strings.Contains(result, "data: [DONE]") {
+		t.Fatalf("expected SSE framing to be preserved, got %q", result)
+	}
+}
+
 // TestOpenAIGatewayService_ToolCorrectorInitialization 测试工具修正器是否正确初始化
 func TestOpenAIGatewayService_ToolCorrectorInitialization(t *testing.T) {
 	service := &OpenAIGatewayService{

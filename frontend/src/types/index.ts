@@ -31,6 +31,7 @@ export interface User {
   role: 'admin' | 'user' // User role for authorization
   balance: number // User balance for API usage
   concurrency: number // Allowed concurrent requests
+  unlimited_concurrency?: boolean
   status: 'active' | 'disabled' // Account status
   allowed_groups: number[] | null // Allowed group IDs (null = all non-exclusive groups)
   subscriptions?: UserSubscription[] // User's active subscriptions
@@ -361,7 +362,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'sora'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'sora' | 'kiro'
 
 export type SubscriptionType = 'standard' | 'subscription'
 
@@ -539,7 +540,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'sora'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'sora' | 'kiro'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks4' | 'socks5' | 'socks5h'
@@ -746,6 +747,11 @@ export interface Account {
   session_window_start: string | null
   session_window_end: string | null
   session_window_status: 'allowed' | 'allowed_warning' | 'rejected' | null
+  sync_state?: 'pending' | 'syncing' | 'completed' | 'failed' | 'duplicate' | null
+  sync_progress?: number | null
+  sync_message?: string | null
+  sync_batch_id?: string | null
+  duplicate_of_account_id?: number | null
 
   // 5h窗口费用控制（仅 Anthropic OAuth/SetupToken 账号有效）
   window_cost_limit?: number | null
@@ -832,6 +838,11 @@ export interface AccountUsageInfo {
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
   seven_day_sonnet: UsageProgress | null
+  kiro_quota?: UsageProgress | null
+  kiro_subscription_title?: string
+  kiro_current_usage?: number
+  kiro_usage_limit?: number
+  kiro_remaining?: number
   gemini_shared_daily?: UsageProgress | null
   gemini_pro_daily?: UsageProgress | null
   gemini_flash_daily?: UsageProgress | null
@@ -1006,9 +1017,12 @@ export interface AdminDataImportError {
 }
 
 export interface AdminDataImportResult {
+  batch_id?: string
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
+  account_enqueued?: number
+  placeholder_created?: number
   account_created: number
   account_skipped: number
   account_failed: number
@@ -1370,6 +1384,7 @@ export interface UpdateUserRequest {
   role?: 'admin' | 'user'
   balance?: number
   concurrency?: number
+  unlimited_concurrency?: boolean
   status?: 'active' | 'disabled'
   allowed_groups?: number[] | null
   // 用户专属分组倍率配置 (group_id -> rate_multiplier | null)

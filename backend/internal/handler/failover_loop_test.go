@@ -666,12 +666,28 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		require.Equal(t, FailoverExhausted, action)
 	})
 
-	t.Run("非503错误返回Exhausted", func(t *testing.T) {
+	t.Run("非瞬时错误返回Exhausted", func(t *testing.T) {
 		fs := NewFailoverState(3, false)
-		fs.LastFailoverErr = newTestFailoverErr(500, false, false)
+		fs.LastFailoverErr = newTestFailoverErr(400, false, false)
 
 		action := fs.HandleSelectionExhausted(context.Background())
 		require.Equal(t, FailoverExhausted, action)
+	})
+
+	t.Run("429且未耗尽_等待后返回Continue并清除失败列表", func(t *testing.T) {
+		fs := NewFailoverState(3, false)
+		fs.LastFailoverErr = newTestFailoverErr(429, false, false)
+		fs.FailedAccountIDs[100] = struct{}{}
+		fs.SwitchCount = 1
+
+		start := time.Now()
+		action := fs.HandleSelectionExhausted(context.Background())
+		elapsed := time.Since(start)
+
+		require.Equal(t, FailoverContinue, action)
+		require.Empty(t, fs.FailedAccountIDs, "应清除失败账号列表")
+		require.GreaterOrEqual(t, elapsed, 1500*time.Millisecond, "应等待约 2s")
+		require.Less(t, elapsed, 5*time.Second)
 	})
 
 	t.Run("503且未耗尽_等待后返回Continue并清除失败列表", func(t *testing.T) {

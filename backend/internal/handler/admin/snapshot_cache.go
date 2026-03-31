@@ -1,13 +1,11 @@
 package admin
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -118,12 +116,7 @@ func (c *snapshotCache) GetOrLoad(key string, load func() (any, error)) (snapsho
 }
 
 func buildETagFromAny(payload any) string {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(raw)
-	return "\"" + hex.EncodeToString(sum[:]) + "\""
+	return ffi.BuildETagFromAny(payload)
 }
 
 func (c *snapshotCache) pruneExpiredLocked(now time.Time) {

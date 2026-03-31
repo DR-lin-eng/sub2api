@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
@@ -931,6 +932,8 @@ type GatewayService struct {
 	deferredService       *DeferredService
 	concurrencyService    *ConcurrencyService
 	claudeTokenProvider   *ClaudeTokenProvider
+	kiroTokenProvider     *KiroTokenProvider
+	kiroGatewayService    *KiroGatewayService
 	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
 	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
 	userGroupRateResolver *userGroupRateResolver
@@ -1044,6 +1047,14 @@ func (s *GatewayService) SetProxyFailoverDeps(proxyRepo ProxyRepository, proxyLa
 	}
 	s.proxyRepo = proxyRepo
 	s.proxyLatencyCache = proxyLatencyCache
+}
+
+func (s *GatewayService) SetKiroDeps(kiroTokenProvider *KiroTokenProvider, kiroGatewayService *KiroGatewayService) {
+	if s == nil {
+		return
+	}
+	s.kiroTokenProvider = kiroTokenProvider
+	s.kiroGatewayService = kiroGatewayService
 }
 
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
@@ -3886,6 +3897,12 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 // isModelSupportedByAccountWithContext 根据账户平台检查模型支持（带 context）
 // 对于 Antigravity 平台，会先获取映射后的最终模型名（包括 thinking 后缀）再检查支持
 func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
+	if account.Platform == PlatformKiro {
+		if strings.TrimSpace(requestedModel) == "" {
+			return true
+		}
+		return kiro.MapModel(requestedModel) != ""
+	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
@@ -3910,6 +3927,12 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 
 // isModelSupportedByAccount 根据账户平台检查模型支持（无 context，用于非 Antigravity 平台）
 func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if account.Platform == PlatformKiro {
+		if strings.TrimSpace(requestedModel) == "" {
+			return true
+		}
+		return kiro.MapModel(requestedModel) != ""
+	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
@@ -4088,6 +4111,14 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 }
 
 func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (string, string, error) {
+	if account.Platform == PlatformKiro && account.Type == AccountTypeOAuth && s.kiroTokenProvider != nil {
+		accessToken, err := s.kiroTokenProvider.GetAccessToken(ctx, account)
+		if err != nil {
+			return "", "", err
+		}
+		return accessToken, "oauth", nil
+	}
+
 	// 对于 Anthropic OAuth 账号，使用 ClaudeTokenProvider 获取缓存的 token
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth && s.claudeTokenProvider != nil {
 		accessToken, err := s.claudeTokenProvider.GetAccessToken(ctx, account)
@@ -4467,6 +4498,13 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 		return nil, fmt.Errorf("parse request: empty request")
 	}
 
+	if account != nil && account.Platform == PlatformKiro {
+		if s.kiroGatewayService == nil {
+			return nil, fmt.Errorf("kiro gateway service is not configured")
+		}
+		return s.kiroGatewayService.ForwardContext(ctx, c, account, parsed)
+	}
+
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
@@ -4477,6 +4515,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 				passthroughModel = mappedModel
 			}
 		}
+		SetOpsUpstreamModelContext(c, passthroughModel)
 		return s.forwardAnthropicAPIKeyPassthroughWithInputContext(ctx, c, account, anthropicPassthroughForwardInput{
 			Body:          passthroughBody,
 			RequestModel:  passthroughModel,
@@ -4557,6 +4596,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 		reqModel = mappedModel
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
+	SetOpsUpstreamModelContext(c, mappedModel)
 
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -8383,6 +8423,13 @@ func (s *GatewayService) ForwardCountTokensContext(ctx context.Context, c gatewa
 	if parsed == nil {
 		s.countTokensErrorContext(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
+	}
+
+	if account != nil && account.Platform == PlatformKiro {
+		if s.kiroGatewayService == nil {
+			return fmt.Errorf("kiro gateway service is not configured")
+		}
+		return s.kiroGatewayService.ForwardCountTokensContext(ctx, c, account, parsed)
 	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {

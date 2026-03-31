@@ -2,11 +2,412 @@
 package routes
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 
 	"github.com/gin-gonic/gin"
 )
+
+func ExecutableAdminRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
+	if h == nil || h.Admin == nil {
+		return nil
+	}
+	out := make([]gatewayctx.RouteDef, 0, 12)
+	if h.Admin.Dashboard != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/snapshot-v2", Handler: h.Admin.Dashboard.GetSnapshotV2Gateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/stats", Handler: h.Admin.Dashboard.GetStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/realtime", Handler: h.Admin.Dashboard.GetRealtimeMetricsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/trend", Handler: h.Admin.Dashboard.GetUsageTrendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/models", Handler: h.Admin.Dashboard.GetModelStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/groups", Handler: h.Admin.Dashboard.GetGroupStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/api-keys-trend", Handler: h.Admin.Dashboard.GetAPIKeyUsageTrendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/users-trend", Handler: h.Admin.Dashboard.GetUserUsageTrendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/users-ranking", Handler: h.Admin.Dashboard.GetUserSpendingRankingGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/dashboard/users-usage", Handler: h.Admin.Dashboard.GetBatchUsersUsageGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/dashboard/api-keys-usage", Handler: h.Admin.Dashboard.GetBatchAPIKeysUsageGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/dashboard/user-breakdown", Handler: h.Admin.Dashboard.GetUserBreakdownGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/dashboard/aggregation/backfill", Handler: h.Admin.Dashboard.BackfillAggregationGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Group != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups", Handler: h.Admin.Group.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/all", Handler: h.Admin.Group.GetAllGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/:id", Handler: h.Admin.Group.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/:id/stats", Handler: h.Admin.Group.GetStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/usage-summary", Handler: h.Admin.Group.GetUsageSummaryGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/capacity-summary", Handler: h.Admin.Group.GetCapacitySummaryGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/groups/sort-order", Handler: h.Admin.Group.UpdateSortOrderGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/:id/rate-multipliers", Handler: h.Admin.Group.GetGroupRateMultipliersGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/groups/:id/rate-multipliers", Handler: h.Admin.Group.BatchSetGroupRateMultipliersGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/groups/:id/rate-multipliers", Handler: h.Admin.Group.ClearGroupRateMultipliersGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/:id/api-keys", Handler: h.Admin.Group.GetGroupAPIKeysGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/groups", Handler: h.Admin.Group.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/groups/:id", Handler: h.Admin.Group.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/groups/:id", Handler: h.Admin.Group.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Announcement != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/announcements", Handler: h.Admin.Announcement.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/announcements", Handler: h.Admin.Announcement.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/announcements/:id", Handler: h.Admin.Announcement.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/announcements/:id", Handler: h.Admin.Announcement.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/announcements/:id", Handler: h.Admin.Announcement.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/announcements/:id/read-status", Handler: h.Admin.Announcement.ListReadStatusGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Promo != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/promo-codes", Handler: h.Admin.Promo.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/promo-codes", Handler: h.Admin.Promo.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/promo-codes/:id", Handler: h.Admin.Promo.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/promo-codes/:id", Handler: h.Admin.Promo.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/promo-codes/:id", Handler: h.Admin.Promo.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/promo-codes/:id/usages", Handler: h.Admin.Promo.GetUsagesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Backup != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/backups/s3-config", Handler: h.Admin.Backup.GetS3ConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/backups/s3-config", Handler: h.Admin.Backup.UpdateS3ConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/backups/s3-config/test", Handler: h.Admin.Backup.TestS3ConnectionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/backups/schedule", Handler: h.Admin.Backup.GetScheduleGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/backups/schedule", Handler: h.Admin.Backup.UpdateScheduleGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/backups", Handler: h.Admin.Backup.CreateBackupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/backups", Handler: h.Admin.Backup.ListBackupsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/backups/:id", Handler: h.Admin.Backup.GetBackupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/backups/:id", Handler: h.Admin.Backup.DeleteBackupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/backups/:id/download-url", Handler: h.Admin.Backup.GetDownloadURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/backups/:id/restore", Handler: h.Admin.Backup.RestoreBackupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.DataManagement != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/agent/health", Handler: h.Admin.DataManagement.GetAgentHealthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/config", Handler: h.Admin.DataManagement.GetConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/data-management/config", Handler: h.Admin.DataManagement.UpdateConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/sources/:source_type/profiles", Handler: h.Admin.DataManagement.ListSourceProfilesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/sources/:source_type/profiles", Handler: h.Admin.DataManagement.CreateSourceProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id", Handler: h.Admin.DataManagement.UpdateSourceProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id", Handler: h.Admin.DataManagement.DeleteSourceProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/sources/:source_type/profiles/:profile_id/activate", Handler: h.Admin.DataManagement.SetActiveSourceProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/s3/test", Handler: h.Admin.DataManagement.TestS3Gateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/s3/profiles", Handler: h.Admin.DataManagement.ListS3ProfilesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/s3/profiles", Handler: h.Admin.DataManagement.CreateS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/data-management/s3/profiles/:profile_id", Handler: h.Admin.DataManagement.UpdateS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/data-management/s3/profiles/:profile_id", Handler: h.Admin.DataManagement.DeleteS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/s3/profiles/:profile_id/activate", Handler: h.Admin.DataManagement.SetActiveS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/data-management/backups", Handler: h.Admin.DataManagement.CreateBackupJobGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/backups", Handler: h.Admin.DataManagement.ListBackupJobsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/data-management/backups/:job_id", Handler: h.Admin.DataManagement.GetBackupJobGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Redeem != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/redeem-codes", Handler: h.Admin.Redeem.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/redeem-codes/stats", Handler: h.Admin.Redeem.GetStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/redeem-codes/export", Handler: h.Admin.Redeem.ExportGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/redeem-codes/:id", Handler: h.Admin.Redeem.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/redeem-codes/create-and-redeem", Handler: h.Admin.Redeem.CreateAndRedeemGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/redeem-codes/generate", Handler: h.Admin.Redeem.GenerateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/redeem-codes/:id", Handler: h.Admin.Redeem.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/redeem-codes/batch-delete", Handler: h.Admin.Redeem.BatchDeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/redeem-codes/:id/expire", Handler: h.Admin.Redeem.ExpireGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.User != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users", Handler: h.Admin.User.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id", Handler: h.Admin.User.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/users", Handler: h.Admin.User.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/users/:id", Handler: h.Admin.User.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/users/:id", Handler: h.Admin.User.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/users/:id/balance", Handler: h.Admin.User.UpdateBalanceGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id/api-keys", Handler: h.Admin.User.GetUserAPIKeysGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id/usage", Handler: h.Admin.User.GetUserUsageGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id/balance-history", Handler: h.Admin.User.GetBalanceHistoryGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/users/:id/replace-group", Handler: h.Admin.User.ReplaceGroupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Subscription != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/subscriptions", Handler: h.Admin.Subscription.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/subscriptions/:id", Handler: h.Admin.Subscription.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/subscriptions/:id/progress", Handler: h.Admin.Subscription.GetProgressGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/subscriptions/assign", Handler: h.Admin.Subscription.AssignGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/subscriptions/bulk-assign", Handler: h.Admin.Subscription.BulkAssignGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/subscriptions/:id/extend", Handler: h.Admin.Subscription.ExtendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/subscriptions/:id/reset-quota", Handler: h.Admin.Subscription.ResetQuotaGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/subscriptions/:id", Handler: h.Admin.Subscription.RevokeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/groups/:id/subscriptions", Handler: h.Admin.Subscription.ListByGroupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id/subscriptions", Handler: h.Admin.Subscription.ListByUserGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Usage != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/usage", Handler: h.Admin.Usage.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/usage/stats", Handler: h.Admin.Usage.StatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/usage/search-users", Handler: h.Admin.Usage.SearchUsersGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/usage/search-api-keys", Handler: h.Admin.Usage.SearchAPIKeysGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/usage/cleanup-tasks", Handler: h.Admin.Usage.ListCleanupTasksGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/usage/cleanup-tasks", Handler: h.Admin.Usage.CreateCleanupTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/usage/cleanup-tasks/:id/cancel", Handler: h.Admin.Usage.CancelCleanupTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.APIKey != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/api-keys/:id", Handler: h.Admin.APIKey.UpdateGroupGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.UserAttribute != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/user-attributes", Handler: h.Admin.UserAttribute.ListDefinitionsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/user-attributes", Handler: h.Admin.UserAttribute.CreateDefinitionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/user-attributes/batch", Handler: h.Admin.UserAttribute.GetBatchUserAttributesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/user-attributes/reorder", Handler: h.Admin.UserAttribute.ReorderDefinitionsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/user-attributes/:id", Handler: h.Admin.UserAttribute.UpdateDefinitionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/user-attributes/:id", Handler: h.Admin.UserAttribute.DeleteDefinitionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/users/:id/attributes", Handler: h.Admin.UserAttribute.GetUserAttributesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/users/:id/attributes", Handler: h.Admin.UserAttribute.UpdateUserAttributesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.ScheduledTest != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/scheduled-test-plans", Handler: h.Admin.ScheduledTest.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/scheduled-test-plans/:id", Handler: h.Admin.ScheduledTest.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/scheduled-test-plans/:id", Handler: h.Admin.ScheduledTest.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/scheduled-test-plans/:id/results", Handler: h.Admin.ScheduledTest.ListResultsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/scheduled-test-plans", Handler: h.Admin.ScheduledTest.ListByAccountGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.ErrorPassthrough != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/error-passthrough-rules", Handler: h.Admin.ErrorPassthrough.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/error-passthrough-rules/:id", Handler: h.Admin.ErrorPassthrough.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/error-passthrough-rules", Handler: h.Admin.ErrorPassthrough.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/error-passthrough-rules/:id", Handler: h.Admin.ErrorPassthrough.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/error-passthrough-rules/:id", Handler: h.Admin.ErrorPassthrough.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.ProxyMaintenance != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxy-maintenance-plans", Handler: h.Admin.ProxyMaintenance.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxy-maintenance-plans", Handler: h.Admin.ProxyMaintenance.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/proxy-maintenance-plans/:id", Handler: h.Admin.ProxyMaintenance.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/proxy-maintenance-plans/:id", Handler: h.Admin.ProxyMaintenance.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxy-maintenance-plans/:id/results", Handler: h.Admin.ProxyMaintenance.ListResultsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxy-maintenance/run-now", Handler: h.Admin.ProxyMaintenance.RunNowGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxy-maintenance/tasks/:task_id", Handler: h.Admin.ProxyMaintenance.GetTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Proxy != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies", Handler: h.Admin.Proxy.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies/all", Handler: h.Admin.Proxy.GetAllGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies/data", Handler: h.Admin.Proxy.ExportDataGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies/data", Handler: h.Admin.Proxy.ImportDataGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies/:id", Handler: h.Admin.Proxy.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies", Handler: h.Admin.Proxy.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/proxies/:id", Handler: h.Admin.Proxy.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/proxies/:id", Handler: h.Admin.Proxy.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies/batch-delete", Handler: h.Admin.Proxy.BatchDeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies/:id/test", Handler: h.Admin.Proxy.TestGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies/:id/quality-check", Handler: h.Admin.Proxy.CheckQualityGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies/:id/stats", Handler: h.Admin.Proxy.GetStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/proxies/:id/accounts", Handler: h.Admin.Proxy.GetProxyAccountsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/proxies/batch", Handler: h.Admin.Proxy.BatchCreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.OpenAIOAuth != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/generate-auth-url", Handler: h.Admin.OpenAIOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/exchange-code", Handler: h.Admin.OpenAIOAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/refresh-token", Handler: h.Admin.OpenAIOAuth.RefreshTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/accounts/:id/refresh", Handler: h.Admin.OpenAIOAuth.RefreshAccountTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/create-from-oauth", Handler: h.Admin.OpenAIOAuth.CreateAccountFromOAuthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/generate-auth-url", Handler: h.Admin.OpenAIOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/exchange-code", Handler: h.Admin.OpenAIOAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/refresh-token", Handler: h.Admin.OpenAIOAuth.RefreshTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/st2at", Handler: h.Admin.OpenAIOAuth.ExchangeSoraSessionTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/rt2at", Handler: h.Admin.OpenAIOAuth.RefreshTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/accounts/:id/refresh", Handler: h.Admin.OpenAIOAuth.RefreshAccountTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/create-from-oauth", Handler: h.Admin.OpenAIOAuth.CreateAccountFromOAuthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.GeminiOAuth != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/gemini/oauth/auth-url", Handler: h.Admin.GeminiOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/gemini/oauth/exchange-code", Handler: h.Admin.GeminiOAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/gemini/oauth/capabilities", Handler: h.Admin.GeminiOAuth.GetCapabilitiesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.AntigravityOAuth != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/antigravity/oauth/auth-url", Handler: h.Admin.AntigravityOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/antigravity/oauth/exchange-code", Handler: h.Admin.AntigravityOAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/antigravity/oauth/refresh-token", Handler: h.Admin.AntigravityOAuth.RefreshTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Ops != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/concurrency", Handler: h.Admin.Ops.GetConcurrencyStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/user-concurrency", Handler: h.Admin.Ops.GetUserConcurrencyStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/account-availability", Handler: h.Admin.Ops.GetAccountAvailabilityGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/realtime-traffic", Handler: h.Admin.Ops.GetRealtimeTrafficSummaryGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/gateway-scheduler", Handler: h.Admin.Ops.GetGatewaySchedulerRuntimeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/openai-ws-runtime", Handler: h.Admin.Ops.GetOpenAIWSRuntimeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/ws/qps", Handler: h.Admin.Ops.QPSWSHandlerGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/overview", Handler: h.Admin.Ops.GetDashboardOverviewGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/throughput-trend", Handler: h.Admin.Ops.GetDashboardThroughputTrendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/latency-histogram", Handler: h.Admin.Ops.GetDashboardLatencyHistogramGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/error-trend", Handler: h.Admin.Ops.GetDashboardErrorTrendGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/error-distribution", Handler: h.Admin.Ops.GetDashboardErrorDistributionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/dashboard/openai-token-stats", Handler: h.Admin.Ops.GetDashboardOpenAITokenStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/system-logs", Handler: h.Admin.Ops.ListSystemLogsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/system-logs/cleanup", Handler: h.Admin.Ops.CleanupSystemLogsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/system-logs/health", Handler: h.Admin.Ops.GetSystemLogIngestionHealthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/alert-rules", Handler: h.Admin.Ops.ListAlertRulesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/alert-rules", Handler: h.Admin.Ops.CreateAlertRuleGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/alert-rules/:id", Handler: h.Admin.Ops.UpdateAlertRuleGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/ops/alert-rules/:id", Handler: h.Admin.Ops.DeleteAlertRuleGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/alert-events", Handler: h.Admin.Ops.ListAlertEventsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/alert-events/:id", Handler: h.Admin.Ops.GetAlertEventGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/alert-events/:id/status", Handler: h.Admin.Ops.UpdateAlertEventStatusGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/alert-silences", Handler: h.Admin.Ops.CreateAlertSilenceGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/errors", Handler: h.Admin.Ops.GetErrorLogsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/errors/:id", Handler: h.Admin.Ops.GetErrorLogByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/errors/:id/retries", Handler: h.Admin.Ops.ListRetryAttemptsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/errors/:id/retry", Handler: h.Admin.Ops.RetryErrorRequestGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/errors/:id/resolve", Handler: h.Admin.Ops.UpdateErrorResolutionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/request-errors", Handler: h.Admin.Ops.ListRequestErrorsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/request-errors/:id", Handler: h.Admin.Ops.GetRequestErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/request-errors/:id/upstream-errors", Handler: h.Admin.Ops.ListRequestErrorUpstreamErrorsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/request-errors/:id/retry-client", Handler: h.Admin.Ops.RetryRequestErrorClientGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/request-errors/:id/upstream-errors/:idx/retry", Handler: h.Admin.Ops.RetryRequestErrorUpstreamEventGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/request-errors/:id/resolve", Handler: h.Admin.Ops.ResolveRequestErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/upstream-errors", Handler: h.Admin.Ops.ListUpstreamErrorsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/upstream-errors/:id", Handler: h.Admin.Ops.GetUpstreamErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/upstream-errors/:id/retry", Handler: h.Admin.Ops.RetryUpstreamErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/upstream-errors/:id/resolve", Handler: h.Admin.Ops.ResolveUpstreamErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/requests", Handler: h.Admin.Ops.ListRequestDetailsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/email-notification/config", Handler: h.Admin.Ops.GetEmailNotificationConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/email-notification/config", Handler: h.Admin.Ops.UpdateEmailNotificationConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/runtime/alert", Handler: h.Admin.Ops.GetAlertRuntimeSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/runtime/alert", Handler: h.Admin.Ops.UpdateAlertRuntimeSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/runtime/logging", Handler: h.Admin.Ops.GetRuntimeLogConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/runtime/logging", Handler: h.Admin.Ops.UpdateRuntimeLogConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/ops/runtime/logging/reset", Handler: h.Admin.Ops.ResetRuntimeLogConfigGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/advanced-settings", Handler: h.Admin.Ops.GetAdvancedSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/advanced-settings", Handler: h.Admin.Ops.UpdateAdvancedSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/ops/settings/metric-thresholds", Handler: h.Admin.Ops.GetMetricThresholdsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/ops/settings/metric-thresholds", Handler: h.Admin.Ops.UpdateMetricThresholdsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.System != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/system/version", Handler: h.Admin.System.GetVersionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/system/check-updates", Handler: h.Admin.System.CheckUpdatesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/system/update", Handler: h.Admin.System.PerformUpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/system/rollback", Handler: h.Admin.System.RollbackGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/system/restart", Handler: h.Admin.System.RestartServiceGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Account != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts", Handler: h.Admin.Account.ListGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id", Handler: h.Admin.Account.GetByIDGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts", Handler: h.Admin.Account.CreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/accounts/:id", Handler: h.Admin.Account.UpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/accounts/:id", Handler: h.Admin.Account.DeleteGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/check-mixed-channel", Handler: h.Admin.Account.CheckMixedChannelGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/test", Handler: h.Admin.Account.TestGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch-test", Handler: h.Admin.Account.BatchTestGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/refresh", Handler: h.Admin.Account.RefreshGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/stats", Handler: h.Admin.Account.GetStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/clear-error", Handler: h.Admin.Account.ClearErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/usage", Handler: h.Admin.Account.GetUsageGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/clear-rate-limit", Handler: h.Admin.Account.ClearRateLimitGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/reset-quota", Handler: h.Admin.Account.ResetQuotaGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/temp-unschedulable", Handler: h.Admin.Account.GetTempUnschedulableGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/accounts/:id/temp-unschedulable", Handler: h.Admin.Account.ClearTempUnschedulableGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/today-stats", Handler: h.Admin.Account.GetTodayStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/today-stats/batch", Handler: h.Admin.Account.GetBatchTodayStatsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/schedulable", Handler: h.Admin.Account.SetSchedulableGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/:id/models", Handler: h.Admin.Account.GetAvailableModelsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/recover-state", Handler: h.Admin.Account.RecoverStateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/sync/crs", Handler: h.Admin.Account.SyncFromCRSGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/sync/crs/preview", Handler: h.Admin.Account.PreviewFromCRSGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch-clear-error", Handler: h.Admin.Account.BatchClearErrorGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch-refresh", Handler: h.Admin.Account.BatchRefreshGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch", Handler: h.Admin.Account.BatchCreateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch-update-credentials", Handler: h.Admin.Account.BatchUpdateCredentialsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/bulk-update", Handler: h.Admin.Account.BulkUpdateGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/models/refresh", Handler: h.Admin.Account.RefreshModelsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/:id/refresh-tier", Handler: h.Admin.Account.RefreshTierGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/batch-refresh-tier", Handler: h.Admin.Account.BatchRefreshTierGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/antigravity/default-model-mapping", Handler: h.Admin.Account.GetAntigravityDefaultModelMappingGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/data", Handler: h.Admin.Account.ExportDataGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/data", Handler: h.Admin.Account.ImportDataGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/data/export-tasks", Handler: h.Admin.Account.CreateExportTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/data/export-tasks/:task_id", Handler: h.Admin.Account.GetExportTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/data/upload-sessions", Handler: h.Admin.Account.CreateImportUploadSessionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/data/upload-sessions/:session_id", Handler: h.Admin.Account.GetImportUploadSessionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/accounts/data/upload-sessions/:session_id", Handler: h.Admin.Account.UploadImportChunkGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/data/upload-sessions/:session_id/finalize", Handler: h.Admin.Account.FinalizeImportUploadSessionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/data/tasks", Handler: h.Admin.Account.CreateImportTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/accounts/data/tasks/:task_id", Handler: h.Admin.Account.GetImportTaskGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.OAuth != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/generate-auth-url", Handler: h.Admin.OAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/generate-setup-token-url", Handler: h.Admin.OAuth.GenerateSetupTokenURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/exchange-code", Handler: h.Admin.OAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/exchange-setup-token-code", Handler: h.Admin.OAuth.ExchangeSetupTokenCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/cookie-auth", Handler: h.Admin.OAuth.CookieAuthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/accounts/setup-token-cookie-auth", Handler: h.Admin.OAuth.SetupTokenCookieAuthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	if h.Admin.Setting != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings", Handler: h.Admin.Setting.GetSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings", Handler: h.Admin.Setting.UpdateSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/test-smtp", Handler: h.Admin.Setting.TestSMTPConnectionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/send-test-email", Handler: h.Admin.Setting.SendTestEmailGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/admin-api-key", Handler: h.Admin.Setting.GetAdminAPIKeyGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/admin-api-key/regenerate", Handler: h.Admin.Setting.RegenerateAdminAPIKeyGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/settings/admin-api-key", Handler: h.Admin.Setting.DeleteAdminAPIKeyGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/overload-cooldown", Handler: h.Admin.Setting.GetOverloadCooldownSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/overload-cooldown", Handler: h.Admin.Setting.UpdateOverloadCooldownSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/stream-timeout", Handler: h.Admin.Setting.GetStreamTimeoutSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/stream-timeout", Handler: h.Admin.Setting.UpdateStreamTimeoutSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/rectifier", Handler: h.Admin.Setting.GetRectifierSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/rectifier", Handler: h.Admin.Setting.UpdateRectifierSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/beta-policy", Handler: h.Admin.Setting.GetBetaPolicySettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/beta-policy", Handler: h.Admin.Setting.UpdateBetaPolicySettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/tls-fingerprint", Handler: h.Admin.Setting.GetTLSFingerprintSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/tls-fingerprint", Handler: h.Admin.Setting.UpdateTLSFingerprintSettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/tls-fingerprint/profiles", Handler: h.Admin.Setting.ListTLSFingerprintProfilesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/tls-fingerprint/profiles", Handler: h.Admin.Setting.CreateTLSFingerprintProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/tls-fingerprint/profiles/:profile_id", Handler: h.Admin.Setting.UpdateTLSFingerprintProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/settings/tls-fingerprint/profiles/:profile_id", Handler: h.Admin.Setting.DeleteTLSFingerprintProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/sora-s3", Handler: h.Admin.Setting.GetSoraS3SettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/sora-s3", Handler: h.Admin.Setting.UpdateSoraS3SettingsGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/sora-s3/test", Handler: h.Admin.Setting.TestSoraS3ConnectionGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/settings/sora-s3/profiles", Handler: h.Admin.Setting.ListSoraS3ProfilesGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/sora-s3/profiles", Handler: h.Admin.Setting.CreateSoraS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/settings/sora-s3/profiles/:profile_id", Handler: h.Admin.Setting.UpdateSoraS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/settings/sora-s3/profiles/:profile_id", Handler: h.Admin.Setting.DeleteSoraS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/sora-s3/profiles/:profile_id/activate", Handler: h.Admin.Setting.SetActiveSoraS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+		)
+	}
+	return out
+}
 
 // RegisterAdminRoutes 注册管理员路由
 func RegisterAdminRoutes(
@@ -430,6 +831,13 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)
+		// TLS 指纹 Profile 配置
+		adminSettings.GET("/tls-fingerprint", h.Admin.Setting.GetTLSFingerprintSettings)
+		adminSettings.PUT("/tls-fingerprint", h.Admin.Setting.UpdateTLSFingerprintSettings)
+		adminSettings.GET("/tls-fingerprint/profiles", h.Admin.Setting.ListTLSFingerprintProfiles)
+		adminSettings.POST("/tls-fingerprint/profiles", h.Admin.Setting.CreateTLSFingerprintProfile)
+		adminSettings.PUT("/tls-fingerprint/profiles/:profile_id", h.Admin.Setting.UpdateTLSFingerprintProfile)
+		adminSettings.DELETE("/tls-fingerprint/profiles/:profile_id", h.Admin.Setting.DeleteTLSFingerprintProfile)
 		// Sora S3 存储配置
 		adminSettings.GET("/sora-s3", h.Admin.Setting.GetSoraS3Settings)
 		adminSettings.PUT("/sora-s3", h.Admin.Setting.UpdateSoraS3Settings)

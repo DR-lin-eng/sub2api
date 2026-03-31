@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	rustffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
 	"golang.org/x/sys/unix"
 )
 
@@ -118,6 +119,22 @@ func runWorkerProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 		return fmt.Errorf("initialize worker application: %w", err)
 	}
 	defer app.Cleanup()
+
+	stopRustUpstream, err := startRustSidecarUpstreamServer(cfg, app.Server)
+	if err != nil {
+		return fmt.Errorf("start rust sidecar upstream server: %w", err)
+	}
+	defer stopRustUpstream()
+
+	stopRustSidecar, err := startRustSidecarProcess(cfg)
+	if err != nil {
+		return fmt.Errorf("start rust sidecar process: %w", err)
+	}
+	defer stopRustSidecar()
+
+	if err := rustffi.Configure(cfg.Rust.FFI); err != nil {
+		return fmt.Errorf("configure rust ffi: %w", err)
+	}
 	runtime := resolveApplicationRuntime(cfg, app)
 	if runtime == nil {
 		return errors.New("application ingress runtime is nil")

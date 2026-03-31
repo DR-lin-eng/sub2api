@@ -1,16 +1,24 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
+	rustsidecar "github.com/Wei-Shaw/sub2api/internal/rustbridge/sidecar"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
@@ -595,6 +603,100 @@ func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T
 
 	require.Equal(t, http.StatusUpgradeRequired, w.Code)
 	require.Equal(t, service.OpenAIClientTransportUnknown, service.GetOpenAIClientTransport(c))
+}
+
+func TestOpenAIResponsesWebSocket_ShouldUseRustSidecarFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil)
+
+	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
+	require.False(t, h.shouldUseRustSidecarResponsesWS(gatewayctx.FromGin(c)))
+
+	h.cfg.Rust.Sidecar.Enabled = true
+	h.cfg.Rust.Sidecar.ResponsesWSEnabled = true
+	require.True(t, h.shouldUseRustSidecarResponsesWS(gatewayctx.FromGin(c)))
+
+	c.Request.Header.Set(rustsidecar.BypassHeader, "1")
+	require.False(t, h.shouldUseRustSidecarResponsesWS(gatewayctx.FromGin(c)))
+}
+
+func TestOpenAIResponsesWebSocket_UsesRustSidecarWhenEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sidecarSocket := filepath.Join(t.TempDir(), "rust-sidecar.sock")
+	ln, err := net.Listen("unix", sidecarSocket)
+	require.NoError(t, err)
+	defer ln.Close()
+
+	requestLineCh := make(chan string, 1)
+	bypassHeaderCh := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		require.NoError(t, err)
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		line, err := reader.ReadString('\n')
+		require.NoError(t, err)
+		requestLineCh <- line
+
+		for {
+			headerLine, err := reader.ReadString('\n')
+			require.NoError(t, err)
+			if strings.HasPrefix(strings.ToLower(headerLine), strings.ToLower(rustsidecar.BypassHeader)+":") {
+				bypassHeaderCh <- strings.TrimSpace(strings.SplitN(headerLine, ":", 2)[1])
+			}
+			if headerLine == "\r\n" {
+				break
+			}
+		}
+
+		body := `{"code":"SIDE_CAR","message":"handler routed to sidecar"}`
+		_, _ = conn.Write([]byte(fmt.Sprintf("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
+	}()
+
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h.cfg = &config.Config{}
+	h.cfg.Rust.Sidecar.Enabled = true
+	h.cfg.Rust.Sidecar.ResponsesWSEnabled = true
+	h.cfg.Rust.Sidecar.FailClosed = true
+	h.cfg.Rust.Sidecar.SocketPath = sidecarSocket
+
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, wsServer.URL+"/openai/v1/responses", nil)
+	require.NoError(t, err)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGVzdC13cy1rZXk=")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"code":"SIDE_CAR","message":"handler routed to sidecar"}`, string(body))
+
+	select {
+	case line := <-requestLineCh:
+		require.Equal(t, "GET /openai/v1/responses HTTP/1.1\r\n", line)
+	case <-time.After(2 * time.Second):
+		t.Fatal("sidecar did not receive handler-routed request")
+	}
+
+	select {
+	case bypass := <-bypassHeaderCh:
+		require.Equal(t, "1", bypass)
+	case <-time.After(2 * time.Second):
+		t.Fatal("sidecar did not receive bypass header")
+	}
 }
 
 func TestOpenAIResponsesWebSocket_RejectsMessageIDAsPreviousResponseID(t *testing.T) {

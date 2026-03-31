@@ -25,6 +25,7 @@ const (
 	PlatformGemini      = domain.PlatformGemini
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformSora        = domain.PlatformSora
+	PlatformKiro        = domain.PlatformKiro
 )
 
 // Account type constants
@@ -211,6 +212,8 @@ const (
 	SettingKeySoraS3Prefix          = "sora_s3_prefix"            // S3 对象键前缀
 	SettingKeySoraS3ForcePathStyle  = "sora_s3_force_path_style"  // 是否强制 Path Style（兼容 MinIO 等）
 	SettingKeySoraS3CDNURL          = "sora_s3_cdn_url"           // CDN 加速 URL（可选）
+	// SettingKeyTLSFingerprintProfiles stores JSON config for DB-backed TLS fingerprint settings.
+	SettingKeyTLSFingerprintProfiles = "tls_fingerprint_profiles"
 	SettingKeySoraS3Profiles        = "sora_s3_profiles"          // Sora S3 多配置（JSON）
 
 	// =========================

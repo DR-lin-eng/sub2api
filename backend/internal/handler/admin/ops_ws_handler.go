@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -313,6 +314,62 @@ func closeWS(conn *websocket.Conn, code int, reason string) {
 // QPSWSHandler handles realtime QPS push via WebSocket.
 // GET /api/v1/admin/ops/ws/qps
 func (h *OpsHandler) QPSWSHandler(c *gin.Context) {
+	h.QPSWSHandlerGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpsHandler) QPSWSHandlerGateway(c gatewayctx.GatewayContext) {
+	req := c.Request()
+	clientIP := requestClientIP(req)
+
+	if h == nil || h.opsService == nil {
+		c.WriteJSON(http.StatusServiceUnavailable, map[string]any{"error": "ops service not initialized"})
+		return
+	}
+
+	if !h.opsService.IsRealtimeMonitoringEnabled(c.Request().Context()) {
+		conn, err := c.AcceptWebSocket(gatewayctx.WebSocketAcceptOptions{Subprotocols: []string{"sub2api-admin"}})
+		if err != nil {
+			c.WriteJSON(http.StatusNotFound, map[string]any{"error": "ops realtime monitoring is disabled"})
+			return
+		}
+		_ = conn.CloseNow()
+		return
+	}
+
+	cancelQPSWSIdleStop()
+	qpsWSCache.start(h.opsService)
+
+	if !tryAcquireOpsWSTotalSlot(opsWSLimits.MaxConns) {
+		logger.LegacyPrintf("handler.admin.ops_ws", "[OpsWS] connection limit reached: %d/%d", wsConnCount.Load(), opsWSLimits.MaxConns)
+		c.WriteJSON(http.StatusServiceUnavailable, map[string]any{"error": "too many connections"})
+		return
+	}
+	defer func() {
+		if wsConnCount.Add(-1) == 0 {
+			scheduleQPSWSIdleStop()
+		}
+	}()
+
+	if opsWSLimits.MaxConnsPerIP > 0 && clientIP != "" {
+		if !tryAcquireOpsWSIPSlot(clientIP, opsWSLimits.MaxConnsPerIP) {
+			logger.LegacyPrintf("handler.admin.ops_ws", "[OpsWS] per-ip connection limit reached: ip=%s limit=%d", clientIP, opsWSLimits.MaxConnsPerIP)
+			c.WriteJSON(http.StatusServiceUnavailable, map[string]any{"error": "too many connections"})
+			return
+		}
+		defer releaseOpsWSIPSlot(clientIP)
+	}
+
+	conn, err := c.AcceptWebSocket(gatewayctx.WebSocketAcceptOptions{Subprotocols: []string{"sub2api-admin"}})
+	if err != nil {
+		logger.LegacyPrintf("handler.admin.ops_ws", "[OpsWS] upgrade failed: %v", err)
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	handleQPSGatewayWebSocket(c.Request().Context(), conn)
+}
+
+func (h *OpsHandler) QPSWSHandlerLegacy(c *gin.Context) {
 	clientIP := requestClientIP(c.Request)
 
 	if h == nil || h.opsService == nil {
@@ -369,6 +426,51 @@ func (h *OpsHandler) QPSWSHandler(c *gin.Context) {
 	}()
 
 	handleQPSWebSocket(c.Request.Context(), conn)
+}
+
+func handleQPSGatewayWebSocket(parentCtx context.Context, conn gatewayctx.WebSocketConn) {
+	if conn == nil {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		for {
+			if _, _, err := conn.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+
+	pushTicker := time.NewTicker(qpsWSPushInterval)
+	defer pushTicker.Stop()
+
+	for {
+		select {
+		case <-pushTicker.C:
+			msg := qpsWSCache.getPayload()
+			if msg == nil {
+				continue
+			}
+			if err := conn.Write(ctx, gatewayctx.MessageText, msg); err != nil {
+				logger.LegacyPrintf("handler.admin.ops_ws", "[OpsWS] gateway write failed: %v", err)
+				cancel()
+				_ = conn.CloseNow()
+				wg.Wait()
+				return
+			}
+		case <-ctx.Done():
+			_ = conn.CloseNow()
+			wg.Wait()
+			return
+		}
+	}
 }
 
 func tryAcquireOpsWSTotalSlot(limit int32) bool {

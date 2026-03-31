@@ -2,24 +2,31 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 // ExportData exports proxy-only data for migration.
 func (h *ProxyHandler) ExportData(c *gin.Context) {
-	ctx := c.Request.Context()
+	h.ExportDataGateway(gatewayctx.FromGin(c))
+}
 
-	selectedIDs, err := parseProxyIDs(c)
+func (h *ProxyHandler) ExportDataGateway(c gatewayctx.GatewayContext) {
+	ctx := c.Request().Context()
+
+	selectedIDs, err := parseProxyIDsRequest(c.Request())
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, 400, err.Error())
 		return
 	}
 
@@ -27,20 +34,20 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 	if len(selectedIDs) > 0 {
 		proxies, err = h.getProxiesByIDs(ctx, selectedIDs)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
 	} else {
-		protocol := c.Query("protocol")
-		status := c.Query("status")
-		search := strings.TrimSpace(c.Query("search"))
+		protocol := c.QueryValue("protocol")
+		status := c.QueryValue("status")
+		search := strings.TrimSpace(c.QueryValue("search"))
 		if len(search) > 100 {
 			search = search[:100]
 		}
 
 		proxies, err = h.listProxiesFiltered(ctx, protocol, status, search)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
 	}
@@ -67,41 +74,49 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 		Accounts:   []DataAccount{},
 	}
 
-	response.Success(c, payload)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, payload)
 }
 
 // ImportData imports proxy-only data for migration.
 func (h *ProxyHandler) ImportData(c *gin.Context) {
+	h.ImportDataGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ProxyHandler) ImportDataGateway(c gatewayctx.GatewayContext) {
 	type ProxyImportRequest struct {
 		Data DataPayload `json:"data"`
 	}
 
 	var req ProxyImportRequest
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.ContentType())), "multipart/form-data") {
-		payload, err := parseImportPayloadFromMultipart(c)
+	contentType := ""
+	if req0 := c.Request(); req0 != nil {
+		contentType = req0.Header.Get("Content-Type")
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data") {
+		payload, err := parseImportPayloadFromMultipartRequest(c.Request())
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, 400, err.Error())
 			return
 		}
 		req.Data = payload
 	} else {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			response.BadRequest(c, "Invalid request: "+err.Error())
+		if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, 400, "Invalid request: "+err.Error())
 			return
 		}
 	}
 
 	if err := validateDataHeader(req.Data); err != nil {
-		response.BadRequest(c, err.Error())
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, 400, err.Error())
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx := c.Request().Context()
 	result := DataImportResult{}
 
 	existingProxies, err := h.listProxiesFiltered(ctx, "", "", "")
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -191,7 +206,7 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 		}()
 	}
 
-	response.Success(c, result)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, result)
 }
 
 func (h *ProxyHandler) getProxiesByIDs(ctx context.Context, ids []int64) ([]service.Proxy, error) {
@@ -213,6 +228,37 @@ func parseProxyIDs(c *gin.Context) ([]int64, error) {
 		return nil, nil
 	}
 
+	ids := make([]int64, 0, len(values))
+	for _, item := range values {
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("invalid proxy id: %s", part)
+			}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func parseProxyIDsRequest(req *http.Request) ([]int64, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+	values := req.URL.Query()["ids"]
+	if len(values) == 0 {
+		raw := strings.TrimSpace(req.URL.Query().Get("ids"))
+		if raw != "" {
+			values = []string{raw}
+		}
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
 	ids := make([]int64, 0, len(values))
 	for _, item := range values {
 		for _, part := range strings.Split(item, ",") {

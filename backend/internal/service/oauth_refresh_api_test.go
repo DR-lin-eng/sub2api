@@ -16,9 +16,9 @@ import (
 // refreshAPIAccountRepo implements AccountRepository for OAuthRefreshAPI tests.
 type refreshAPIAccountRepo struct {
 	mockAccountRepoForGemini
-	account   *Account   // returned by GetByID
-	getByIDErr error
-	updateErr  error
+	account     *Account // returned by GetByID
+	getByIDErr  error
+	updateErr   error
 	updateCalls int
 }
 
@@ -193,7 +193,7 @@ func TestRefreshIfNeeded_RefreshError(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Contains(t, err.Error(), "invalid_grant")
-	require.Equal(t, 0, repo.updateCalls) // no DB update on refresh error
+	require.Equal(t, 0, repo.updateCalls)   // no DB update on refresh error
 	require.Equal(t, 1, cache.releaseCalls) // lock still released via defer
 }
 
@@ -256,6 +256,25 @@ func TestRefreshIfNeeded_NilCredentials(t *testing.T) {
 	require.Equal(t, 0, repo.updateCalls) // no DB update when credentials are nil
 }
 
+func TestRefreshNow_ForcesRefreshEvenWhenNeedsRefreshFalse(t *testing.T) {
+	account := &Account{ID: 10, Platform: PlatformGemini, Type: AccountTypeOAuth}
+	repo := &refreshAPIAccountRepo{account: account}
+	cache := &refreshAPICacheStub{lockResult: true}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: false,
+		credentials:  map[string]any{"access_token": "forced-token"},
+	}
+
+	api := NewOAuthRefreshAPI(repo, cache)
+	result, err := api.RefreshNow(context.Background(), account, executor)
+
+	require.NoError(t, err)
+	require.True(t, result.Refreshed)
+	require.Equal(t, "forced-token", result.NewCredentials["access_token"])
+	require.Equal(t, 1, repo.updateCalls)
+	require.Equal(t, 1, executor.refreshCalls)
+}
+
 // ========== MergeCredentials tests ==========
 
 func TestMergeCredentials_Basic(t *testing.T) {
@@ -299,8 +318,8 @@ func TestMergeCredentials_NewOverridesOld(t *testing.T) {
 
 	result := MergeCredentials(old, new)
 
-	require.Equal(t, "new-token", result["access_token"])     // overridden
-	require.Equal(t, "old-refresh", result["refresh_token"])  // preserved
+	require.Equal(t, "new-token", result["access_token"])    // overridden
+	require.Equal(t, "old-refresh", result["refresh_token"]) // preserved
 }
 
 // ========== BuildClaudeAccountCredentials tests ==========

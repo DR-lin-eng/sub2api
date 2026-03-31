@@ -396,6 +396,8 @@ const currentFiles = computed((): FileConfig[] => {
 
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
+      case 'kiro':
+        return [generateOpenCodeConfig('anthropic', apiBase, apiKey)]
       case 'anthropic':
         return [generateOpenCodeConfig('anthropic', apiBase, apiKey)]
       case 'openai':
@@ -413,6 +415,8 @@ const currentFiles = computed((): FileConfig[] => {
   }
 
   switch (props.platform) {
+    case 'kiro':
+      return generateAnthropicFiles(baseUrl, apiKey)
     case 'openai':
       if (activeClientTab.value === 'claude') {
         return generateAnthropicFiles(baseUrl, apiKey)

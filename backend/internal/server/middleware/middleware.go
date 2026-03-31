@@ -96,6 +96,14 @@ func AbortWithError(c *gin.Context, statusCode int, code, message string) {
 	c.Abort()
 }
 
+func AbortWithErrorContext(c gatewayctx.GatewayContext, statusCode int, code, message string) {
+	if c == nil {
+		return
+	}
+	c.WriteJSON(statusCode, NewErrorResponse(code, message))
+	c.Abort()
+}
+
 // ──────────────────────────────────────────────────────────
 // RequireGroupAssignment — 未分组 Key 拦截中间件
 // ──────────────────────────────────────────────────────────

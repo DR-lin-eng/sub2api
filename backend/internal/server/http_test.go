@@ -144,6 +144,45 @@ func TestBuildHTTPHandler_H2CEnabledSupportsHTTP2Cleartext(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
+func TestBuildExecutablePreferredHandlerPrefersExecutableRoutes(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              0,
+			ReadHeaderTimeout: 5,
+			IdleTimeout:       10,
+		},
+		Security: config.SecurityConfig{
+			CSP: config.CSPConfig{
+				Enabled: false,
+				Policy:  config.DefaultCSPPolicy,
+			},
+		},
+	}
+
+	baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	server := NewHTTPServer(cfg, baseHandler)
+	registerHTTPServerExecutableRuntimeConfig(server, buildExecutableRuntimeConfig(
+		cfg,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	))
+
+	handler := BuildExecutablePreferredHandler(server)
+	resp := performHTTPTestRequest(t, handler, http.MethodGet, "http://example.com/health", "")
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 func bodyEchoHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
