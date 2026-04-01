@@ -4337,7 +4337,7 @@ const handleImportAccessToken = async (accessTokenInput: string) => {
         successCount++
       } catch (error: any) {
         failedCount++
-        const errMsg = error.response?.data?.detail || error.message || 'Unknown error'
+        const errMsg = error.response?.data?.message || error.response?.data?.detail || error.message || 'Unknown error'
         errors.push(`#${i + 1}: ${errMsg}`)
       }
     }
@@ -4642,7 +4642,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
     // Show results
     if (successCount > 0 && failedCount === 0) {
       appStore.showSuccess(
-        refreshTokens.length > 1
+        refreshTokenEntries.length > 1
           ? t('admin.accounts.oauth.batchSuccess', { count: successCount })
           : t('admin.accounts.accountCreated')
       )
