@@ -2957,6 +2957,7 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { parseOpenAIRefreshTokenInputs } from '@/utils/openaiRefreshTokenParser'
 import {
   // OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
@@ -4535,13 +4536,9 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
   const oauthClient = activeOpenAIOAuth.value
   if (!refreshTokenInput.trim()) return
 
-  // Parse multiple refresh tokens (one per line)
-  const refreshTokens = refreshTokenInput
-    .split('\n')
-    .map((rt) => rt.trim())
-    .filter((rt) => rt)
+  const refreshTokenEntries = parseOpenAIRefreshTokenInputs(refreshTokenInput)
 
-  if (refreshTokens.length === 0) {
+  if (refreshTokenEntries.length === 0) {
     oauthClient.error.value = t('admin.accounts.oauth.openai.pleaseEnterRefreshToken')
     return
   }
@@ -4556,11 +4553,12 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
   const shouldCreateSora = form.platform === 'sora'
 
   try {
-    for (let i = 0; i < refreshTokens.length; i++) {
+    for (let i = 0; i < refreshTokenEntries.length; i++) {
       try {
         const tokenInfo = await oauthClient.validateRefreshToken(
-          refreshTokens[i],
-          form.proxy_id
+          refreshTokenEntries[i].refreshToken,
+          form.proxy_id,
+          refreshTokenEntries[i].clientId
         )
         if (!tokenInfo) {
           failedCount++
@@ -4582,7 +4580,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
         }
 
         // Generate account name with index for batch
-        const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+        const accountName = refreshTokenEntries.length > 1 ? `${form.name} #${i + 1}` : form.name
 
         let openaiAccountId: string | number | undefined
 

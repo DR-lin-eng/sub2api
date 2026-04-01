@@ -788,3 +788,110 @@ func TestTokenRefreshService_ProcessSchedulerAdmissionTest_401UsesExistingDelete
 	_, ok := repo.accountsByID[account.ID]
 	require.False(t, ok)
 }
+
+func TestTokenRefreshService_ProcessSchedulerAdmissionTest_OpenAINoRefreshToken401UsesExistingDeleteStrategy(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	account := &Account{
+		ID:          203,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "at-203",
+		},
+	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	service.openAIAdmissionProbe = func(ctx context.Context, account *Account) error {
+		return errors.New("openai codex probe returned status 401")
+	}
+
+	settingSvc := NewSettingService(&settingRepoStub{values: map[string]string{
+		SettingKeyAutoDelete401Accounts: "true",
+	}}, &config.Config{})
+	rateSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	rateSvc.SetSettingService(settingSvc)
+	service.SetRateLimitService(rateSvc)
+
+	service.processSchedulerAdmissionTest(account.ID)
+
+	require.Equal(t, 1, repo.deleteCalls)
+	require.Equal(t, account.ID, repo.lastDeletedID)
+	_, ok := repo.accountsByID[account.ID]
+	require.False(t, ok)
+}
+
+func TestTokenRefreshService_ProcessSchedulerAdmissionTest_OpenAINoRefreshToken403UsesExistingPauseStrategy(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	account := &Account{
+		ID:          204,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "at-204",
+		},
+	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	service.openAIAdmissionProbe = func(ctx context.Context, account *Account) error {
+		return errors.New("openai codex probe returned status 403")
+	}
+
+	rateSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetRateLimitService(rateSvc)
+
+	service.processSchedulerAdmissionTest(account.ID)
+
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Contains(t, repo.lastErrorMsg, "403")
+	require.Equal(t, 0, repo.deleteCalls)
+}
+
+func TestTokenRefreshService_ProcessSchedulerAdmissionTest_OpenAINoRefreshToken502SetsTempUnschedulable(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	account := &Account{
+		ID:          205,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "at-205",
+		},
+	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
+	tempCache := &tempUnschedCacheStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, tempCache)
+	service.openAIAdmissionProbe = func(ctx context.Context, account *Account) error {
+		return errors.New("openai codex probe returned status 502")
+	}
+
+	service.processSchedulerAdmissionTest(account.ID)
+
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, "scheduler admission refresh probe failed")
+	require.Equal(t, 1, tempCache.setCalls)
+	require.NotNil(t, tempCache.lastState)
+	require.Equal(t, http.StatusBadGateway, tempCache.lastState.StatusCode)
+}

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -18,6 +18,13 @@ vi.mock('@/api/admin', () => ({
 }))
 
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
+import { adminAPI } from '@/api/admin'
+
+const refreshOpenAITokenMock = vi.mocked(adminAPI.accounts.refreshOpenAIToken)
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
 describe('useOpenAIOAuth.buildCredentials', () => {
   it('should keep client_id when token response contains it', () => {
@@ -45,5 +52,50 @@ describe('useOpenAIOAuth.buildCredentials', () => {
     expect(Object.prototype.hasOwnProperty.call(creds, 'client_id')).toBe(false)
     expect(creds.access_token).toBe('at')
     expect(creds.refresh_token).toBe('rt')
+  })
+})
+
+describe('useOpenAIOAuth.validateRefreshToken', () => {
+  it('should pass parsed client_id when refresh token input is JSON', async () => {
+    refreshOpenAITokenMock.mockResolvedValueOnce({ access_token: 'at', refresh_token: 'rt' })
+    const oauth = useOpenAIOAuth({ platform: 'openai' })
+
+    await oauth.validateRefreshToken(
+      JSON.stringify({
+        refresh_token: 'rt-json',
+        client_id: 'app_custom_client'
+      })
+    )
+
+    expect(refreshOpenAITokenMock).toHaveBeenCalledWith(
+      'rt-json',
+      undefined,
+      '/admin/openai/refresh-token',
+      'app_custom_client'
+    )
+  })
+
+  it('should keep supporting plain refresh tokens', async () => {
+    refreshOpenAITokenMock.mockResolvedValueOnce({ access_token: 'at', refresh_token: 'rt' })
+    const oauth = useOpenAIOAuth({ platform: 'openai' })
+
+    await oauth.validateRefreshToken('rt-plain')
+
+    expect(refreshOpenAITokenMock).toHaveBeenCalledWith(
+      'rt-plain',
+      undefined,
+      '/admin/openai/refresh-token',
+      undefined
+    )
+  })
+
+  it('should prefer error.message from api client interceptor errors', async () => {
+    refreshOpenAITokenMock.mockRejectedValueOnce({ message: 'token refresh failed: status 502' })
+    const oauth = useOpenAIOAuth({ platform: 'openai' })
+
+    const result = await oauth.validateRefreshToken('rt-plain')
+
+    expect(result).toBeNull()
+    expect(oauth.error.value).toBe('token refresh failed: status 502')
   })
 })

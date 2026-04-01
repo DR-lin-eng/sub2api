@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
@@ -45,6 +49,7 @@ type TokenRefreshService struct {
 	admissionCh      chan int64
 	admissionMu      sync.Mutex
 	admissionLastRun map[int64]time.Time
+	openAIAdmissionProbe func(ctx context.Context, account *Account) error
 
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
@@ -236,13 +241,20 @@ func (s *TokenRefreshService) processSchedulerAdmissionTest(accountID int64) {
 	if err != nil || account == nil {
 		return
 	}
-	refresher, executor := s.matchAdmissionRefresher(account)
-	if refresher == nil || executor == nil || !s.shouldRunSchedulerAdmissionTest(account) {
+	if !s.shouldRunSchedulerAdmissionTest(account) {
 		return
 	}
-
-	err = s.runSchedulerAdmissionRefresh(ctx, account, refresher, executor)
+	if s.shouldUseOpenAIAccessTokenAdmissionProbe(account) {
+		err = s.runOpenAIAccessTokenAdmissionProbe(ctx, account)
+	} else {
+		refresher, executor := s.matchAdmissionRefresher(account)
+		if refresher == nil || executor == nil {
+			return
+		}
+		err = s.runSchedulerAdmissionRefresh(ctx, account, refresher, executor)
+	}
 	if err == nil {
+		s.syncSchedulerAdmissionAccountState(ctx, account.ID)
 		slog.Info("token_refresh.scheduler_admission_refresh_succeeded",
 			"account_id", account.ID,
 			"platform", account.Platform,
@@ -253,7 +265,13 @@ func (s *TokenRefreshService) processSchedulerAdmissionTest(accountID int64) {
 	statusCode := classifySchedulerAdmissionRefreshStatus(err)
 	switch statusCode {
 	case http.StatusUnauthorized:
-		s.handleSchedulerAdmissionAuthError(account, err)
+		s.handleSchedulerAdmissionAuthError(account, statusCode, err)
+	case http.StatusForbidden:
+		if account.Platform == PlatformOpenAI {
+			s.handleSchedulerAdmissionAuthError(account, statusCode, err)
+			return
+		}
+		s.handleSchedulerAdmissionRetryableError(account, err)
 	default:
 		s.handleSchedulerAdmissionRetryableError(account, err)
 	}
@@ -266,7 +284,18 @@ func (s *TokenRefreshService) shouldRunSchedulerAdmissionTest(account *Account) 
 	if account.Type != AccountTypeOAuth {
 		return false
 	}
-	return strings.TrimSpace(account.GetCredential("refresh_token")) != ""
+	if strings.TrimSpace(account.GetCredential("refresh_token")) != "" {
+		return true
+	}
+	return account.Platform == PlatformOpenAI && strings.TrimSpace(account.GetOpenAIAccessToken()) != ""
+}
+
+func (s *TokenRefreshService) shouldUseOpenAIAccessTokenAdmissionProbe(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return false
+	}
+	return strings.TrimSpace(account.GetCredential("refresh_token")) == "" &&
+		strings.TrimSpace(account.GetOpenAIAccessToken()) != ""
 }
 
 func (s *TokenRefreshService) matchAdmissionRefresher(account *Account) (TokenRefresher, OAuthRefreshExecutor) {
@@ -313,6 +342,85 @@ func (s *TokenRefreshService) runSchedulerAdmissionRefresh(ctx context.Context, 
 	return nil
 }
 
+func (s *TokenRefreshService) runOpenAIAccessTokenAdmissionProbe(ctx context.Context, account *Account) error {
+	if s == nil || account == nil {
+		return nil
+	}
+	if s.openAIAdmissionProbe != nil {
+		return s.openAIAdmissionProbe(ctx, account)
+	}
+	if !account.IsOpenAIOAuth() {
+		return nil
+	}
+	accessToken := strings.TrimSpace(account.GetOpenAIAccessToken())
+	if accessToken == "" {
+		return errors.New("no access token available")
+	}
+
+	payload := createOpenAITestPayload(openaipkg.DefaultTestModel, true)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal openai admission probe payload: %w", err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, chatgptCodexURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("create openai admission probe request: %w", err)
+	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", openAICodexProbeVersion)
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	} else if account.ProxyID != nil && s.proxyRepo != nil {
+		if proxy, proxyErr := s.proxyRepo.GetByID(reqCtx, *account.ProxyID); proxyErr == nil && proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+
+	client, err := httppool.GetClient(httppool.Options{
+		ProxyURL:              proxyURL,
+		Timeout:               15 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("build openai admission probe client: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("openai admission probe request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp)
+	if err != nil {
+		return err
+	}
+
+	if len(updates) > 0 {
+		if updateErr := s.accountRepo.UpdateExtra(reqCtx, account.ID, updates); updateErr == nil {
+			mergeAccountExtra(account, updates)
+		}
+	}
+	if resetAt != nil {
+		_ = s.accountRepo.SetRateLimited(reqCtx, account.ID, *resetAt)
+		account.RateLimitResetAt = resetAt
+	}
+	return nil
+}
+
 func classifySchedulerAdmissionRefreshStatus(err error) int {
 	if err == nil {
 		return 0
@@ -349,13 +457,16 @@ func classifySchedulerAdmissionRefreshStatus(err error) int {
 	return http.StatusBadGateway
 }
 
-func (s *TokenRefreshService) handleSchedulerAdmissionAuthError(account *Account, refreshErr error) {
+func (s *TokenRefreshService) handleSchedulerAdmissionAuthError(account *Account, statusCode int, refreshErr error) {
 	if s == nil || account == nil || s.rateLimitService == nil {
 		return
 	}
 	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.rateLimitService.HandleUpstreamError(writeCtx, account, http.StatusUnauthorized, http.Header{}, []byte(refreshErr.Error()))
+	if statusCode <= 0 {
+		statusCode = http.StatusUnauthorized
+	}
+	s.rateLimitService.HandleUpstreamError(writeCtx, account, statusCode, http.Header{}, []byte(refreshErr.Error()))
 	s.syncSchedulerAdmissionAccountState(writeCtx, account.ID)
 }
 

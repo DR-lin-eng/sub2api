@@ -742,6 +742,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
+import { parseOpenAIRefreshTokenInputs } from '@/utils/openaiRefreshTokenParser'
 import { parseSoraRawTokens } from '@/utils/soraTokenParser'
 import Icon from '@/components/icons/Icon.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
@@ -849,10 +850,7 @@ const parsedKeyCount = computed(() => {
 
 // Computed: count of refresh tokens entered
 const parsedRefreshTokenCount = computed(() => {
-  return refreshTokenInput.value
-    .split('\n')
-    .map((rt) => rt.trim())
-    .filter((rt) => rt).length
+  return parseOpenAIRefreshTokenInputs(refreshTokenInput.value).length
 })
 
 const parsedSoraRawTokens = computed(() => parseSoraRawTokens(sessionTokenInput.value))

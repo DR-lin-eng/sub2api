@@ -1,6 +1,8 @@
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { buildAuthErrorMessage } from '@/utils/authError'
+import { parseOpenAIRefreshTokenInput } from '@/utils/openaiRefreshTokenParser'
 
 export interface OpenAITokenInfo {
   access_token?: string
@@ -127,10 +129,12 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
 
   // Validate refresh token and get full token info
   const validateRefreshToken = async (
-    refreshToken: string,
-    proxyId?: number | null
+    refreshTokenInput: string,
+    proxyId?: number | null,
+    clientIdOverride?: string
   ): Promise<OpenAITokenInfo | null> => {
-    if (!refreshToken.trim()) {
+    const parsed = parseOpenAIRefreshTokenInput(refreshTokenInput)
+    if (!parsed?.refreshToken) {
       error.value = 'Missing refresh token'
       return null
     }
@@ -141,13 +145,14 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
     try {
       // Use dedicated refresh-token endpoint
       const tokenInfo = await adminAPI.accounts.refreshOpenAIToken(
-        refreshToken.trim(),
+        parsed.refreshToken,
         proxyId,
-        `${endpointPrefix}/refresh-token`
+        `${endpointPrefix}/refresh-token`,
+        clientIdOverride?.trim() || parsed.clientId
       )
       return tokenInfo as OpenAITokenInfo
     } catch (err: any) {
-      error.value = err.response?.data?.detail || 'Failed to validate refresh token'
+      error.value = buildAuthErrorMessage(err, { fallback: 'Failed to validate refresh token' })
       appStore.showError(error.value)
       return null
     } finally {
