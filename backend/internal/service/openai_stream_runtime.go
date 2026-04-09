@@ -711,6 +711,9 @@ func (s *OpenAIGatewayService) probeOpenAIAccountHealth(ctx context.Context, acc
 	if err != nil || account == nil || !account.IsOpenAI() || !account.IsSchedulable() {
 		return
 	}
+	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
+		return
+	}
 	modelID := strings.TrimSpace(requestedModel)
 	if modelID == "" {
 		modelID = openai.DefaultTestModel

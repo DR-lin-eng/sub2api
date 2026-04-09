@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -226,14 +227,20 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	// 获取 TLS 指纹 Profile
 	registry := tlsfingerprint.GlobalRegistry()
-	profile := registry.GetProfileByAccountID(accountID)
+	preferredProfileID := ""
+	if req != nil && req.Context() != nil {
+		if v, ok := req.Context().Value(ctxkey.TLSFingerprintProfileID).(string); ok {
+			preferredProfileID = strings.TrimSpace(v)
+		}
+	}
+	profileKey, profile := registry.GetProfileEntry(accountID, preferredProfileID)
 	if profile == nil {
 		// 如果获取不到 profile，回退到普通请求
 		slog.Debug("tls_fingerprint_no_profile", "account_id", accountID, "fallback", "standard_request")
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
 
-	slog.Debug("tls_fingerprint_using_profile", "account_id", accountID, "profile", profile.Name, "grease", profile.EnableGREASE)
+	slog.Debug("tls_fingerprint_using_profile", "account_id", accountID, "profile_key", profileKey, "profile", profile.Name, "grease", profile.EnableGREASE)
 
 	// 获取或创建带 TLS 指纹的客户端
 	entry, err := s.acquireClientWithTLS(req, proxyURL, accountID, accountConcurrency, profile)

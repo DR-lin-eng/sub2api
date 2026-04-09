@@ -1258,7 +1258,12 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		if s != nil {
+			s.observeOpenAIOfficialClientSample(context.Background(), c, account, isCodexCLI)
+			headers.Set("originator", s.resolveOpenAIUpstreamOriginatorWithSample(context.Background(), c, account, isCodexCLI))
+		} else {
+			headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		}
 	}
 
 	betaValue := openAIWSBetaV2Value
@@ -1267,22 +1272,14 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 	headers.Set("OpenAI-Beta", betaValue)
 
-	customUA := ""
-	if account != nil {
-		customUA = account.GetOpenAIUserAgent()
-	}
-	if strings.TrimSpace(customUA) != "" {
-		headers.Set("user-agent", customUA)
+	if s != nil {
+		if upstreamUA := s.resolveOpenAIUpstreamUserAgent(context.Background(), c, account, isCodexCLI); upstreamUA != "" {
+			headers.Set("user-agent", upstreamUA)
+		}
 	} else if c != nil {
 		if ua := strings.TrimSpace(c.HeaderValue("User-Agent")); ua != "" {
 			headers.Set("user-agent", ua)
 		}
-	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		headers.Set("user-agent", codexCLIUserAgent)
-	}
-	if account != nil && account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(headers.Get("user-agent")) {
-		headers.Set("user-agent", codexCLIUserAgent)
 	}
 
 	return headers, sessionResolution

@@ -151,6 +151,7 @@ type APIKeyAuthCacheInvalidator interface {
 type CreateAPIKeyRequest struct {
 	Name        string   `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	GroupIDs    []int64  `json:"group_ids"`
 	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
@@ -169,6 +170,7 @@ type CreateAPIKeyRequest struct {
 type UpdateAPIKeyRequest struct {
 	Name        *string  `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	GroupIDs    *[]int64 `json:"group_ids"`
 	Status      *string  `json:"status"`
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单（空数组清空）
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单（空数组清空）
@@ -325,6 +327,43 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
+func (s *APIKeyService) resolveRequestedGroupIDs(groupID *int64, groupIDs []int64) []int64 {
+	if len(groupIDs) > 0 {
+		return NormalizeAPIKeyGroupIDs(nil, groupIDs)
+	}
+	return NormalizeAPIKeyGroupIDs(groupID, nil)
+}
+
+func (s *APIKeyService) validateAPIKeyGroups(ctx context.Context, user *User, requestedGroupIDs []int64) ([]*Group, error) {
+	if len(requestedGroupIDs) == 0 {
+		return nil, nil
+	}
+
+	groups := make([]*Group, 0, len(requestedGroupIDs))
+	var platform string
+	for idx, groupID := range requestedGroupIDs {
+		group, err := s.groupRepo.GetByID(ctx, groupID)
+		if err != nil {
+			return nil, fmt.Errorf("get group: %w", err)
+		}
+		if !s.canUserBindGroup(ctx, user, group) {
+			return nil, ErrGroupNotAllowed
+		}
+		if len(requestedGroupIDs) > 1 {
+			if group.IsSubscriptionType() {
+				return nil, infraerrors.BadRequest("API_KEY_MULTI_GROUP_SUBSCRIPTION_UNSUPPORTED", "multi-group API keys only support standard groups")
+			}
+			if idx == 0 {
+				platform = group.Platform
+			} else if group.Platform != platform {
+				return nil, infraerrors.BadRequest("API_KEY_MULTI_GROUP_PLATFORM_MISMATCH", "multi-group API keys must use groups from the same platform")
+			}
+		}
+		groups = append(groups, group)
+	}
+	return groups, nil
+}
+
 // Create 创建API Key
 func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 	// 验证用户存在
@@ -347,18 +386,12 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
-	if req.GroupID != nil {
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
-		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
-		}
-
-		// 检查用户是否可以绑定该分组
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
+	requestedGroupIDs := s.resolveRequestedGroupIDs(req.GroupID, req.GroupIDs)
+	groups, err := s.validateAPIKeyGroups(ctx, user, requestedGroupIDs)
+	if err != nil {
+		return nil, err
 	}
+	primaryGroupID := PrimaryAPIKeyGroupID(requestedGroupIDs)
 
 	var key string
 
@@ -400,7 +433,8 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		UserID:      userID,
 		Key:         key,
 		Name:        req.Name,
-		GroupID:     req.GroupID,
+		GroupID:     primaryGroupID,
+		GroupIDs:    requestedGroupIDs,
 		Status:      StatusActive,
 		IPWhitelist: req.IPWhitelist,
 		IPBlacklist: req.IPBlacklist,
@@ -421,6 +455,10 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		return nil, fmt.Errorf("create api key: %w", err)
 	}
 
+	if len(groups) > 0 {
+		apiKey.Groups = groups
+		apiKey.Group = groups[0]
+	}
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 	s.compileAPIKeyIPRules(apiKey)
 
@@ -541,23 +579,30 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.Name = *req.Name
 	}
 
-	if req.GroupID != nil {
-		// 验证分组权限
+	if req.GroupID != nil || req.GroupIDs != nil {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
+		requestedGroupIDs := apiKey.GroupIDs
+		if req.GroupIDs != nil {
+			requestedGroupIDs = NormalizeAPIKeyGroupIDs(nil, *req.GroupIDs)
+		} else {
+			requestedGroupIDs = s.resolveRequestedGroupIDs(req.GroupID, nil)
+		}
+		groups, err := s.validateAPIKeyGroups(ctx, user, requestedGroupIDs)
 		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
+			return nil, err
 		}
-
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
+		apiKey.GroupIDs = requestedGroupIDs
+		apiKey.GroupID = PrimaryAPIKeyGroupID(requestedGroupIDs)
+		if len(groups) > 0 {
+			apiKey.Groups = groups
+			apiKey.Group = groups[0]
+		} else {
+			apiKey.Groups = nil
+			apiKey.Group = nil
 		}
-
-		apiKey.GroupID = req.GroupID
 	}
 
 	if req.Status != nil {

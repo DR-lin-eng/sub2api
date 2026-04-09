@@ -33,6 +33,7 @@ type APIKey struct {
 	Key         string
 	Name        string
 	GroupID     *int64
+	GroupIDs    []int64
 	Status      string
 	IPWhitelist []string
 	IPBlacklist []string
@@ -44,6 +45,7 @@ type APIKey struct {
 	UpdatedAt           time.Time
 	User                *User
 	Group               *Group
+	Groups              []*Group
 
 	// Quota fields
 	Quota     float64    // Quota limit in USD (0 = unlimited)
@@ -60,6 +62,51 @@ type APIKey struct {
 	Window5hStart *time.Time // Start of current 5h window
 	Window1dStart *time.Time // Start of current 1d window
 	Window7dStart *time.Time // Start of current 7d window
+}
+
+func NormalizeAPIKeyGroupIDs(primary *int64, groupIDs []int64) []int64 {
+	seen := make(map[int64]struct{}, len(groupIDs)+1)
+	out := make([]int64, 0, len(groupIDs)+1)
+
+	appendID := func(id int64) {
+		if id <= 0 {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+
+	for _, id := range groupIDs {
+		appendID(id)
+	}
+	if len(out) == 0 && primary != nil {
+		appendID(*primary)
+	}
+	if len(out) > 0 && primary != nil && *primary > 0 && out[0] != *primary {
+		normalized := make([]int64, 0, len(out))
+		normalized = append(normalized, *primary)
+		for _, id := range out {
+			if id != *primary {
+				normalized = append(normalized, id)
+			}
+		}
+		out = normalized
+	}
+
+	return out
+}
+
+func PrimaryAPIKeyGroupID(groupIDs []int64) *int64 {
+	for _, id := range groupIDs {
+		if id > 0 {
+			gid := id
+			return &gid
+		}
+	}
+	return nil
 }
 
 func (k *APIKey) IsActive() bool {

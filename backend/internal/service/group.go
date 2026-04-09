@@ -38,6 +38,9 @@ type Group struct {
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
 	FallbackGroupID *int64
+	// 通用调度兜底（沿用 fallback_group_id）：
+	// - 本组无可用账号时，回退到 fallback_group_id
+	// - 本组并发已满需要等待时，也可回退到 fallback_group_id 尝试直接承接
 	// 无效请求兜底分组（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
 

@@ -854,9 +854,14 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	soraVideoPrice := normalizePrice(input.SoraVideoPricePerRequest)
 	soraVideoPriceHD := normalizePrice(input.SoraVideoPricePerRequestHD)
 
-	// 校验降级分组
-	if input.FallbackGroupID != nil {
-		if err := s.validateFallbackGroup(ctx, 0, *input.FallbackGroupID); err != nil {
+	fallbackGroupID := input.FallbackGroupID
+	if fallbackGroupID != nil && *fallbackGroupID <= 0 {
+		fallbackGroupID = nil
+	}
+
+	// 校验调度兜底分组
+	if fallbackGroupID != nil {
+		if err := s.validateFallbackGroup(ctx, 0, platform, *fallbackGroupID); err != nil {
 			return nil, err
 		}
 	}
@@ -928,7 +933,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		SoraVideoPricePerRequest:        soraVideoPrice,
 		SoraVideoPricePerRequestHD:      soraVideoPriceHD,
 		ClaudeCodeOnly:                  input.ClaudeCodeOnly,
-		FallbackGroupID:                 input.FallbackGroupID,
+		FallbackGroupID:                 fallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
 		ModelRouting:                    input.ModelRouting,
 		MCPXMLInject:                    mcpXMLInject,
@@ -968,11 +973,12 @@ func normalizePrice(price *float64) *float64 {
 	return price
 }
 
-// validateFallbackGroup 校验降级分组的有效性
+// validateFallbackGroup 校验调度兜底分组的有效性。
 // currentGroupID: 当前分组 ID（新建时为 0）
-// fallbackGroupID: 降级分组 ID
-func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGroupID, fallbackGroupID int64) error {
-	// 不能将自己设置为降级分组
+// currentPlatform: 当前分组平台
+// fallbackGroupID: 兜底分组 ID
+func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGroupID int64, currentPlatform string, fallbackGroupID int64) error {
+	// 不能将自己设置为兜底分组
 	if currentGroupID > 0 && currentGroupID == fallbackGroupID {
 		return fmt.Errorf("cannot set self as fallback group")
 	}
@@ -988,15 +994,14 @@ func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGro
 			return fmt.Errorf("fallback group cycle detected")
 		}
 
-		// 检查降级分组是否存在
+		// 检查兜底分组是否存在
 		fallbackGroup, err := s.groupRepo.GetByIDLite(ctx, nextID)
 		if err != nil {
 			return fmt.Errorf("fallback group not found: %w", err)
 		}
 
-		// 降级分组不能启用 claude_code_only，否则会造成死循环
-		if nextID == fallbackGroupID && fallbackGroup.ClaudeCodeOnly {
-			return fmt.Errorf("fallback group cannot have claude_code_only enabled")
+		if currentPlatform != "" && fallbackGroup.Platform != currentPlatform {
+			return fmt.Errorf("fallback group platform mismatch: expected %s, got %s", currentPlatform, fallbackGroup.Platform)
 		}
 
 		if fallbackGroup.FallbackGroupID == nil {
@@ -1101,18 +1106,21 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.ClaudeCodeOnly != nil {
 		group.ClaudeCodeOnly = *input.ClaudeCodeOnly
 	}
+	fallbackGroupID := group.FallbackGroupID
 	if input.FallbackGroupID != nil {
-		// 校验降级分组
 		if *input.FallbackGroupID > 0 {
-			if err := s.validateFallbackGroup(ctx, id, *input.FallbackGroupID); err != nil {
-				return nil, err
-			}
-			group.FallbackGroupID = input.FallbackGroupID
+			fallbackGroupID = input.FallbackGroupID
 		} else {
-			// 传入 0 或负数表示清除降级分组
-			group.FallbackGroupID = nil
+			// 传入 0 或负数表示清除兜底分组
+			fallbackGroupID = nil
 		}
 	}
+	if fallbackGroupID != nil {
+		if err := s.validateFallbackGroup(ctx, id, group.Platform, *fallbackGroupID); err != nil {
+			return nil, err
+		}
+	}
+	group.FallbackGroupID = fallbackGroupID
 	fallbackOnInvalidRequest := group.FallbackGroupIDOnInvalidRequest
 	if input.FallbackGroupIDOnInvalidRequest != nil {
 		if *input.FallbackGroupIDOnInvalidRequest > 0 {

@@ -52,6 +52,7 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 type CreateAPIKeyRequest struct {
 	Name          string   `json:"name" binding:"required"`
 	GroupID       *int64   `json:"group_id"`        // nullable
+	GroupIDs      []int64  `json:"group_ids"`       // optional multi-group binding
 	CustomKey     *string  `json:"custom_key"`      // 可选的自定义key
 	IPWhitelist   []string `json:"ip_whitelist"`    // IP 白名单
 	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
@@ -68,6 +69,7 @@ type CreateAPIKeyRequest struct {
 type UpdateAPIKeyRequest struct {
 	Name        string   `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	GroupIDs    *[]int64 `json:"group_ids"`
 	Status      string   `json:"status" binding:"omitempty,oneof=active inactive"`
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
@@ -183,6 +185,7 @@ func (h *APIKeyHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	svcReq := service.CreateAPIKeyRequest{
 		Name:          req.Name,
 		GroupID:       req.GroupID,
+		GroupIDs:      req.GroupIDs,
 		CustomKey:     req.CustomKey,
 		IPWhitelist:   req.IPWhitelist,
 		IPBlacklist:   req.IPBlacklist,
@@ -249,21 +252,22 @@ func (h *APIKeyHandler) UpdateGateway(c gatewayctx.GatewayContext) {
 		svcReq.Name = &req.Name
 	}
 	svcReq.GroupID = req.GroupID
+	svcReq.GroupIDs = req.GroupIDs
 	if req.Status != "" {
 		svcReq.Status = &req.Status
 	}
 	// Parse expires_at if provided
 	if req.ExpiresAt != nil {
 		if *req.ExpiresAt == "" {
-				// Empty string means clear expiration
-				svcReq.ExpiresAt = nil
-				svcReq.ClearExpiration = true
-			} else {
-				t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
-				if err != nil {
-					response.ErrorContext(apiKeyGatewayResponder{ctx: c}, http.StatusBadRequest, "Invalid expires_at format: "+err.Error())
-					return
-				}
+			// Empty string means clear expiration
+			svcReq.ExpiresAt = nil
+			svcReq.ClearExpiration = true
+		} else {
+			t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+			if err != nil {
+				response.ErrorContext(apiKeyGatewayResponder{ctx: c}, http.StatusBadRequest, "Invalid expires_at format: "+err.Error())
+				return
+			}
 			svcReq.ExpiresAt = &t
 		}
 	}

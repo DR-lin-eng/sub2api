@@ -1726,12 +1726,19 @@ export default {
       claudeCode: {
         title: 'Claude Code 客户端限制',
         tooltip:
-          '启用后，此分组仅允许 Claude Code 官方客户端访问。非 Claude Code 请求将被拒绝或降级到指定分组。',
+          '启用后，此分组仅允许 Claude Code 官方客户端访问。非 Claude Code 请求将被拒绝或路由到已配置的调度兜底分组。',
         enabled: '仅限 Claude Code',
         disabled: '允许所有客户端',
         fallbackGroup: '降级分组',
         fallbackHint: '非 Claude Code 请求将使用此分组，留空则直接拒绝',
         noFallback: '不降级（直接拒绝）'
+      },
+      schedulingFallback: {
+        title: '调度兜底分组',
+        fallbackGroup: '兜底分组',
+        hint:
+          '当本组没有可调度账号，或并发已满需要排队时，会继续尝试此分组。Claude Code-only 的拒绝也会复用这里的目标。',
+        noFallback: '不兜底'
       },
       openaiMessages: {
         title: 'OpenAI Messages 调度配置',
@@ -2418,6 +2425,9 @@ export default {
       interceptWarmupRequestsDesc: '启用后，标题生成等预热请求将返回 mock 响应，不消耗上游 token',
       autoPauseOnExpired: '过期自动暂停调度',
       autoPauseOnExpiredDesc: '启用后，账号过期将自动暂停调度',
+      ignorePauseSchedulingErrors: '忽略上游错误自动暂停调度',
+      ignorePauseSchedulingErrorsDesc:
+        '启用后，无论上游返回什么错误，都不会自动把该账号暂停调度、临时不可调度或标记为错误。',
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: '配额控制',
@@ -2503,7 +2513,7 @@ export default {
       loadFactor: '负载因子',
       loadFactorHint: '提高负载因子可以提高对账号的调度频率',
       priority: '优先级',
-      priorityHint: '优先级越小的账号优先使用',
+      priorityHint: '优先级越小的账号优先使用，默认值为 1，手动设置 0 可获得更高优先级',
       billingRateMultiplier: '账号计费倍率',
       billingRateMultiplierHint: '0 表示不计费，仅影响账号计费',
       expiresAt: '过期时间',

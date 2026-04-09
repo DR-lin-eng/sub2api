@@ -1123,7 +1123,7 @@
           <input
             v-model.number="form.priority"
             type="number"
-            min="1"
+            min="0"
             class="input"
             data-tour="account-form-priority"
           />
@@ -1304,6 +1304,34 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 autoPauseOnExpired ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{
+              t('admin.accounts.ignorePauseSchedulingErrors')
+            }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.ignorePauseSchedulingErrorsDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="ignorePauseSchedulingErrors = !ignorePauseSchedulingErrors"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              ignorePauseSchedulingErrors ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                ignorePauseSchedulingErrors ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -1936,6 +1964,7 @@ const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
+const ignorePauseSchedulingErrors = ref(false)
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
 const editQuotaWeeklyLimit = ref<number | null>(null)
@@ -2573,6 +2602,7 @@ function loadQuotaControlSettings(account: Account) {
   tlsFingerprintEnabled.value = false
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
+  ignorePauseSchedulingErrors.value = false
   cacheTTLOverrideTarget.value = '5m'
 
   // Only applies to Anthropic OAuth/SetupToken accounts
@@ -2619,6 +2649,19 @@ function loadQuotaControlSettings(account: Account) {
     cacheTTLOverrideEnabled.value = true
     cacheTTLOverrideTarget.value = account.cache_ttl_override_target || '5m'
   }
+  if (account.ignore_pause_scheduling_errors === true) {
+    ignorePauseSchedulingErrors.value = true
+  }
+}
+
+function applyIgnorePauseSchedulingErrorsUpdate(extra: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...extra }
+  if (ignorePauseSchedulingErrors.value) {
+    next.ignore_pause_scheduling_errors = true
+  } else {
+    delete next.ignore_pause_scheduling_errors
+  }
+  return next
 }
 
 function formatTempUnschedKeywords(value: unknown) {
@@ -3023,7 +3066,7 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.allow_overages
       }
-      updatePayload.extra = newExtra
+      updatePayload.extra = applyIgnorePauseSchedulingErrorsUpdate(newExtra)
     }
 
     // For Anthropic OAuth/SetupToken accounts, handle quota control settings in extra
@@ -3098,7 +3141,7 @@ const handleSubmit = async () => {
         delete newExtra.cache_ttl_override_target
       }
 
-      updatePayload.extra = newExtra
+      updatePayload.extra = applyIgnorePauseSchedulingErrorsUpdate(newExtra)
     }
 
     // For Anthropic API Key accounts, handle passthrough mode in extra
@@ -3110,7 +3153,7 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.anthropic_passthrough
       }
-      updatePayload.extra = newExtra
+      updatePayload.extra = applyIgnorePauseSchedulingErrorsUpdate(newExtra)
     }
 
     // For OpenAI OAuth/API Key accounts, handle passthrough mode in extra
@@ -3145,7 +3188,7 @@ const handleSubmit = async () => {
         }
       }
 
-      updatePayload.extra = newExtra
+      updatePayload.extra = applyIgnorePauseSchedulingErrorsUpdate(newExtra)
     }
 
     // For apikey/bedrock accounts, handle quota_limit in extra
@@ -3190,7 +3233,7 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.quota_reset_timezone
       }
-      updatePayload.extra = newExtra
+      updatePayload.extra = applyIgnorePauseSchedulingErrorsUpdate(newExtra)
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {

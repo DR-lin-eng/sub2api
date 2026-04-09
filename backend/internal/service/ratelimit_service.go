@@ -111,6 +111,10 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) (shouldDisable bool) {
+	if account != nil && account.IgnorePauseSchedulingErrors() {
+		slog.Info("account_pause_scheduling_ignored", "account_id", account.ID, "status_code", statusCode, "reason", "ignore_pause_scheduling_errors")
+		return false
+	}
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
 	// 池模式默认不标记本地账号状态；仅当用户显式配置自定义错误码时按本地策略处理。
@@ -1327,6 +1331,10 @@ func (s *RateLimitService) GetTempUnschedStatus(ctx context.Context, accountID i
 }
 
 func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+	if account != nil && account.IgnorePauseSchedulingErrors() {
+		slog.Info("account_temp_unschedulable_ignored", "account_id", account.ID, "status_code", statusCode)
+		return false
+	}
 	if account == nil {
 		return false
 	}
@@ -1484,6 +1492,10 @@ func truncateTempUnschedMessage(body []byte, maxBytes int) string {
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleStreamTimeout(ctx context.Context, account *Account, model string) bool {
 	if account == nil {
+		return false
+	}
+	if account.IgnorePauseSchedulingErrors() {
+		slog.Info("account_stream_timeout_pause_ignored", "account_id", account.ID, "model", model)
 		return false
 	}
 

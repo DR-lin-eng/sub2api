@@ -128,15 +128,26 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 	for {
 		c.SetValue("openai_chat_completions_fallback_model", "")
 		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		groupSelection, err := selectOpenAIAPIKeyGroup(
 			c.Context(),
-			apiKey.GroupID,
+			apiKey,
 			"",
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			h.gatewayService.SelectAccountWithScheduler,
 		)
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			selectedAPIKey   = apiKey
+		)
+		if err == nil && groupSelection != nil {
+			selection = groupSelection.Selection
+			scheduleDecision = groupSelection.Decision
+			selectedAPIKey = groupSelection.APIKey
+		}
 		if err != nil {
 			reqLog.Warn("openai_chat_completions.account_select_failed",
 				zap.Error(err),
@@ -148,16 +159,20 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 					reqLog.Info("openai_chat_completions.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
 					)
-					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+					groupSelection, err = selectOpenAIAPIKeyGroup(
 						c.Context(),
-						apiKey.GroupID,
+						apiKey,
 						"",
 						sessionHash,
 						defaultModel,
 						failedAccountIDs,
 						service.OpenAIUpstreamTransportAny,
+						h.gatewayService.SelectAccountWithScheduler,
 					)
-					if err == nil && selection != nil {
+					if err == nil && groupSelection != nil {
+						selection = groupSelection.Selection
+						scheduleDecision = groupSelection.Decision
+						selectedAPIKey = groupSelection.APIKey
 						c.SetValue("openai_chat_completions_fallback_model", defaultModel)
 					}
 				}
@@ -199,7 +214,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 		_ = scheduleDecision
 		setOpsSelectedAccountGateway(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(c, selectedAPIKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
 			return
 		}
@@ -207,7 +222,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 		service.SetOpsLatencyMsContext(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 
-		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, getContextStringGateway(c, "openai_chat_completions_fallback_model"))
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(selectedAPIKey, getContextStringGateway(c, "openai_chat_completions_fallback_model"))
 		result, err := h.gatewayService.ForwardAsChatCompletionsContext(c.Context(), c, account, body, promptCacheKey, defaultMappedModel)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -249,7 +264,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 						continue
 					}
 				}
-				_ = h.gatewayService.ClearStickySessionForAccount(c.Context(), apiKey.GroupID, sessionHash, account.ID)
+				_ = h.gatewayService.ClearStickySessionForAccount(c.Context(), selectedAPIKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(c.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -282,7 +297,7 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.gatewayService.MarkOpenAIAccountHealthy(account)
-		if err := h.gatewayService.PromoteStickySession(c.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+		if err := h.gatewayService.PromoteStickySession(c.Context(), selectedAPIKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai_chat_completions.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
@@ -292,8 +307,8 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:           result,
-				APIKey:           apiKey,
-				User:             apiKey.User,
+				APIKey:           selectedAPIKey,
+				User:             selectedAPIKey.User,
 				Account:          account,
 				Subscription:     subscription,
 				InboundEndpoint:  GetInboundEndpointContext(c),
@@ -305,8 +320,8 @@ func (h *OpenAIGatewayHandler) ChatCompletionsGateway(c gatewayctx.GatewayContex
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.chat_completions"),
 					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", selectedAPIKey.ID),
+					zap.Any("group_id", selectedAPIKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
 				).Error("openai_chat_completions.record_usage_failed", zap.Error(err))

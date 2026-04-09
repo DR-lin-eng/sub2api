@@ -12,6 +12,9 @@ import (
 // DefaultProfileName is the name of the built-in Claude CLI profile.
 const DefaultProfileName = "claude_cli_v2"
 
+// DefaultCodexProfileName is the built-in Codex client profile alias.
+const DefaultCodexProfileName = "codex_cli_v1"
+
 // Registry manages TLS fingerprint profiles.
 // It holds a collection of profiles that can be used for TLS fingerprint simulation.
 // Profiles are selected based on account ID using modulo operation.
@@ -75,6 +78,13 @@ func (r *Registry) registerBuiltinProfile() {
 		PointFormats: nil,
 	}
 	r.RegisterProfile(DefaultProfileName, defaultProfile)
+	r.RegisterProfile(DefaultCodexProfileName, &Profile{
+		Name:         "Codex CLI / Desktop (Node.js 20.x + OpenSSL 3.x)",
+		EnableGREASE: false,
+		CipherSuites: nil,
+		Curves:       nil,
+		PointFormats: nil,
+	})
 }
 
 // RegisterProfile adds or updates a profile in the registry.
@@ -138,6 +148,29 @@ func (r *Registry) GetDefaultProfile() *Profile {
 func (r *Registry) GetProfileByAccountID(accountID int64) *Profile {
 	_, profile := r.GetProfileEntryByAccountID(accountID)
 	return profile
+}
+
+// GetProfileEntry resolves an explicit preferred profile ID first, then falls back to accountID selection.
+func (r *Registry) GetProfileEntry(accountID int64, preferredProfileID string) (string, *Profile) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if preferredProfileID != "" {
+		if profile := r.profiles[preferredProfileID]; profile != nil {
+			return preferredProfileID, profile
+		}
+	}
+
+	if len(r.profileNames) == 0 {
+		return "", nil
+	}
+	idx := accountID
+	if idx < 0 {
+		idx = -idx
+	}
+	selectedIndex := int(idx % int64(len(r.profileNames)))
+	selectedName := r.profileNames[selectedIndex]
+	return selectedName, r.profiles[selectedName]
 }
 
 // GetProfileEntryByAccountID returns the registry key and profile for the given account ID.

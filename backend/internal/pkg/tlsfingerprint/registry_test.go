@@ -9,9 +9,9 @@ import (
 func TestNewRegistry(t *testing.T) {
 	r := NewRegistry()
 
-	// Should have exactly one profile (the default)
-	if r.ProfileCount() != 1 {
-		t.Errorf("expected 1 profile, got %d", r.ProfileCount())
+	// Should have exactly two built-in profiles (Claude + Codex)
+	if r.ProfileCount() != 2 {
+		t.Errorf("expected 2 profiles, got %d", r.ProfileCount())
 	}
 
 	// Should have the default profile
@@ -22,8 +22,16 @@ func TestNewRegistry(t *testing.T) {
 
 	// Default profile name should be in the list
 	names := r.ProfileNames()
-	if len(names) != 1 || names[0] != DefaultProfileName {
-		t.Errorf("expected profile names to be [%s], got %v", DefaultProfileName, names)
+	expected := []string{DefaultProfileName, DefaultCodexProfileName}
+	if len(names) != len(expected) {
+		t.Errorf("expected profile names %v, got %v", expected, names)
+		return
+	}
+	for i, name := range expected {
+		if names[i] != name {
+			t.Errorf("expected profile names to be %v, got %v", expected, names)
+			break
+		}
 	}
 }
 
@@ -37,9 +45,9 @@ func TestRegisterProfile(t *testing.T) {
 	}
 	r.RegisterProfile("custom", customProfile)
 
-	// Should now have 2 profiles
-	if r.ProfileCount() != 2 {
-		t.Errorf("expected 2 profiles, got %d", r.ProfileCount())
+	// Should now have 3 profiles
+	if r.ProfileCount() != 3 {
+		t.Errorf("expected 3 profiles, got %d", r.ProfileCount())
 	}
 
 	// Should be able to retrieve the custom profile
@@ -86,9 +94,8 @@ func TestGetProfileByAccountID(t *testing.T) {
 	r.RegisterProfile("profile_a", &Profile{Name: "Profile A"})
 	r.RegisterProfile("profile_b", &Profile{Name: "Profile B"})
 
-	// Now we have 3 profiles: claude_cli_v2, profile_a, profile_b
-	// Names are sorted, so order is: claude_cli_v2, profile_a, profile_b
-	expectedOrder := []string{DefaultProfileName, "profile_a", "profile_b"}
+	// Now we have 4 profiles: claude_cli_v2, codex_cli_v1, profile_a, profile_b
+	expectedOrder := []string{DefaultProfileName, DefaultCodexProfileName, "profile_a", "profile_b"}
 	names := r.ProfileNames()
 	for i, name := range expectedOrder {
 		if names[i] != name {
@@ -97,23 +104,23 @@ func TestGetProfileByAccountID(t *testing.T) {
 	}
 
 	// Test modulo selection
-	// Account ID 0 % 3 = 0 -> claude_cli_v2
-	// Account ID 1 % 3 = 1 -> profile_a
-	// Account ID 2 % 3 = 2 -> profile_b
-	// Account ID 3 % 3 = 0 -> claude_cli_v2
+	// Account ID 0 % 4 = 0 -> codex_cli_v1
+	// Account ID 1 % 4 = 1 -> claude_cli_v2
+	// Account ID 2 % 4 = 2 -> profile_a
+	// Account ID 3 % 4 = 3 -> profile_b
 	testCases := []struct {
 		accountID    int64
 		expectedName string
 	}{
 		{0, "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)"},
-		{1, "Profile A"},
-		{2, "Profile B"},
-		{3, "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)"},
-		{4, "Profile A"},
-		{5, "Profile B"},
-		{100, "Profile A"}, // 100 % 3 = 1
-		{-1, "Profile A"},  // |-1| % 3 = 1
-		{-3, "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)"}, // |-3| % 3 = 0
+		{1, "Codex CLI / Desktop (Node.js 20.x + OpenSSL 3.x)"},
+		{2, "Profile A"},
+		{3, "Profile B"},
+		{4, "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)"},
+		{5, "Codex CLI / Desktop (Node.js 20.x + OpenSSL 3.x)"},
+		{100, "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)"}, // 100 % 4 = 0
+		{-1, "Codex CLI / Desktop (Node.js 20.x + OpenSSL 3.x)"}, // |-1| % 4 = 1
+		{-3, "Profile B"},                                          // |-3| % 4 = 3
 	}
 
 	for _, tc := range testCases {
@@ -131,8 +138,8 @@ func TestGetProfileByAccountID(t *testing.T) {
 func TestNewRegistryFromConfig(t *testing.T) {
 	// Test with nil config
 	r := NewRegistryFromConfig(nil)
-	if r.ProfileCount() != 1 {
-		t.Errorf("expected 1 profile with nil config, got %d", r.ProfileCount())
+	if r.ProfileCount() != 2 {
+		t.Errorf("expected 2 profiles with nil config, got %d", r.ProfileCount())
 	}
 
 	// Test with disabled config
@@ -140,8 +147,8 @@ func TestNewRegistryFromConfig(t *testing.T) {
 		Enabled: false,
 	}
 	r = NewRegistryFromConfig(disabledCfg)
-	if r.ProfileCount() != 1 {
-		t.Errorf("expected 1 profile with disabled config, got %d", r.ProfileCount())
+	if r.ProfileCount() != 2 {
+		t.Errorf("expected 2 profiles with disabled config, got %d", r.ProfileCount())
 	}
 
 	// Test with enabled config and custom profiles
@@ -160,9 +167,9 @@ func TestNewRegistryFromConfig(t *testing.T) {
 	}
 	r = NewRegistryFromConfig(enabledCfg)
 
-	// Should have 3 profiles: default + 2 custom
-	if r.ProfileCount() != 3 {
-		t.Errorf("expected 3 profiles, got %d", r.ProfileCount())
+	// Should have 4 profiles: built-ins + 2 custom
+	if r.ProfileCount() != 4 {
+		t.Errorf("expected 4 profiles, got %d", r.ProfileCount())
 	}
 
 	// Check custom profiles exist
@@ -187,7 +194,7 @@ func TestProfileNames(t *testing.T) {
 	names := r.ProfileNames()
 
 	// Should be sorted alphabetically
-	expected := []string{"alpha", "beta", DefaultProfileName, "zebra"}
+	expected := []string{"alpha", "beta", DefaultProfileName, DefaultCodexProfileName, "zebra"}
 	if len(names) != len(expected) {
 		t.Errorf("expected %d names, got %d", len(expected), len(names))
 	}
@@ -213,7 +220,7 @@ func TestReplaceProfiles(t *testing.T) {
 	})
 
 	names := r.ProfileNames()
-	expected := []string{"alpha", "beta", DefaultProfileName}
+	expected := []string{"alpha", "beta", DefaultProfileName, DefaultCodexProfileName}
 	if len(names) != len(expected) {
 		t.Fatalf("expected %d names, got %d", len(expected), len(names))
 	}
@@ -221,6 +228,17 @@ func TestReplaceProfiles(t *testing.T) {
 		if names[i] != name {
 			t.Fatalf("expected name at index %d to be %s, got %s", i, name, names[i])
 		}
+	}
+}
+
+func TestGetProfileEntry_PrefersExplicitProfileID(t *testing.T) {
+	r := NewRegistry()
+	key, profile := r.GetProfileEntry(123, DefaultProfileName)
+	if key != DefaultProfileName {
+		t.Fatalf("expected explicit profile key %s, got %s", DefaultProfileName, key)
+	}
+	if profile == nil || profile.Name != "Claude CLI 2.x (Node.js 20.x + OpenSSL 3.x)" {
+		t.Fatalf("unexpected explicit profile: %+v", profile)
 	}
 }
 

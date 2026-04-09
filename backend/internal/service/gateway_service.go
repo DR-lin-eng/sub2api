@@ -257,6 +257,12 @@ func buildClaudeMimicDebugLine(req *http.Request, body []byte, account *Account,
 	interesting := []string{
 		"user-agent",
 		"x-app",
+		"x-claude-code-session-id",
+		"x-claude-remote-container-id",
+		"x-claude-remote-session-id",
+		"x-client-app",
+		"x-client-request-id",
+		"x-anthropic-additional-protection",
 		"anthropic-dangerous-direct-browser-access",
 		"anthropic-version",
 		"anthropic-beta",
@@ -367,6 +373,12 @@ var allowedHeaders = map[string]bool{
 	"anthropic-dangerous-direct-browser-access": true,
 	"anthropic-version":                         true,
 	"x-app":                                     true,
+	"x-claude-code-session-id":                  true,
+	"x-claude-remote-container-id":              true,
+	"x-claude-remote-session-id":                true,
+	"x-client-app":                              true,
+	"x-client-request-id":                       true,
+	"x-anthropic-additional-protection":         true,
 	"anthropic-beta":                            true,
 	"accept-language":                           true,
 	"sec-fetch-mode":                            true,
@@ -474,6 +486,11 @@ type AccountSelectionResult struct {
 	Acquired    bool
 	ReleaseFunc func()
 	WaitPlan    *AccountWaitPlan // nil means no wait allowed
+}
+
+type gatewayFallbackGroupEntry struct {
+	Group   *Group
+	GroupID int64
 }
 
 // ClaudeUsage 表示Claude API返回的usage信息
@@ -876,11 +893,34 @@ func (s *GatewayService) startGatewayRuntimeSyncWorker() {
 	}()
 }
 
+func (s *GatewayService) applySampledTLSFingerprintProfile(req *http.Request, account *Account) *http.Request {
+	if req == nil || account == nil || !account.IsTLSFingerprintEnabled() {
+		return req
+	}
+	profileID := strings.TrimSpace(account.GetTLSFingerprintProfileID())
+	if profileID == "" && s != nil && s.identityService != nil {
+		if fp, err := s.identityService.GetSampledFingerprint(req.Context(), account.ID); err == nil && fp != nil {
+			profileID = strings.TrimSpace(fp.TLSProfileID)
+		}
+	}
+	if profileID == "" {
+		return req
+	}
+	ctx := context.WithValue(req.Context(), ctxkey.TLSFingerprintProfileID, profileID)
+	return req.WithContext(ctx)
+}
+
 // TempUnscheduleRetryableError 在需要切号时优先尝试代理自动迁移；
 // 迁移失败后再按既有策略执行临时下线。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
 	if failoverErr == nil {
 		return
+	}
+	if s != nil && s.accountRepo != nil && accountID > 0 {
+		if account, err := s.accountRepo.GetByID(ctx, accountID); err == nil && account != nil && account.IgnorePauseSchedulingErrors() {
+			logger.LegacyPrintf("service.gateway", "[handler] ignore_pause_scheduling_errors enabled, skip temp unschedule account=%d", accountID)
+			return
+		}
 	}
 	if s.tryAutoReassignFailedProxy(ctx, accountID, failoverErr) {
 		return
@@ -1600,9 +1640,21 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 		if err != nil {
 			return nil, err
 		}
-		groupID = resolvedGroupID
-		ctx = s.withGroupContext(ctx, group)
-		platform = group.Platform
+		chain, err := s.buildGatewayFallbackChain(ctx, group, resolvedGroupID)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range chain {
+			localCtx := s.withGroupContext(ctx, entry.Group)
+			account, err := s.selectAccountForResolvedPlatform(localCtx, &entry.GroupID, sessionHash, requestedModel, excludedIDs, entry.Group.Platform)
+			if err == nil {
+				return account, nil
+			}
+			if !errors.Is(err, ErrNoAvailableAccounts) {
+				return nil, err
+			}
+		}
+		return nil, ErrNoAvailableAccounts
 	} else {
 		// 无分组时只使用原生 anthropic 平台
 		platform = PlatformAnthropic
@@ -1610,13 +1662,7 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 
 	// anthropic/gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
 	// 注意：强制平台模式不走混合调度
-	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
-		return s.selectAccountWithMixedScheduling(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
-	}
-
-	// antigravity 分组、强制平台模式或无分组使用单平台选择
-	// 注意：强制平台模式也必须遵守分组限制，不再回退到全平台查询
-	return s.selectAccountForModelWithPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
+	return s.selectAccountForResolvedPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
 }
 
 // SelectAccountWithLoadAwareness selects account with load-awareness and wait plan.
@@ -1633,14 +1679,44 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		"session", shortSessionHash(sessionHash),
 		"excluded_ids", excludedIDsList)
 
-	cfg := s.schedulingConfig()
-
 	// 检查 Claude Code 客户端限制（可能会替换 groupID 为降级分组）
 	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
 	if err != nil {
 		return nil, err
 	}
+	chain, err := s.buildGatewayFallbackChain(ctx, group, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(chain) > 0 {
+		var firstWaitPlan *AccountSelectionResult
+		for _, entry := range chain {
+			localCtx := s.withGroupContext(ctx, entry.Group)
+			result, err := s.selectAccountWithLoadAwarenessSingleGroup(localCtx, entry.Group, &entry.GroupID, sessionHash, requestedModel, excludedIDs, metadataUserID)
+			if err == nil {
+				if result != nil && result.WaitPlan != nil {
+					if firstWaitPlan == nil {
+						firstWaitPlan = result
+					}
+					continue
+				}
+				return result, nil
+			}
+			if !errors.Is(err, ErrNoAvailableAccounts) {
+				return nil, err
+			}
+		}
+		if firstWaitPlan != nil {
+			return firstWaitPlan, nil
+		}
+		return nil, ErrNoAvailableAccounts
+	}
 	ctx = s.withGroupContext(ctx, group)
+	return s.selectAccountWithLoadAwarenessSingleGroup(ctx, group, groupID, sessionHash, requestedModel, excludedIDs, metadataUserID)
+}
+
+func (s *GatewayService) selectAccountWithLoadAwarenessSingleGroup(ctx context.Context, group *Group, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, metadataUserID string) (*AccountSelectionResult, error) {
+	cfg := s.schedulingConfig()
 
 	var stickyAccountID int64
 	if prefetch := prefetchedStickyAccountIDFromContext(ctx, groupID); prefetch > 0 {
@@ -2125,6 +2201,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	return selection, nil
 }
 
+func (s *GatewayService) selectAccountForResolvedPlatform(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string) (*Account, error) {
+	forcePlatform, hasForcePlatform := ctx.Value(ctxkey.ForcePlatform).(string)
+	if hasForcePlatform && forcePlatform != "" {
+		platform = forcePlatform
+	}
+	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
+		return s.selectAccountWithMixedScheduling(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
+	}
+	return s.selectAccountForModelWithPlatform(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
+}
+
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
@@ -2259,6 +2346,34 @@ func (s *GatewayService) resolveGatewayGroup(ctx context.Context, groupID *int64
 		}
 		currentID = *group.FallbackGroupID
 	}
+}
+
+func (s *GatewayService) buildGatewayFallbackChain(ctx context.Context, group *Group, groupID *int64) ([]gatewayFallbackGroupEntry, error) {
+	if group == nil || groupID == nil || *groupID <= 0 {
+		return nil, nil
+	}
+
+	out := []gatewayFallbackGroupEntry{{Group: group, GroupID: *groupID}}
+	visited := map[int64]struct{}{*groupID: {}}
+	current := group
+
+	for current != nil && current.FallbackGroupID != nil && *current.FallbackGroupID > 0 {
+		nextGroup, nextID, err := s.resolveGatewayGroup(ctx, current.FallbackGroupID)
+		if err != nil {
+			return nil, err
+		}
+		if nextGroup == nil || nextID == nil || *nextID <= 0 {
+			break
+		}
+		if _, seen := visited[*nextID]; seen {
+			return nil, fmt.Errorf("fallback group cycle detected")
+		}
+		visited[*nextID] = struct{}{}
+		out = append(out, gatewayFallbackGroupEntry{Group: nextGroup, GroupID: *nextID})
+		current = nextGroup
+	}
+
+	return out, nil
 }
 
 // checkClaudeCodeRestriction 检查分组的 Claude Code 客户端限制
@@ -4573,6 +4688,11 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
 	}
+	if account.IsOAuth() && isClaudeCode && s.identityService != nil && c != nil {
+		if req := c.Request(); req != nil {
+			_, _ = s.identityService.ObserveOfficialFingerprintSample(ctx, account.ID, req.Header)
+		}
+	}
 
 	body = enforceCacheControlLimit(body)
 
@@ -4622,6 +4742,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 			return nil, err
 		}
 
+		upstreamReq = s.applySampledTLSFingerprintProfile(upstreamReq, account)
 		upstreamReq, cancelQuickFail := withProxyQuickFailRequest(upstreamReq, proxyURL)
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 		if err != nil {
@@ -4688,6 +4809,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 					retryReq, buildErr := s.buildUpstreamRequestContext(retryCtx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					releaseRetryCtx()
 					if buildErr == nil {
+						retryReq = s.applySampledTLSFingerprintProfile(retryReq, account)
 						retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 						if retryErr == nil {
 							if retryResp.StatusCode < 400 {
@@ -4722,6 +4844,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 									retryReq2, buildErr2 := s.buildUpstreamRequestContext(retryCtx2, c, account, filteredBody2, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 									releaseRetryCtx2()
 									if buildErr2 == nil {
+										retryReq2 = s.applySampledTLSFingerprintProfile(retryReq2, account)
 										retryResp2, retryErr2 := s.httpUpstream.DoWithTLS(retryReq2, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 										if retryErr2 == nil {
 											resp = retryResp2
@@ -4788,6 +4911,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 						budgetRetryReq, buildErr := s.buildUpstreamRequestContext(budgetRetryCtx, c, account, rectifiedBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 						releaseBudgetRetryCtx()
 						if buildErr == nil {
+							budgetRetryReq = s.applySampledTLSFingerprintProfile(budgetRetryReq, account)
 							budgetRetryResp, retryErr := s.httpUpstream.DoWithTLS(budgetRetryReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 							if retryErr == nil {
 								resp = budgetRetryResp
@@ -6120,6 +6244,9 @@ func (s *GatewayService) buildUpstreamRequestContext(ctx context.Context, c gate
 	// OAuth账号：应用统一指纹
 	var fingerprint *Fingerprint
 	if account.IsOAuth() && s.identityService != nil {
+		if IsClaudeCodeClient(ctx) {
+			_, _ = s.identityService.ObserveOfficialFingerprintSample(ctx, account.ID, clientHeaders)
+		}
 		// 1. 获取或创建指纹（包含随机生成的ClientID）
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
 		if err != nil {
@@ -6166,7 +6293,7 @@ func (s *GatewayService) buildUpstreamRequestContext(ctx context.Context, c gate
 
 	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
 	if fingerprint != nil {
-		s.identityService.ApplyFingerprint(req, fingerprint)
+		s.identityService.ApplyAnthropicFingerprint(req, body, account, fingerprint, IsClaudeCodeClient(ctx))
 	}
 
 	// 确保必要的headers存在
@@ -6179,6 +6306,7 @@ func (s *GatewayService) buildUpstreamRequestContext(ctx context.Context, c gate
 	if tokenType == "oauth" {
 		applyClaudeOAuthHeaderDefaults(req, reqStream)
 	}
+	ensureAnthropicClientRequestID(req)
 
 	// Build effective drop set: merge static defaults with dynamic beta policy filter rules
 	policyFilterSet := s.getBetaPolicyFilterSetContext(ctx, c, account)
@@ -8514,6 +8642,7 @@ func (s *GatewayService) ForwardCountTokensContext(ctx context.Context, c gatewa
 	}
 
 	// 发送请求
+	upstreamReq = s.applySampledTLSFingerprintProfile(upstreamReq, account)
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 	if err != nil {
 		setOpsUpstreamErrorContext(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
@@ -8542,6 +8671,7 @@ func (s *GatewayService) ForwardCountTokensContext(ctx context.Context, c gatewa
 		filteredBody := FilterThinkingBlocksForRetry(body)
 		retryReq, buildErr := s.buildCountTokensRequestContext(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode)
 		if buildErr == nil {
+			retryReq = s.applySampledTLSFingerprintProfile(retryReq, account)
 			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 			if retryErr == nil {
 				resp = retryResp
@@ -8639,6 +8769,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthroughContext(ctx
 		proxyURL = account.Proxy.URL()
 	}
 
+	upstreamReq = s.applySampledTLSFingerprintProfile(upstreamReq, account)
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, account.IsTLSFingerprintEnabled())
 	if err != nil {
 		setOpsUpstreamErrorContext(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
@@ -8829,6 +8960,9 @@ func (s *GatewayService) buildCountTokensRequestContext(ctx context.Context, c g
 	// OAuth 账号：应用统一指纹和重写 userID
 	// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
 	if account.IsOAuth() && s.identityService != nil {
+		if IsClaudeCodeClient(ctx) {
+			_, _ = s.identityService.ObserveOfficialFingerprintSample(ctx, account.ID, clientHeaders)
+		}
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
 		if err == nil {
 			accountUUID := account.GetExtraString("account_uuid")
@@ -8866,7 +9000,7 @@ func (s *GatewayService) buildCountTokensRequestContext(ctx context.Context, c g
 	if account.IsOAuth() && s.identityService != nil {
 		fp, _ := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
 		if fp != nil {
-			s.identityService.ApplyFingerprint(req, fp)
+			s.identityService.ApplyAnthropicFingerprint(req, body, account, fp, IsClaudeCodeClient(ctx))
 		}
 	}
 
@@ -8880,6 +9014,7 @@ func (s *GatewayService) buildCountTokensRequestContext(ctx context.Context, c g
 	if tokenType == "oauth" {
 		applyClaudeOAuthHeaderDefaults(req, false)
 	}
+	ensureAnthropicClientRequestID(req)
 
 	// Build effective drop set for count_tokens: merge static defaults with dynamic beta policy filter rules
 	ctEffectiveDropSet := mergeDropSets(s.getBetaPolicyFilterSetContext(ctx, c, account))

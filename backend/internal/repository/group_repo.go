@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -480,13 +479,28 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 		}
 	}
 
-	// 2. Clear group_id for api keys bound to this group.
-	// 仅更新未软删除的记录，避免修改已删除数据，保证审计与历史回溯一致性。
-	// 与 APIKeyRepository 的软删除语义保持一致，减少跨模块行为差异。
-	if _, err := txClient.APIKey.Update().
-		Where(apikey.GroupIDEQ(id), apikey.DeletedAtIsNil()).
-		ClearGroupID().
-		Save(ctx); err != nil {
+	// 2. Clear/compact API key group bindings for this group.
+	// group_id 仍保留为兼容主分组字段；删除分组时，同时从 group_ids 中移除它，
+	// 若被删的是主分组，则自动提升剩余列表的第一个分组为新的主分组。
+	if _, err := exec.ExecContext(ctx, `
+UPDATE api_keys
+SET
+  group_ids = array_remove(COALESCE(group_ids, ARRAY[]::bigint[]), $1),
+  group_id = CASE
+    WHEN group_id = $1 THEN
+      CASE
+        WHEN cardinality(array_remove(COALESCE(group_ids, ARRAY[]::bigint[]), $1)) > 0
+          THEN (array_remove(COALESCE(group_ids, ARRAY[]::bigint[]), $1))[1]
+        ELSE NULL
+      END
+    ELSE group_id
+  END
+WHERE deleted_at IS NULL
+  AND (
+    group_id = $1
+    OR $1 = ANY(COALESCE(group_ids, ARRAY[]::bigint[]))
+  )
+`, id); err != nil {
 		return nil, err
 	}
 

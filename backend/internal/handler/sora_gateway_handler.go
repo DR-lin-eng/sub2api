@@ -229,7 +229,15 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 	var lastFailoverHeaders http.Header
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), apiKey.GroupID, sessionHash, reqModel, failedAccountIDs, "")
+		groupSelection, err := selectGatewayAPIKeyGroup(
+			transportCtx.Context(),
+			apiKey,
+			sessionHash,
+			reqModel,
+			failedAccountIDs,
+			"",
+			h.gatewayService.SelectAccountWithLoadAwareness,
+		)
 		if err != nil {
 			reqLog.Warn("sora.account_select_failed",
 				zap.Error(err),
@@ -256,6 +264,8 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.handleFailoverExhaustedContext(transportCtx, lastFailoverStatus, lastFailoverHeaders, lastFailoverBody, streamStarted)
 			return
 		}
+		selectedAPIKey := groupSelection.APIKey
+		selection := groupSelection.Selection
 		account := selection.Account
 		setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 		proxyBound := account.ProxyID != nil
@@ -426,8 +436,8 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
+				APIKey:             selectedAPIKey,
+				User:               selectedAPIKey.User,
 				Account:            account,
 				Subscription:       subscription,
 				InboundEndpoint:    inboundEndpoint,
@@ -439,8 +449,8 @@ func (h *SoraGatewayHandler) ChatCompletions(c *gin.Context) {
 				logger.L().With(
 					zap.String("component", "handler.sora_gateway.chat_completions"),
 					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", selectedAPIKey.ID),
+					zap.Any("group_id", selectedAPIKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
 				).Error("sora.record_usage_failed", zap.Error(err))

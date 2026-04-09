@@ -203,6 +203,7 @@ func (s *APIKeyService) snapshotFromAPIKey(apiKey *APIKey) *APIKeyAuthSnapshot {
 		APIKeyID:    apiKey.ID,
 		UserID:      apiKey.UserID,
 		GroupID:     apiKey.GroupID,
+		GroupIDs:    append([]int64(nil), apiKey.GroupIDs...),
 		Status:      apiKey.Status,
 		IPWhitelist: apiKey.IPWhitelist,
 		IPBlacklist: apiKey.IPBlacklist,
@@ -249,6 +250,41 @@ func (s *APIKeyService) snapshotFromAPIKey(apiKey *APIKey) *APIKeyAuthSnapshot {
 			DefaultMappedModel:              apiKey.Group.DefaultMappedModel,
 		}
 	}
+	if len(apiKey.Groups) > 0 {
+		snapshot.Groups = make([]APIKeyAuthGroupSnapshot, 0, len(apiKey.Groups))
+		for _, group := range apiKey.Groups {
+			if group == nil {
+				continue
+			}
+			snapshot.Groups = append(snapshot.Groups, APIKeyAuthGroupSnapshot{
+				ID:                              group.ID,
+				Name:                            group.Name,
+				Platform:                        group.Platform,
+				Status:                          group.Status,
+				SubscriptionType:                group.SubscriptionType,
+				RateMultiplier:                  group.RateMultiplier,
+				DailyLimitUSD:                   group.DailyLimitUSD,
+				WeeklyLimitUSD:                  group.WeeklyLimitUSD,
+				MonthlyLimitUSD:                 group.MonthlyLimitUSD,
+				ImagePrice1K:                    group.ImagePrice1K,
+				ImagePrice2K:                    group.ImagePrice2K,
+				ImagePrice4K:                    group.ImagePrice4K,
+				SoraImagePrice360:               group.SoraImagePrice360,
+				SoraImagePrice540:               group.SoraImagePrice540,
+				SoraVideoPricePerRequest:        group.SoraVideoPricePerRequest,
+				SoraVideoPricePerRequestHD:      group.SoraVideoPricePerRequestHD,
+				ClaudeCodeOnly:                  group.ClaudeCodeOnly,
+				FallbackGroupID:                 group.FallbackGroupID,
+				FallbackGroupIDOnInvalidRequest: group.FallbackGroupIDOnInvalidRequest,
+				ModelRouting:                    group.ModelRouting,
+				ModelRoutingEnabled:             group.ModelRoutingEnabled,
+				MCPXMLInject:                    group.MCPXMLInject,
+				SupportedModelScopes:            group.SupportedModelScopes,
+				AllowMessagesDispatch:           group.AllowMessagesDispatch,
+				DefaultMappedModel:              group.DefaultMappedModel,
+			})
+		}
+	}
 	return snapshot
 }
 
@@ -260,6 +296,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		ID:          snapshot.APIKeyID,
 		UserID:      snapshot.UserID,
 		GroupID:     snapshot.GroupID,
+		GroupIDs:    append([]int64(nil), snapshot.GroupIDs...),
 		Key:         key,
 		Status:      snapshot.Status,
 		IPWhitelist: snapshot.IPWhitelist,
@@ -307,6 +344,45 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			AllowMessagesDispatch:           snapshot.Group.AllowMessagesDispatch,
 			DefaultMappedModel:              snapshot.Group.DefaultMappedModel,
 		}
+	}
+	if len(snapshot.Groups) > 0 {
+		apiKey.Groups = make([]*Group, 0, len(snapshot.Groups))
+		for _, group := range snapshot.Groups {
+			g := &Group{
+				ID:                              group.ID,
+				Name:                            group.Name,
+				Platform:                        group.Platform,
+				Status:                          group.Status,
+				Hydrated:                        true,
+				SubscriptionType:                group.SubscriptionType,
+				RateMultiplier:                  group.RateMultiplier,
+				DailyLimitUSD:                   group.DailyLimitUSD,
+				WeeklyLimitUSD:                  group.WeeklyLimitUSD,
+				MonthlyLimitUSD:                 group.MonthlyLimitUSD,
+				ImagePrice1K:                    group.ImagePrice1K,
+				ImagePrice2K:                    group.ImagePrice2K,
+				ImagePrice4K:                    group.ImagePrice4K,
+				SoraImagePrice360:               group.SoraImagePrice360,
+				SoraImagePrice540:               group.SoraImagePrice540,
+				SoraVideoPricePerRequest:        group.SoraVideoPricePerRequest,
+				SoraVideoPricePerRequestHD:      group.SoraVideoPricePerRequestHD,
+				ClaudeCodeOnly:                  group.ClaudeCodeOnly,
+				FallbackGroupID:                 group.FallbackGroupID,
+				FallbackGroupIDOnInvalidRequest: group.FallbackGroupIDOnInvalidRequest,
+				ModelRouting:                    group.ModelRouting,
+				ModelRoutingEnabled:             group.ModelRoutingEnabled,
+				MCPXMLInject:                    group.MCPXMLInject,
+				SupportedModelScopes:            group.SupportedModelScopes,
+				AllowMessagesDispatch:           group.AllowMessagesDispatch,
+				DefaultMappedModel:              group.DefaultMappedModel,
+			}
+			apiKey.Groups = append(apiKey.Groups, g)
+		}
+	}
+	if apiKey.Group == nil && len(apiKey.Groups) > 0 {
+		apiKey.Group = apiKey.Groups[0]
+		gid := apiKey.Group.ID
+		apiKey.GroupID = &gid
 	}
 	s.compileAPIKeyIPRules(apiKey)
 	return apiKey

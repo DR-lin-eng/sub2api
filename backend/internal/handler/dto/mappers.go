@@ -78,6 +78,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Key:           k.Key,
 		Name:          k.Name,
 		GroupID:       k.GroupID,
+		GroupIDs:      append([]int64(nil), k.GroupIDs...),
 		Status:        k.Status,
 		IPWhitelist:   k.IPWhitelist,
 		IPBlacklist:   k.IPBlacklist,
@@ -98,6 +99,15 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Window7dStart: k.Window7dStart,
 		User:          UserFromServiceShallow(k.User),
 		Group:         GroupFromServiceShallow(k.Group),
+	}
+	if len(k.Groups) > 0 {
+		out.Groups = make([]Group, 0, len(k.Groups))
+		for _, group := range k.Groups {
+			if group == nil {
+				continue
+			}
+			out.Groups = append(out.Groups, *GroupFromServiceShallow(group))
+		}
 	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)
@@ -258,6 +268,10 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			enabled := true
 			out.EnableTLSFingerprint = &enabled
 		}
+		if a.IgnorePauseSchedulingErrors() {
+			enabled := true
+			out.IgnorePauseSchedulingErrors = &enabled
+		}
 		// 会话ID伪装开关
 		if a.IsSessionIDMaskingEnabled() {
 			enabled := true
@@ -270,6 +284,11 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			target := a.GetCacheTTLOverrideTarget()
 			out.CacheTTLOverrideTarget = &target
 		}
+	}
+
+	if out.IgnorePauseSchedulingErrors == nil && a.IgnorePauseSchedulingErrors() {
+		enabled := true
+		out.IgnorePauseSchedulingErrors = &enabled
 	}
 
 	// 提取账号配额限制（apikey / bedrock 类型有效）

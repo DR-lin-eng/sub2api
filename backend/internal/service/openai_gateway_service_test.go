@@ -27,7 +27,20 @@ var _ GatewayCache = (*stubGatewayCache)(nil)
 
 type stubOpenAIAccountRepo struct {
 	AccountRepository
-	accounts []Account
+	accounts                []Account
+	listByGroupPlatformFunc func(ctx context.Context, groupID int64, platform string) ([]Account, error)
+}
+
+type stubOpenAIGroupRepo struct {
+	GroupRepository
+	groups map[int64]*Group
+}
+
+func (r *stubOpenAIGroupRepo) GetByIDLite(ctx context.Context, id int64) (*Group, error) {
+	if group, ok := r.groups[id]; ok {
+		return group, nil
+	}
+	return nil, ErrGroupNotFound
 }
 
 type snapshotUpdateAccountRepo struct {
@@ -56,6 +69,9 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 }
 
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+	if r.listByGroupPlatformFunc != nil {
+		return r.listByGroupPlatformFunc(ctx, groupID, platform)
+	}
 	var result []Account
 	for _, acc := range r.accounts {
 		if acc.Platform == platform {
@@ -540,6 +556,114 @@ func TestOpenAISelectAccountWithLoadAwareness_NoSlotFallbackWait(t *testing.T) {
 	}
 	if selection.Account == nil || selection.Account.ID != 1 {
 		t.Fatalf("expected account 1")
+	}
+}
+
+func TestOpenAISelectAccountForModelWithExclusions_UsesFallbackGroupWhenPrimaryUnavailable(t *testing.T) {
+	primaryGroupID := int64(1)
+	fallbackGroupID := int64(2)
+	repo := stubOpenAIAccountRepo{
+		listByGroupPlatformFunc: func(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+			switch groupID {
+			case primaryGroupID:
+				return []Account{}, nil
+			case fallbackGroupID:
+				return []Account{
+					{ID: 20, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Priority: 1, Concurrency: 1},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	cache := &stubGatewayCache{}
+	groupRepo := &stubOpenAIGroupRepo{
+		groups: map[int64]*Group{
+			primaryGroupID: {
+				ID:              primaryGroupID,
+				Platform:        PlatformOpenAI,
+				Status:          StatusActive,
+				FallbackGroupID: &fallbackGroupID,
+			},
+			fallbackGroupID: {
+				ID:       fallbackGroupID,
+				Platform: PlatformOpenAI,
+				Status:   StatusActive,
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		groupRepo:   groupRepo,
+		cache:       cache,
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), &primaryGroupID, "fallback-group", "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, int64(20), account.ID)
+	require.Equal(t, int64(20), cache.sessionBindings["openai:fallback-group"])
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_PrefersFallbackGroupWhenPrimaryOnlyWaits(t *testing.T) {
+	primaryGroupID := int64(1)
+	fallbackGroupID := int64(2)
+	repo := stubOpenAIAccountRepo{
+		listByGroupPlatformFunc: func(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+			switch groupID {
+			case primaryGroupID:
+				return []Account{
+					{ID: 10, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Priority: 1, Concurrency: 1},
+				}, nil
+			case fallbackGroupID:
+				return []Account{
+					{ID: 20, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Priority: 1, Concurrency: 1},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	cache := &stubGatewayCache{}
+	groupRepo := &stubOpenAIGroupRepo{
+		groups: map[int64]*Group{
+			primaryGroupID: {
+				ID:              primaryGroupID,
+				Platform:        PlatformOpenAI,
+				Status:          StatusActive,
+				FallbackGroupID: &fallbackGroupID,
+			},
+			fallbackGroupID: {
+				ID:       fallbackGroupID,
+				Platform: PlatformOpenAI,
+				Status:   StatusActive,
+			},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{
+			10: false,
+			20: true,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		groupRepo:          groupRepo,
+		cache:              cache,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &primaryGroupID, "fallback-load", "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Nil(t, selection.WaitPlan)
+	require.Equal(t, int64(20), selection.Account.ID)
+	require.Equal(t, int64(20), cache.sessionBindings["openai:fallback-load"])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
 	}
 }
 

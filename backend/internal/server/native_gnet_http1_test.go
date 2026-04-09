@@ -157,6 +157,262 @@ func TestNativeGnetHTTPRuntimeServesExecutableHealthRouteWithoutFallbackHandler(
 	}
 }
 
+func TestNativeGnetHTTPRuntimeServesExecutableClaudeBootstrapAuthFailureWithoutFallbackHandler(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              0,
+			ReadHeaderTimeout: 5,
+			IdleTimeout:       30,
+		},
+		Security: config.SecurityConfig{
+			CSP: config.CSPConfig{
+				Enabled: false,
+				Policy:  config.DefaultCSPPolicy,
+			},
+		},
+	}
+
+	httpServer := NewHTTPServer(cfg, http.NewServeMux())
+	registerHTTPServerExecutableRuntimeConfig(httpServer, buildExecutableRuntimeConfig(
+		cfg,
+		&handler.Handlers{
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		&service.APIKeyService{},
+		nil,
+		&service.SettingService{},
+		nil,
+		nil,
+		nil,
+		nil,
+	))
+	runtime := newNativeGnetHTTPRuntime(cfg, httpServer)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runtime.Serve(listener)
+	}()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + listener.Addr().String() + "/api/claude_cli/bootstrap")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"code":"API_KEY_REQUIRED","message":"API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header"}`, string(body))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Shutdown(ctx))
+
+	select {
+	case serveErr := <-errCh:
+		require.NoError(t, serveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("native gnet runtime did not exit in time")
+	}
+}
+
+func TestNativeGnetHTTPRuntimeServesExecutableClaudeMetricsEnabledAuthFailureWithoutFallbackHandler(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              0,
+			ReadHeaderTimeout: 5,
+			IdleTimeout:       30,
+		},
+		Security: config.SecurityConfig{
+			CSP: config.CSPConfig{
+				Enabled: false,
+				Policy:  config.DefaultCSPPolicy,
+			},
+		},
+	}
+
+	httpServer := NewHTTPServer(cfg, http.NewServeMux())
+	registerHTTPServerExecutableRuntimeConfig(httpServer, buildExecutableRuntimeConfig(
+		cfg,
+		&handler.Handlers{
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		&service.APIKeyService{},
+		nil,
+		&service.SettingService{},
+		nil,
+		nil,
+		nil,
+		nil,
+	))
+	runtime := newNativeGnetHTTPRuntime(cfg, httpServer)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runtime.Serve(listener)
+	}()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + listener.Addr().String() + "/api/claude_code/organizations/metrics_enabled")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"code":"API_KEY_REQUIRED","message":"API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header"}`, string(body))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Shutdown(ctx))
+
+	select {
+	case serveErr := <-errCh:
+		require.NoError(t, serveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("native gnet runtime did not exit in time")
+	}
+}
+
+func TestNativeGnetHTTPRuntimeServesExecutableClaudePolicyLimitsAuthFailureWithoutFallbackHandler(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              0,
+			ReadHeaderTimeout: 5,
+			IdleTimeout:       30,
+		},
+		Security: config.SecurityConfig{
+			CSP: config.CSPConfig{
+				Enabled: false,
+				Policy:  config.DefaultCSPPolicy,
+			},
+		},
+	}
+
+	httpServer := NewHTTPServer(cfg, http.NewServeMux())
+	registerHTTPServerExecutableRuntimeConfig(httpServer, buildExecutableRuntimeConfig(
+		cfg,
+		&handler.Handlers{
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		&service.APIKeyService{},
+		nil,
+		&service.SettingService{},
+		nil,
+		nil,
+		nil,
+		nil,
+	))
+	runtime := newNativeGnetHTTPRuntime(cfg, httpServer)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runtime.Serve(listener)
+	}()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + listener.Addr().String() + "/api/claude_code/policy_limits")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"code":"API_KEY_REQUIRED","message":"API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header"}`, string(body))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Shutdown(ctx))
+
+	select {
+	case serveErr := <-errCh:
+		require.NoError(t, serveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("native gnet runtime did not exit in time")
+	}
+}
+
+func TestNativeGnetHTTPRuntimeServesExecutableClaudeUserSettingsAuthFailureWithoutFallbackHandler(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              0,
+			ReadHeaderTimeout: 5,
+			IdleTimeout:       30,
+		},
+		Security: config.SecurityConfig{
+			CSP: config.CSPConfig{
+				Enabled: false,
+				Policy:  config.DefaultCSPPolicy,
+			},
+		},
+	}
+
+	httpServer := NewHTTPServer(cfg, http.NewServeMux())
+	registerHTTPServerExecutableRuntimeConfig(httpServer, buildExecutableRuntimeConfig(
+		cfg,
+		&handler.Handlers{
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		&service.APIKeyService{},
+		nil,
+		&service.SettingService{},
+		nil,
+		nil,
+		nil,
+		nil,
+	))
+	runtime := newNativeGnetHTTPRuntime(cfg, httpServer)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runtime.Serve(listener)
+	}()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest(http.MethodPut, "http://"+listener.Addr().String()+"/api/claude_code/user_settings", strings.NewReader(`{"entries":{"~/.claude/settings.json":"{}"}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"code":"API_KEY_REQUIRED","message":"API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header"}`, string(body))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Shutdown(ctx))
+
+	select {
+	case serveErr := <-errCh:
+		require.NoError(t, serveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("native gnet runtime did not exit in time")
+	}
+}
+
 func TestNativeGnetHTTPRuntimeServesExecutableChatCompletionsAuthFailureWithoutFallbackHandler(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{

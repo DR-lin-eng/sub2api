@@ -20,6 +20,10 @@ const (
 	schedulerVersionPrefix      = "sched:ver:"
 	schedulerSnapshotPrefix     = "sched:"
 	schedulerLockPrefix         = "sched:lock:"
+	// 防止 Redis 单次 MGET 参数过大阻塞事件循环。
+	schedulerSnapshotMGetBatchSize = 500
+	// 防止单次 pipeline 塞入过多 SET / ZADD 命令。
+	schedulerSnapshotWriteBatchSize = 500
 )
 
 type schedulerCache struct {
@@ -67,7 +71,7 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	for _, id := range ids {
 		keys = append(keys, schedulerAccountKey(id))
 	}
-	values, err := c.rdb.MGet(ctx, keys...).Result()
+	values, err := c.mGetInBatches(ctx, keys)
 	if err != nil {
 		return nil, false, err
 	}
@@ -100,32 +104,49 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 	versionStr := strconv.FormatInt(version, 10)
 	snapshotKey := schedulerSnapshotKey(bucket, versionStr)
 
-	pipe := c.rdb.Pipeline()
-	for _, account := range accounts {
-		payload, err := json.Marshal(account)
-		if err != nil {
+	if len(accounts) == 0 {
+		pipe := c.rdb.Pipeline()
+		pipe.Del(ctx, snapshotKey)
+		pipe.Set(ctx, activeKey, versionStr, 0)
+		pipe.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0)
+		pipe.SAdd(ctx, schedulerBucketSetKey, bucket.String())
+		if _, err := pipe.Exec(ctx); err != nil {
 			return err
 		}
-		pipe.Set(ctx, schedulerAccountKey(strconv.FormatInt(account.ID, 10)), payload, 0)
-	}
-	if len(accounts) > 0 {
-		// 使用序号作为 score，保持数据库返回的排序语义。
-		members := make([]redis.Z, 0, len(accounts))
-		for idx, account := range accounts {
-			members = append(members, redis.Z{
-				Score:  float64(idx),
-				Member: strconv.FormatInt(account.ID, 10),
-			})
-		}
-		pipe.ZAdd(ctx, snapshotKey, members...)
 	} else {
-		pipe.Del(ctx, snapshotKey)
-	}
-	pipe.Set(ctx, activeKey, versionStr, 0)
-	pipe.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0)
-	pipe.SAdd(ctx, schedulerBucketSetKey, bucket.String())
-	if _, err := pipe.Exec(ctx); err != nil {
-		return err
+		for start := 0; start < len(accounts); start += schedulerSnapshotWriteBatchSize {
+			end := start + schedulerSnapshotWriteBatchSize
+			if end > len(accounts) {
+				end = len(accounts)
+			}
+			pipe := c.rdb.Pipeline()
+			members := make([]redis.Z, 0, end-start)
+			for idx := start; idx < end; idx++ {
+				account := accounts[idx]
+				payload, err := json.Marshal(account)
+				if err != nil {
+					return err
+				}
+				pipe.Set(ctx, schedulerAccountKey(strconv.FormatInt(account.ID, 10)), payload, 0)
+				members = append(members, redis.Z{
+					Score:  float64(idx),
+					Member: strconv.FormatInt(account.ID, 10),
+				})
+			}
+			if len(members) > 0 {
+				pipe.ZAdd(ctx, snapshotKey, members...)
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				return err
+			}
+		}
+		pipe := c.rdb.Pipeline()
+		pipe.Set(ctx, activeKey, versionStr, 0)
+		pipe.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0)
+		pipe.SAdd(ctx, schedulerBucketSetKey, bucket.String())
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
 	}
 
 	if oldActive != "" && oldActive != versionStr {
@@ -179,29 +200,38 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 		ids = append(ids, id)
 	}
 
-	values, err := c.rdb.MGet(ctx, keys...).Result()
+	values, err := c.mGetInBatches(ctx, keys)
 	if err != nil {
 		return err
 	}
 
-	pipe := c.rdb.Pipeline()
-	for i, val := range values {
-		if val == nil {
-			continue
+	for start := 0; start < len(values); start += schedulerSnapshotWriteBatchSize {
+		end := start + schedulerSnapshotWriteBatchSize
+		if end > len(values) {
+			end = len(values)
 		}
-		account, err := decodeCachedAccount(val)
-		if err != nil {
+		pipe := c.rdb.Pipeline()
+		for i := start; i < end; i++ {
+			val := values[i]
+			if val == nil {
+				continue
+			}
+			account, err := decodeCachedAccount(val)
+			if err != nil {
+				return err
+			}
+			account.LastUsedAt = ptrTime(updates[ids[i]])
+			updated, err := json.Marshal(account)
+			if err != nil {
+				return err
+			}
+			pipe.Set(ctx, keys[i], updated, 0)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
 			return err
 		}
-		account.LastUsedAt = ptrTime(updates[ids[i]])
-		updated, err := json.Marshal(account)
-		if err != nil {
-			return err
-		}
-		pipe.Set(ctx, keys[i], updated, 0)
 	}
-	_, err = pipe.Exec(ctx)
-	return err
+	return nil
 }
 
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
@@ -275,4 +305,27 @@ func decodeCachedAccount(val any) (*service.Account, error) {
 		return nil, err
 	}
 	return &account, nil
+}
+
+func (c *schedulerCache) mGetInBatches(ctx context.Context, keys []string) ([]any, error) {
+	if len(keys) == 0 {
+		return []any{}, nil
+	}
+	if len(keys) <= schedulerSnapshotMGetBatchSize {
+		return c.rdb.MGet(ctx, keys...).Result()
+	}
+
+	results := make([]any, 0, len(keys))
+	for start := 0; start < len(keys); start += schedulerSnapshotMGetBatchSize {
+		end := start + schedulerSnapshotMGetBatchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		values, err := c.rdb.MGet(ctx, keys[start:end]...).Result()
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, values...)
+	}
+	return results, nil
 }

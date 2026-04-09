@@ -130,3 +130,53 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 	require.Equal(t, 1, repo.setErrorCalls)
 	require.Empty(t, invalidator.accounts)
 }
+
+func TestRateLimitService_IgnorePauseSchedulingErrors_SkipsUpstreamAndTempUnschedulable(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       103,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"ignore_pause_scheduling_errors": true,
+		},
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       float64(502),
+					"keywords":         []any{"bad gateway"},
+					"duration_minutes": float64(10),
+				},
+			},
+		},
+	}
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, 401, http.Header{}, []byte("unauthorized"))
+	require.False(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls)
+	require.Equal(t, 0, repo.tempCalls)
+
+	tempUnsched := service.HandleTempUnschedulable(context.Background(), account, 502, []byte("bad gateway"))
+	require.False(t, tempUnsched)
+	require.Equal(t, 0, repo.tempCalls)
+}
+
+func TestRateLimitService_HandleStreamTimeout_IgnorePauseSchedulingErrors(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       104,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"ignore_pause_scheduling_errors": true,
+		},
+	}
+
+	shouldDisable := service.HandleStreamTimeout(context.Background(), account, "claude-sonnet")
+	require.False(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls)
+	require.Equal(t, 0, repo.tempCalls)
+}

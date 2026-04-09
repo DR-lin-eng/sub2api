@@ -1639,12 +1639,19 @@ export default {
       },
       claudeCode: {
         title: 'Claude Code Client Restriction',
-        tooltip: 'When enabled, this group only allows official Claude Code clients. Non-Claude Code requests will be rejected or fallback to the specified group.',
+        tooltip: 'When enabled, this group only allows official Claude Code clients. Non-Claude Code requests will be rejected or routed through the configured scheduling fallback group.',
         enabled: 'Claude Code Only',
         disabled: 'Allow All Clients',
         fallbackGroup: 'Fallback Group',
         fallbackHint: 'Non-Claude Code requests will use this group. Leave empty to reject directly.',
         noFallback: 'No Fallback (Reject)'
+      },
+      schedulingFallback: {
+        title: 'Scheduling Fallback Group',
+        fallbackGroup: 'Fallback Group',
+        hint:
+          'When this group has no schedulable account or its concurrency is saturated, continue trying accounts from this group. Claude Code-only rejection will also reuse this target.',
+        noFallback: 'No Fallback'
       },
       openaiMessages: {
         title: 'OpenAI Messages Dispatch',
@@ -2274,6 +2281,9 @@ export default {
         'When enabled, warmup requests like title generation will return mock responses without consuming upstream tokens',
       autoPauseOnExpired: 'Auto Pause On Expired',
       autoPauseOnExpiredDesc: 'When enabled, the account will auto pause scheduling after it expires',
+      ignorePauseSchedulingErrors: 'Ignore Auto Pause On Upstream Errors',
+      ignorePauseSchedulingErrorsDesc:
+        'When enabled, this account will not be auto-paused, temp-unscheduled, or marked errored by upstream failures.',
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: 'Quota Control',
@@ -2359,7 +2369,7 @@ export default {
       loadFactor: 'Load Factor',
       loadFactorHint: 'Higher load factor increases scheduling frequency',
       priority: 'Priority',
-      priorityHint: 'Lower value accounts are used first',
+      priorityHint: 'Lower value accounts are used first. Default is 1, and 0 can be used for highest priority.',
       billingRateMultiplier: 'Billing Rate Multiplier',
       billingRateMultiplierHint: '0 = free, affects account billing only',
       expiresAt: 'Expires At',

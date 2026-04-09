@@ -99,6 +99,13 @@ func RegisterGatewayRoutes(
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
 	// OpenAI Chat Completions API（不带v1前缀的别名）
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ChatCompletions)
+	// Claude Code bootstrap / telemetry compatibility endpoints.
+	r.GET("/api/claude_cli/bootstrap", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeBootstrap)
+	r.GET("/api/claude_code/organizations/metrics_enabled", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeMetricsEnabled)
+	r.GET("/api/claude_code/settings", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeManagedSettings)
+	r.GET("/api/claude_code/policy_limits", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudePolicyLimits)
+	r.GET("/api/claude_code/user_settings", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeUserSettings)
+	r.PUT("/api/claude_code/user_settings", bodyLimit, clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeUpdateUserSettings)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
@@ -162,6 +169,85 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		return nil
 	}
 	return []gatewayctx.RouteDef{
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/claude_cli/bootstrap",
+			Handler: h.Gateway.ClaudeBootstrapGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/claude_code/organizations/metrics_enabled",
+			Handler: h.Gateway.ClaudeMetricsEnabledGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/claude_code/settings",
+			Handler: h.Gateway.ClaudeManagedSettingsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/claude_code/policy_limits",
+			Handler: h.Gateway.ClaudePolicyLimitsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/claude_code/user_settings",
+			Handler: h.Gateway.ClaudeUserSettingsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPut,
+			Path:    "/api/claude_code/user_settings",
+			Handler: h.Gateway.ClaudeUpdateUserSettingsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
 		{
 			Method:  http.MethodPost,
 			Path:    "/v1/messages",

@@ -2348,7 +2348,7 @@
           <input
             v-model.number="form.priority"
             type="number"
-            min="1"
+            min="0"
             class="input"
             data-tour="account-form-priority"
           />
@@ -2499,6 +2499,34 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 autoPauseOnExpired ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{
+              t('admin.accounts.ignorePauseSchedulingErrors')
+            }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.ignorePauseSchedulingErrorsDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="ignorePauseSchedulingErrors = !ignorePauseSchedulingErrors"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              ignorePauseSchedulingErrors ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                ignorePauseSchedulingErrors ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -3104,6 +3132,7 @@ const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
+const ignorePauseSchedulingErrors = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
@@ -3865,6 +3894,7 @@ const resetForm = () => {
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   anthropicPassthroughEnabled.value = false
+  ignorePauseSchedulingErrors.value = false
   // Reset quota control state
   windowCostEnabled.value = false
   windowCostLimit.value = null
@@ -3974,6 +4004,16 @@ const buildSoraExtra = (
   delete extra.openai_apikey_responses_websockets_v2_enabled
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+const applyIgnorePauseSchedulingErrorsExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
+  const extra: Record<string, unknown> = { ...(base || {}) }
+  if (ignorePauseSchedulingErrors.value) {
+    extra.ignore_pause_scheduling_errors = true
+  } else {
+    delete extra.ignore_pause_scheduling_errors
+  }
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 
@@ -4408,6 +4448,7 @@ const createAccountAndFinish = async (
       finalExtra = quotaExtra
     }
   }
+  finalExtra = applyIgnorePauseSchedulingErrorsExtra(finalExtra)
   await doCreateAccount({
     name: form.name,
     notes: form.notes,

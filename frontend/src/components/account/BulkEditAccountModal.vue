@@ -533,7 +533,7 @@
             v-model.number="priority"
             id="bulk-edit-priority"
             type="number"
-            min="1"
+            min="0"
             :disabled="!enablePriority"
             class="input"
             :class="!enablePriority && 'cursor-not-allowed opacity-50'"

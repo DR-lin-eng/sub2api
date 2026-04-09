@@ -1402,6 +1402,28 @@ func (a *Account) IsTLSFingerprintEnabled() bool {
 	return false
 }
 
+func (a *Account) IgnorePauseSchedulingErrors() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["ignore_pause_scheduling_errors"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+func (a *Account) GetTLSFingerprintProfileID() string {
+	if a == nil || a.Extra == nil {
+		return ""
+	}
+	if v, ok := a.Extra["tls_fingerprint_profile_id"].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
 // GetUserMsgQueueMode 获取用户消息队列模式
 // "serialize" = 串行队列, "throttle" = 软性限速, "" = 未设置（使用全局配置）
 func (a *Account) GetUserMsgQueueMode() string {

@@ -110,3 +110,25 @@ func TestShouldCreateAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestClampPriority(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{name: "zero_is_allowed", input: 0, want: 0},
+		{name: "one_is_default_valid_range", input: 1, want: 1},
+		{name: "middle_value_kept", input: 37, want: 37},
+		{name: "negative_falls_back_to_default", input: -1, want: 1},
+		{name: "too_large_falls_back_to_default", input: 101, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampPriority(tt.input); got != tt.want {
+				t.Fatalf("clampPriority(%d) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}

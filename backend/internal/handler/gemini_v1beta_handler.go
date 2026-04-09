@@ -56,7 +56,11 @@ func (h *GatewayHandler) GeminiV1BetaListModelsGateway(transportCtx gatewayctx.G
 		return
 	}
 
-	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(transportCtx.Context(), apiKey.GroupID)
+	_, account, err := selectGeminiAIStudioAccountAcrossAPIKeyGroups(
+		transportCtx.Context(),
+		apiKey,
+		h.geminiCompatService.SelectAccountForAIStudioEndpoints,
+	)
 	if err != nil {
 		// 没有 gemini 账户，检查是否有 antigravity 账户可用
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(transportCtx.Context(), apiKey.GroupID)
@@ -112,7 +116,11 @@ func (h *GatewayHandler) GeminiV1BetaGetModelGateway(transportCtx gatewayctx.Gat
 		return
 	}
 
-	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(transportCtx.Context(), apiKey.GroupID)
+	_, account, err := selectGeminiAIStudioAccountAcrossAPIKeyGroups(
+		transportCtx.Context(),
+		apiKey,
+		h.geminiCompatService.SelectAccountForAIStudioEndpoints,
+	)
 	if err != nil {
 		// 没有 gemini 账户，检查是否有 antigravity 账户可用
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(transportCtx.Context(), apiKey.GroupID)
@@ -369,7 +377,15 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 	}
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "") // Gemini 不使用会话限制
+		groupSelection, err := selectGatewayAPIKeyGroup(
+			transportCtx.Context(),
+			apiKey,
+			sessionKey,
+			modelName,
+			fs.FailedAccountIDs,
+			"",
+			h.gatewayService.SelectAccountWithLoadAwareness,
+		) // Gemini 不使用会话限制
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				googleErrorContext(transportCtx, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
@@ -390,6 +406,8 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 				return
 			}
 		}
+		selectedAPIKey := groupSelection.APIKey
+		selection := groupSelection.Selection
 		account := selection.Account
 		setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
@@ -462,7 +480,7 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 				geminiConcurrency.DecrementAccountWaitCount(transportCtx.Context(), account.ID)
 				accountWaitCounted = false
 			}
-			if err := h.gatewayService.BindStickySession(transportCtx.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
+			if err := h.gatewayService.BindStickySession(transportCtx.Context(), selectedAPIKey.GroupID, sessionKey, account.ID); err != nil {
 				reqLog.Warn("gemini.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
@@ -525,7 +543,7 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 		if useDigestFallback && geminiDigestChain != "" && geminiPrefixHash != "" {
 			if err := h.gatewayService.SaveGeminiSession(
 				transportCtx.Context(),
-				derefGroupID(apiKey.GroupID),
+				derefGroupID(selectedAPIKey.GroupID),
 				geminiPrefixHash,
 				geminiDigestChain,
 				geminiSessionUUID,
@@ -543,8 +561,8 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
 				Result:                result,
-				APIKey:                apiKey,
-				User:                  apiKey.User,
+				APIKey:                selectedAPIKey,
+				User:                  selectedAPIKey.User,
 				Account:               account,
 				Subscription:          subscription,
 				InboundEndpoint:       inboundEndpoint,
@@ -560,8 +578,8 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 				logger.L().With(
 					zap.String("component", "handler.gemini_v1beta.models"),
 					zap.Int64("user_id", authSubject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", selectedAPIKey.ID),
+					zap.Any("group_id", selectedAPIKey.GroupID),
 					zap.String("model", modelName),
 					zap.Int64("account_id", account.ID),
 				).Error("gemini.record_usage_failed", zap.Error(err))

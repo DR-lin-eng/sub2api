@@ -273,7 +273,15 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 		}
 
 		for {
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "")
+			groupSelection, err := selectGatewayAPIKeyGroup(
+				transportCtx.Context(),
+				apiKey,
+				sessionKey,
+				reqModel,
+				fs.FailedAccountIDs,
+				"",
+				h.gatewayService.SelectAccountWithLoadAwareness,
+			)
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
 					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
@@ -296,6 +304,8 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 					return
 				}
 			}
+			selectedAPIKey := groupSelection.APIKey
+			selection := groupSelection.Selection
 			account := selection.Account
 			setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
@@ -347,7 +357,7 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 					return
 				}
 				releaseWait()
-				if err := h.gatewayService.BindStickySession(transportCtx.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
+				if err := h.gatewayService.BindStickySession(transportCtx.Context(), selectedAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
@@ -424,8 +434,8 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 			h.submitUsageRecordTask(func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 					Result:             result,
-					APIKey:             apiKey,
-					User:               apiKey.User,
+					APIKey:             selectedAPIKey,
+					User:               selectedAPIKey.User,
 					Account:            account,
 					Subscription:       subscription,
 					InboundEndpoint:    inboundEndpoint,
@@ -436,7 +446,7 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 					ForceCacheBilling:  fs.ForceCacheBilling,
 					APIKeyService:      h.apiKeyService,
 				}); err != nil {
-					logger.L().With(zap.String("component", "handler.gateway.messages"), zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.Any("group_id", apiKey.GroupID), zap.String("model", reqModel), zap.Int64("account_id", account.ID)).Error("gateway.record_usage_failed", zap.Error(err))
+					logger.L().With(zap.String("component", "handler.gateway.messages"), zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", selectedAPIKey.ID), zap.Any("group_id", selectedAPIKey.GroupID), zap.String("model", reqModel), zap.Int64("account_id", account.ID)).Error("gateway.record_usage_failed", zap.Error(err))
 				}
 			})
 			return
@@ -461,7 +471,15 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 		retryWithFallback := false
 
 		for {
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(transportCtx.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID)
+			groupSelection, err := selectGatewayAPIKeyGroup(
+				transportCtx.Context(),
+				currentAPIKey,
+				sessionKey,
+				reqModel,
+				fs.FailedAccountIDs,
+				parsedReq.MetadataUserID,
+				h.gatewayService.SelectAccountWithLoadAwareness,
+			)
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
 					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
@@ -484,6 +502,8 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 					return
 				}
 			}
+			currentAPIKey = groupSelection.APIKey
+			selection := groupSelection.Selection
 			account := selection.Account
 			setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
@@ -1370,12 +1390,20 @@ func (h *GatewayHandler) CountTokensGateway(transportCtx gatewayctx.GatewayConte
 	parsedReq.SessionContext = buildGatewaySessionContextContext(transportCtx, apiKey.ID)
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
-	// 选择支持该模型的账号
-	account, err := h.gatewayService.SelectAccountForModel(transportCtx.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
+	selectedAPIKey, account, err := selectAccountForModelAcrossAPIKeyGroups(
+		transportCtx.Context(),
+		apiKey,
+		sessionHash,
+		parsedReq.Model,
+		h.gatewayService.SelectAccountForModel,
+	)
 	if err != nil {
 		reqLog.Warn("gateway.count_tokens_select_account_failed", zap.Error(err))
 		h.errorResponseGateway(transportCtx, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 		return
+	}
+	if selectedAPIKey != nil {
+		apiKey = selectedAPIKey
 	}
 	setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 

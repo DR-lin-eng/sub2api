@@ -399,19 +399,19 @@ type RustConfig struct {
 
 // RustSidecarConfig controls external Rust protocol sidecar integration.
 type RustSidecarConfig struct {
-	Enabled                   bool   `mapstructure:"enabled"`
-	AutoStart                 bool   `mapstructure:"auto_start"`
-	BinaryPath                string `mapstructure:"binary_path"`
+	Enabled                   bool     `mapstructure:"enabled"`
+	AutoStart                 bool     `mapstructure:"auto_start"`
+	BinaryPath                string   `mapstructure:"binary_path"`
 	Args                      []string `mapstructure:"args"`
-	SocketPath                string `mapstructure:"socket_path"`
-	UpstreamSocketPath        string `mapstructure:"upstream_socket_path"`
-	RequestTimeoutSeconds     int    `mapstructure:"request_timeout_seconds"`
-	UpgradeIdleTimeoutSeconds int    `mapstructure:"upgrade_idle_timeout_seconds"`
-	WebSocketMaxMessageBytes  int    `mapstructure:"websocket_max_message_bytes"`
-	HealthcheckTimeoutSeconds int    `mapstructure:"healthcheck_timeout_seconds"`
-	FailClosed                bool   `mapstructure:"fail_closed"`
-	H2CDelegateEnabled        bool   `mapstructure:"h2c_delegate_enabled"`
-	ResponsesWSEnabled        bool   `mapstructure:"responses_ws_enabled"`
+	SocketPath                string   `mapstructure:"socket_path"`
+	UpstreamSocketPath        string   `mapstructure:"upstream_socket_path"`
+	RequestTimeoutSeconds     int      `mapstructure:"request_timeout_seconds"`
+	UpgradeIdleTimeoutSeconds int      `mapstructure:"upgrade_idle_timeout_seconds"`
+	WebSocketMaxMessageBytes  int      `mapstructure:"websocket_max_message_bytes"`
+	HealthcheckTimeoutSeconds int      `mapstructure:"healthcheck_timeout_seconds"`
+	FailClosed                bool     `mapstructure:"fail_closed"`
+	H2CDelegateEnabled        bool     `mapstructure:"h2c_delegate_enabled"`
+	ResponsesWSEnabled        bool     `mapstructure:"responses_ws_enabled"`
 }
 
 // RustFFIConfig controls optional in-process Rust acceleration hooks.
@@ -1373,8 +1373,8 @@ func setDefaults() {
 	viper.SetDefault("database.password", "postgres")
 	viper.SetDefault("database.dbname", "sub2api")
 	viper.SetDefault("database.sslmode", "prefer")
-	viper.SetDefault("database.max_open_conns", 256)
-	viper.SetDefault("database.max_idle_conns", 128)
+	viper.SetDefault("database.max_open_conns", 60)
+	viper.SetDefault("database.max_idle_conns", 20)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
 
@@ -1558,9 +1558,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai.proxy_circuit_breaker.cooldown_ms", 300000)
 	viper.SetDefault("gateway.openai.account_circuit_breaker.cooldown_ms", 120000)
 	viper.SetDefault("gateway.openai.health_prefetch.enabled", true)
-	viper.SetDefault("gateway.openai.health_prefetch.top_n", 5)
+	viper.SetDefault("gateway.openai.health_prefetch.top_n", 3)
 	viper.SetDefault("gateway.openai.health_prefetch.worker_count", 1)
-	viper.SetDefault("gateway.openai.health_prefetch.queue_size", 32)
+	viper.SetDefault("gateway.openai.health_prefetch.queue_size", 16)
 	viper.SetDefault("gateway.openai.health_prefetch.cooldown_seconds", 60)
 	viper.SetDefault("gateway.openai.health_prefetch.timeout_ms", 3500)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
@@ -1605,8 +1605,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
-	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
-	viper.SetDefault("gateway.scheduling.db_fallback_max_qps", 0)
+	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 5)
+	viper.SetDefault("gateway.scheduling.db_fallback_max_qps", 10)
 	viper.SetDefault("gateway.scheduling.outbox_poll_interval_seconds", 1)
 	viper.SetDefault("gateway.scheduling.outbox_lag_warn_seconds", 5)
 	viper.SetDefault("gateway.scheduling.outbox_lag_rebuild_seconds", 10)

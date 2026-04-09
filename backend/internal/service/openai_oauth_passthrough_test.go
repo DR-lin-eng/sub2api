@@ -613,6 +613,104 @@ func TestOpenAIGatewayService_OAuthPassthrough_NonCodexUAFallbackToCodexUA(t *te
 	require.Equal(t, "codex_cli_rs/0.104.0", upstream.lastReq.Header.Get("User-Agent"))
 }
 
+func TestOpenAIGatewayService_OAuthPassthrough_OfficialCodexHeadersAreSampledAndPassedThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_vscode/1.2.3")
+	c.Request.Header.Set("originator", "codex_vscode")
+
+	inputBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"text","text":"hi"}]}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+	identityCache := &memoryIdentityCacheStub{}
+	identitySvc := NewIdentityService(identityCache)
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	svc.SetIdentityService(identitySvc)
+
+	account := &Account{
+		ID:             777,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, inputBody)
+	require.NoError(t, err)
+	require.Equal(t, "codex_vscode/1.2.3", upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "codex_vscode", upstream.lastReq.Header.Get("originator"))
+	require.NotNil(t, identityCache.fingerprint)
+	require.True(t, identityCache.fingerprint.OfficialSampled)
+	require.Equal(t, "codex_vscode/1.2.3", identityCache.fingerprint.UserAgent)
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_NonCodexUAUsesSampledFingerprint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "curl/8.0")
+
+	inputBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"text","text":"hi"}]}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+	identityCache := &memoryIdentityCacheStub{
+		fingerprint: &Fingerprint{
+			ClientID:        "sampled-client",
+			UserAgent:       "codex_app/2.1.0",
+			Originator:      "codex_chatgpt_desktop",
+			OfficialSampled: true,
+			UpdatedAt:       time.Now().Unix(),
+		},
+	}
+	identitySvc := NewIdentityService(identityCache)
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	svc.SetIdentityService(identitySvc)
+
+	account := &Account{
+		ID:             778,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, inputBody)
+	require.NoError(t, err)
+	require.Equal(t, "codex_app/2.1.0", upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "codex_chatgpt_desktop", upstream.lastReq.Header.Get("originator"))
+}
+
 func TestOpenAIGatewayService_CodexCLIOnly_RejectsNonCodexClient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     extra           JSONB NOT NULL DEFAULT '{}',          -- 扩展信息
     proxy_id        BIGINT REFERENCES proxies(id) ON DELETE SET NULL,
     concurrency     INT NOT NULL DEFAULT 3,               -- 账号并发限制
-    priority        INT NOT NULL DEFAULT 50,              -- 调度优先级(1-100，越小越高)
+    priority        INT NOT NULL DEFAULT 1,               -- 调度优先级(0-100，越小越高，默认1)
     status          VARCHAR(20) NOT NULL DEFAULT 'active', -- active/disabled/error
     error_message   TEXT,
     last_used_at    TIMESTAMPTZ,

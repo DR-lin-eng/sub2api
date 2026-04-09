@@ -317,19 +317,94 @@ func TestAdminService_ValidateFallbackGroup_DetectsCycle(t *testing.T) {
 		groups: map[int64]*Group{
 			groupID: {
 				ID:              groupID,
+				Platform:        PlatformAnthropic,
 				FallbackGroupID: &fallbackID,
 			},
 			fallbackID: {
 				ID:              fallbackID,
+				Platform:        PlatformAnthropic,
 				FallbackGroupID: &groupID,
 			},
 		},
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	err := svc.validateFallbackGroup(context.Background(), groupID, fallbackID)
+	err := svc.validateFallbackGroup(context.Background(), groupID, PlatformAnthropic, fallbackID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fallback group cycle")
+}
+
+func TestAdminService_ValidateFallbackGroup_RejectsPlatformMismatch(t *testing.T) {
+	fallbackID := int64(2)
+	repo := &groupRepoStubForFallbackCycle{
+		groups: map[int64]*Group{
+			fallbackID: {
+				ID:       fallbackID,
+				Platform: PlatformOpenAI,
+			},
+		},
+	}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	err := svc.validateFallbackGroup(context.Background(), 0, PlatformAnthropic, fallbackID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "fallback group platform mismatch")
+}
+
+func TestAdminService_CreateGroup_AllowsSamePlatformSchedulingFallback(t *testing.T) {
+	fallbackID := int64(10)
+	repo := &groupRepoStubForInvalidRequestFallback{
+		groups: map[int64]*Group{
+			fallbackID: {
+				ID:               fallbackID,
+				Platform:         PlatformAnthropic,
+				SubscriptionType: SubscriptionTypeStandard,
+				ClaudeCodeOnly:   true,
+			},
+		},
+	}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:             "g1",
+		Platform:         PlatformAnthropic,
+		SubscriptionType: SubscriptionTypeStandard,
+		FallbackGroupID:  &fallbackID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.NotNil(t, repo.created.FallbackGroupID)
+	require.Equal(t, fallbackID, *repo.created.FallbackGroupID)
+}
+
+func TestAdminService_UpdateGroup_PlatformChangeRevalidatesExistingSchedulingFallback(t *testing.T) {
+	fallbackID := int64(10)
+	existing := &Group{
+		ID:              1,
+		Name:            "g1",
+		Platform:        PlatformAnthropic,
+		Status:          StatusActive,
+		FallbackGroupID: &fallbackID,
+	}
+	repo := &groupRepoStubForInvalidRequestFallback{
+		groups: map[int64]*Group{
+			existing.ID: existing,
+			fallbackID: {
+				ID:       fallbackID,
+				Platform: PlatformAnthropic,
+				Status:   StatusActive,
+			},
+		},
+	}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+		Platform: PlatformOpenAI,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "fallback group platform mismatch")
+	require.Nil(t, repo.updated)
 }
 
 type groupRepoStubForFallbackCycle struct {

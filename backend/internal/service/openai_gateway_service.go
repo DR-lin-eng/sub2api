@@ -313,6 +313,7 @@ var defaultOpenAICodexSnapshotPersistThrottle = newAccountWriteThrottle(openAICo
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
 	accountRepo           AccountRepository
+	groupRepo             GroupRepository
 	usageLogRepo          UsageLogRepository
 	usageBillingRepo      UsageBillingRepository
 	userRepo              UserRepository
@@ -325,6 +326,7 @@ type OpenAIGatewayService struct {
 	billingService        *BillingService
 	rateLimitService      *RateLimitService
 	billingCacheService   *BillingCacheService
+	identityService       *IdentityService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream
 	deferredService       *DeferredService
@@ -365,6 +367,7 @@ type OpenAIGatewayService struct {
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
+	groupRepo GroupRepository,
 	usageLogRepo UsageLogRepository,
 	usageBillingRepo UsageBillingRepository,
 	userRepo UserRepository,
@@ -383,6 +386,7 @@ func NewOpenAIGatewayService(
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
+		groupRepo:           groupRepo,
 		usageLogRepo:        usageLogRepo,
 		usageBillingRepo:    usageBillingRepo,
 		userRepo:            userRepo,
@@ -421,6 +425,13 @@ func NewOpenAIGatewayService(
 	svc.startOpenAIHealthPrefetchWorker()
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+func (s *OpenAIGatewayService) SetIdentityService(identityService *IdentityService) {
+	if s == nil {
+		return
+	}
+	s.identityService = identityService
 }
 
 func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle {
@@ -1262,6 +1273,80 @@ func resolveOpenAIUpstreamOriginator(c gatewayctx.GatewayContext, isOfficialClie
 	return "opencode"
 }
 
+func (s *OpenAIGatewayService) observeOpenAIOfficialClientSample(ctx context.Context, c gatewayctx.GatewayContext, account *Account, isOfficialClient bool) *Fingerprint {
+	if s == nil || s.identityService == nil || c == nil || account == nil || account.ID <= 0 || !isOfficialClient {
+		return nil
+	}
+	req := c.Request()
+	if req == nil {
+		return nil
+	}
+	fp, err := s.identityService.ObserveOfficialFingerprintSample(ctx, account.ID, req.Header)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] observe official fingerprint failed: account=%d err=%v", account.ID, err)
+	}
+	return fp
+}
+
+func (s *OpenAIGatewayService) getOpenAISampledFingerprint(ctx context.Context, account *Account) *Fingerprint {
+	if s == nil || s.identityService == nil || account == nil || account.ID <= 0 {
+		return nil
+	}
+	fp, err := s.identityService.GetSampledFingerprint(ctx, account.ID)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] load sampled fingerprint failed: account=%d err=%v", account.ID, err)
+		return nil
+	}
+	return fp
+}
+
+func (s *OpenAIGatewayService) resolveOpenAIUpstreamUserAgent(ctx context.Context, c gatewayctx.GatewayContext, account *Account, isOfficialClient bool) string {
+	if account != nil {
+		if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+			return customUA
+		}
+	}
+	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		return codexCLIUserAgent
+	}
+	if c != nil {
+		if userAgent := strings.TrimSpace(c.HeaderValue("User-Agent")); userAgent != "" && isOfficialClient {
+			return userAgent
+		}
+	}
+	if fp := s.getOpenAISampledFingerprint(ctx, account); fp != nil {
+		if sampledUA := strings.TrimSpace(fp.UserAgent); sampledUA != "" && openai.IsCodexOfficialClientRequest(sampledUA) {
+			return sampledUA
+		}
+	}
+	if c != nil {
+		if userAgent := strings.TrimSpace(c.HeaderValue("User-Agent")); userAgent != "" {
+			return userAgent
+		}
+	}
+	if account != nil && account.Type == AccountTypeOAuth {
+		return codexCLIUserAgent
+	}
+	return ""
+}
+
+func (s *OpenAIGatewayService) resolveOpenAIUpstreamOriginatorWithSample(ctx context.Context, c gatewayctx.GatewayContext, account *Account, isOfficialClient bool) string {
+	if c != nil {
+		if originator := strings.TrimSpace(c.HeaderValue("originator")); originator != "" {
+			return originator
+		}
+	}
+	if fp := s.getOpenAISampledFingerprint(ctx, account); fp != nil {
+		if originator := strings.TrimSpace(fp.Originator); originator != "" {
+			return originator
+		}
+		if sampledUA := strings.TrimSpace(fp.UserAgent); sampledUA != "" && openai.IsCodexOfficialClientRequest(sampledUA) {
+			return "codex_cli_rs"
+		}
+	}
+	return resolveOpenAIUpstreamOriginator(c, isOfficialClient)
+}
+
 // BindStickySession sets session -> account binding with standard TTL.
 func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
 	if sessionHash == "" || accountID <= 0 {
@@ -1289,6 +1374,69 @@ func (s *OpenAIGatewayService) ClearStickySessionForAccount(ctx context.Context,
 	return s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 }
 
+type openAIFallbackGroupEntry struct {
+	Group   *Group
+	GroupID int64
+}
+
+func openAINoAvailableAccountsError(requestedModel string) error {
+	if requestedModel != "" {
+		return fmt.Errorf("no available OpenAI accounts supporting model: %s", requestedModel)
+	}
+	return errors.New("no available OpenAI accounts")
+}
+
+func (s *OpenAIGatewayService) openAIGroupRepository() GroupRepository {
+	if s == nil {
+		return nil
+	}
+	if s.groupRepo != nil {
+		return s.groupRepo
+	}
+	if s.schedulerSnapshot != nil {
+		return s.schedulerSnapshot.groupRepo
+	}
+	return nil
+}
+
+func (s *OpenAIGatewayService) buildOpenAIFallbackChain(ctx context.Context, groupID *int64) ([]openAIFallbackGroupEntry, error) {
+	if groupID == nil || *groupID <= 0 {
+		return nil, nil
+	}
+	groupRepo := s.openAIGroupRepository()
+	if groupRepo == nil {
+		return nil, nil
+	}
+
+	currentGroup, err := groupRepo.GetByIDLite(ctx, *groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group failed: %w", err)
+	}
+
+	out := []openAIFallbackGroupEntry{{Group: currentGroup, GroupID: *groupID}}
+	visited := map[int64]struct{}{*groupID: {}}
+	current := currentGroup
+
+	for current != nil && current.FallbackGroupID != nil && *current.FallbackGroupID > 0 {
+		nextID := *current.FallbackGroupID
+		if _, seen := visited[nextID]; seen {
+			return nil, fmt.Errorf("fallback group cycle detected")
+		}
+		nextGroup, err := groupRepo.GetByIDLite(ctx, nextID)
+		if err != nil {
+			return nil, fmt.Errorf("get group failed: %w", err)
+		}
+		if nextGroup.Platform != PlatformOpenAI {
+			return nil, fmt.Errorf("fallback group platform mismatch: expected %s, got %s", PlatformOpenAI, nextGroup.Platform)
+		}
+		visited[nextID] = struct{}{}
+		out = append(out, openAIFallbackGroupEntry{Group: nextGroup, GroupID: nextID})
+		current = nextGroup
+	}
+
+	return out, nil
+}
+
 func (s *OpenAIGatewayService) MarkOpenAIAccountHealthy(account *Account) {
 	s.recordOpenAISuccessCircuitState(account)
 }
@@ -1310,10 +1458,30 @@ func (s *OpenAIGatewayService) SelectAccountForModel(ctx context.Context, groupI
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 // SelectAccountForModelWithExclusions 选择支持指定模型的账号，同时排除指定的账号。
 func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
-	return s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, 0)
+	chain, err := s.buildOpenAIFallbackChain(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(chain) == 0 {
+		account, err := s.selectAccountForModelWithExclusionsSingleGroup(ctx, groupID, sessionHash, requestedModel, excludedIDs, 0)
+		if errors.Is(err, ErrNoAvailableAccounts) {
+			return nil, openAINoAvailableAccountsError(requestedModel)
+		}
+		return account, err
+	}
+	for _, entry := range chain {
+		account, err := s.selectAccountForModelWithExclusionsSingleGroup(ctx, &entry.GroupID, sessionHash, requestedModel, excludedIDs, 0)
+		if err == nil {
+			return account, nil
+		}
+		if !errors.Is(err, ErrNoAvailableAccounts) {
+			return nil, err
+		}
+	}
+	return nil, openAINoAvailableAccountsError(requestedModel)
 }
 
-func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) (*Account, error) {
+func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsSingleGroup(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, stickyAccountID int64) (*Account, error) {
 	// 1. 尝试粘性会话命中
 	// Try sticky session hit
 	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID); account != nil {
@@ -1332,10 +1500,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	selected := s.selectBestAccount(ctx, accounts, requestedModel, excludedIDs)
 
 	if selected == nil {
-		if requestedModel != "" {
-			return nil, fmt.Errorf("no available OpenAI accounts supporting model: %s", requestedModel)
-		}
-		return nil, errors.New("no available OpenAI accounts")
+		return nil, ErrNoAvailableAccounts
 	}
 
 	// 4. 设置粘性会话绑定
@@ -1473,6 +1638,36 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+	chain, err := s.buildOpenAIFallbackChain(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(chain) > 0 {
+		var firstWaitPlan *AccountSelectionResult
+		for _, entry := range chain {
+			result, err := s.selectAccountWithLoadAwarenessSingleGroup(ctx, &entry.GroupID, sessionHash, requestedModel, excludedIDs)
+			if err == nil {
+				if result != nil && result.WaitPlan != nil {
+					if firstWaitPlan == nil {
+						firstWaitPlan = result
+					}
+					continue
+				}
+				return result, nil
+			}
+			if !errors.Is(err, ErrNoAvailableAccounts) {
+				return nil, err
+			}
+		}
+		if firstWaitPlan != nil {
+			return firstWaitPlan, nil
+		}
+		return nil, ErrNoAvailableAccounts
+	}
+	return s.selectAccountWithLoadAwarenessSingleGroup(ctx, groupID, sessionHash, requestedModel, excludedIDs)
+}
+
+func (s *OpenAIGatewayService) selectAccountWithLoadAwarenessSingleGroup(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
 	cfg := s.schedulingConfig()
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
@@ -1481,7 +1676,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		}
 	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID)
+		account, err := s.selectAccountForModelWithExclusionsSingleGroup(ctx, groupID, sessionHash, requestedModel, excludedIDs, stickyAccountID)
 		if err != nil {
 			return nil, err
 		}
@@ -1886,6 +2081,10 @@ func (s *OpenAIGatewayService) syncAccountRuntimeStatesToSchedulerCache(ctx cont
 
 func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
 	if s == nil || s.accountRepo == nil || failoverErr == nil || accountID <= 0 {
+		return
+	}
+	if account, err := s.accountRepo.GetByID(ctx, accountID); err == nil && account != nil && account.IgnorePauseSchedulingErrors() {
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] ignore_pause_scheduling_errors enabled, skip temp unschedule account=%d", accountID)
 		return
 	}
 	if failoverErr.TempUnscheduleFor <= 0 {
@@ -2977,6 +3176,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthroughContext(
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
+		isCodexCLI := openai.IsCodexOfficialClientByHeaders(req.Header.Get("user-agent"), req.Header.Get("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+		sampledFingerprint := s.observeOpenAIOfficialClientSample(ctx, c, account, isCodexCLI)
+		if sampledFingerprint == nil {
+			sampledFingerprint = s.getOpenAISampledFingerprint(ctx, account)
+		}
 		promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 		req.Host = "chatgpt.com"
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
@@ -3001,7 +3205,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthroughContext(
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 		}
 		if req.Header.Get("originator") == "" {
-			req.Header.Set("originator", "codex_cli_rs")
+			req.Header.Set("originator", s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI))
 		}
 		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
 		if clientSessionID == "" {
@@ -3018,17 +3222,18 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthroughContext(
 		}
 	}
 
-	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
+	isCodexCLI := openai.IsCodexOfficialClientByHeaders(req.Header.Get("user-agent"), req.Header.Get("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	if account.Type == AccountTypeOAuth {
+		sampledFingerprint := s.observeOpenAIOfficialClientSample(ctx, c, account, isCodexCLI)
+		if sampledFingerprint == nil {
+			sampledFingerprint = s.getOpenAISampledFingerprint(ctx, account)
+		}
+		if sampledFingerprint != nil && !isCodexCLI {
+			s.identityService.ApplyOpenAIFingerprint(req, sampledFingerprint)
+		}
 	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", codexCLIUserAgent)
-	}
-	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
-		req.Header.Set("user-agent", codexCLIUserAgent)
+	if upstreamUA := s.resolveOpenAIUpstreamUserAgent(ctx, c, account, isCodexCLI); upstreamUA != "" {
+		req.Header.Set("user-agent", upstreamUA)
 	}
 
 	if req.Header.Get("content-type") == "" {
@@ -3697,6 +3902,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+	sampledFingerprint := s.observeOpenAIOfficialClientSample(ctx, c, account, isCodexCLI)
+	if sampledFingerprint == nil {
+		sampledFingerprint = s.getOpenAISampledFingerprint(ctx, account)
+	}
 
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)
@@ -3729,7 +3938,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, 
 		req.Header.Del("session_id")
 
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
-		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		req.Header.Set("originator", s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI))
 		apiKeyID := getAPIKeyIDFromGatewayContext(c)
 		if isOpenAIResponsesCompactPathContext(c) {
 			req.Header.Set("accept", "application/json")
@@ -3748,16 +3957,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, 
 		}
 	}
 
-	// Apply custom User-Agent if configured
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
+	if sampledFingerprint != nil && account.Type == AccountTypeOAuth && !isCodexCLI {
+		s.identityService.ApplyOpenAIFingerprint(req, sampledFingerprint)
 	}
-
-	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。
-	// 用于网关未透传/改写 User-Agent 时，仍能命中 Codex 侧识别逻辑。
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", codexCLIUserAgent)
+	if upstreamUA := s.resolveOpenAIUpstreamUserAgent(ctx, c, account, isCodexCLI); upstreamUA != "" {
+		req.Header.Set("user-agent", upstreamUA)
 	}
 
 	// Ensure required headers exist

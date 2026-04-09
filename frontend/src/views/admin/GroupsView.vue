@@ -742,15 +742,14 @@
               {{ createForm.claude_code_only ? t('admin.groups.claudeCode.enabled') : t('admin.groups.claudeCode.disabled') }}
             </span>
           </div>
-          <!-- 降级分组选择（仅当启用 claude_code_only 时显示） -->
-          <div v-if="createForm.claude_code_only" class="mt-3">
-            <label class="input-label">{{ t('admin.groups.claudeCode.fallbackGroup') }}</label>
+          <div class="mt-3">
+            <label class="input-label">{{ t('admin.groups.schedulingFallback.fallbackGroup') }}</label>
             <Select
               v-model="createForm.fallback_group_id"
               :options="fallbackGroupOptions"
-              :placeholder="t('admin.groups.claudeCode.noFallback')"
+              :placeholder="t('admin.groups.schedulingFallback.noFallback')"
             />
-            <p class="input-hint">{{ t('admin.groups.claudeCode.fallbackHint') }}</p>
+            <p class="input-hint">{{ t('admin.groups.schedulingFallback.hint') }}</p>
           </div>
         </div>
 
@@ -1477,15 +1476,14 @@
               {{ editForm.claude_code_only ? t('admin.groups.claudeCode.enabled') : t('admin.groups.claudeCode.disabled') }}
             </span>
           </div>
-          <!-- 降级分组选择（仅当启用 claude_code_only 时显示） -->
-          <div v-if="editForm.claude_code_only" class="mt-3">
-            <label class="input-label">{{ t('admin.groups.claudeCode.fallbackGroup') }}</label>
+          <div class="mt-3">
+            <label class="input-label">{{ t('admin.groups.schedulingFallback.fallbackGroup') }}</label>
             <Select
               v-model="editForm.fallback_group_id"
               :options="fallbackGroupOptionsForEdit"
-              :placeholder="t('admin.groups.claudeCode.noFallback')"
+              :placeholder="t('admin.groups.schedulingFallback.noFallback')"
             />
-            <p class="input-hint">{{ t('admin.groups.claudeCode.fallbackHint') }}</p>
+            <p class="input-hint">{{ t('admin.groups.schedulingFallback.hint') }}</p>
           </div>
         </div>
 
@@ -1916,13 +1914,13 @@ const subscriptionTypeOptions = computed(() => [
   { value: 'subscription', label: t('admin.groups.subscription.subscription') }
 ])
 
-// 降级分组选项（创建时）- 仅包含 anthropic 平台且未启用 claude_code_only 的分组
+// 调度兜底分组选项（创建时）- 仅包含相同平台且 active 的分组
 const fallbackGroupOptions = computed(() => {
   const options: { value: number | null; label: string }[] = [
-    { value: null, label: t('admin.groups.claudeCode.noFallback') }
+    { value: null, label: t('admin.groups.schedulingFallback.noFallback') }
   ]
   const eligibleGroups = groups.value.filter(
-    (g) => g.platform === 'anthropic' && !g.claude_code_only && g.status === 'active'
+    (g) => g.platform === createForm.platform && g.status === 'active'
   )
   eligibleGroups.forEach((g) => {
     options.push({ value: g.id, label: g.name })
@@ -1930,14 +1928,14 @@ const fallbackGroupOptions = computed(() => {
   return options
 })
 
-// 降级分组选项（编辑时）- 排除自身
+// 调度兜底分组选项（编辑时）- 排除自身，仅包含相同平台且 active 的分组
 const fallbackGroupOptionsForEdit = computed(() => {
   const options: { value: number | null; label: string }[] = [
-    { value: null, label: t('admin.groups.claudeCode.noFallback') }
+    { value: null, label: t('admin.groups.schedulingFallback.noFallback') }
   ]
   const currentId = editingGroup.value?.id
   const eligibleGroups = groups.value.filter(
-    (g) => g.platform === 'anthropic' && !g.claude_code_only && g.status === 'active' && g.id !== currentId
+    (g) => g.platform === editForm.platform && g.status === 'active' && g.id !== currentId
   )
   eligibleGroups.forEach((g) => {
     options.push({ value: g.id, label: g.name })
@@ -2642,12 +2640,26 @@ watch(
 watch(
   () => createForm.platform,
   (newVal) => {
+    createForm.fallback_group_id = null
     if (!['anthropic', 'antigravity'].includes(newVal)) {
       createForm.fallback_group_id_on_invalid_request = null
     }
     if (newVal !== 'openai') {
       createForm.allow_messages_dispatch = false
       createForm.default_mapped_model = ''
+    }
+  }
+)
+
+watch(
+  () => editForm.platform,
+  (newVal, oldVal) => {
+    if (!showEditModal.value || newVal === oldVal) {
+      return
+    }
+    editForm.fallback_group_id = null
+    if (!['anthropic', 'antigravity'].includes(newVal)) {
+      editForm.fallback_group_id_on_invalid_request = null
     }
   }
 )

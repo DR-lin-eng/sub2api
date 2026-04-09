@@ -191,6 +191,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oauthRefreshAPI)
 	openAIGatewayService := service.NewOpenAIGatewayService(
 		accountRepository,
+		groupRepository,
 		usageLogRepository,
 		usageBillingRepository,
 		userRepository,
@@ -207,6 +208,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		deferredService,
 		openAITokenProvider,
 	)
+	openAIGatewayService.SetIdentityService(identityService)
 
 	geminiMessagesCompatService := service.NewGeminiMessagesCompatService(
 		accountRepository,

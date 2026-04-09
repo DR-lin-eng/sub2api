@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/cespare/xxhash/v2"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -26,7 +29,7 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.1.22 (external, cli)",
+	UserAgent:               "claude-cli/2.1.88 (external, cli)",
 	StainlessLang:           "js",
 	StainlessPackageVersion: "0.70.0",
 	StainlessOS:             "Linux",
@@ -35,16 +38,29 @@ var defaultFingerprint = Fingerprint{
 	StainlessRuntimeVersion: "v24.13.0",
 }
 
+const (
+	identityOfficialSampleRefreshMinAge = 6 * time.Hour
+	identityOfficialSampleRefreshTTL    = 24 * time.Hour
+)
+
 // Fingerprint represents account fingerprint data
 type Fingerprint struct {
 	ClientID                string
 	UserAgent               string
+	Originator              string
+	TLSProfileID            string
+	ClaudeCodeSessionID     string
+	ClaudeRemoteContainerID string
+	ClaudeRemoteSessionID   string
+	ClientApp               string
+	AdditionalProtection    string
 	StainlessLang           string
 	StainlessPackageVersion string
 	StainlessOS             string
 	StainlessArch           string
 	StainlessRuntime        string
 	StainlessRuntimeVersion string
+	OfficialSampled         bool  `json:",omitempty"`
 	UpdatedAt               int64 `json:",omitempty"` // Unix timestamp，用于判断是否需要续期TTL
 }
 
@@ -128,6 +144,12 @@ func (s *IdentityService) createFingerprintFromHeaders(headers http.Header) *Fin
 	} else {
 		fp.UserAgent = defaultFingerprint.UserAgent
 	}
+	fp.Originator = strings.TrimSpace(headers.Get("originator"))
+	fp.ClaudeCodeSessionID = strings.TrimSpace(headers.Get("x-claude-code-session-id"))
+	fp.ClaudeRemoteContainerID = strings.TrimSpace(headers.Get("x-claude-remote-container-id"))
+	fp.ClaudeRemoteSessionID = strings.TrimSpace(headers.Get("x-claude-remote-session-id"))
+	fp.ClientApp = strings.TrimSpace(headers.Get("x-client-app"))
+	fp.AdditionalProtection = strings.TrimSpace(headers.Get("x-anthropic-additional-protection"))
 
 	// 获取x-stainless-*头，如果没有则使用默认值
 	fp.StainlessLang = getHeaderOrDefault(headers, "X-Stainless-Lang", defaultFingerprint.StainlessLang)
@@ -149,6 +171,12 @@ func mergeHeadersIntoFingerprint(fp *Fingerprint, headers http.Header) {
 	if ua := headers.Get("User-Agent"); ua != "" {
 		fp.UserAgent = ua
 	}
+	mergeHeader(headers, "originator", &fp.Originator)
+	mergeHeader(headers, "x-claude-code-session-id", &fp.ClaudeCodeSessionID)
+	mergeHeader(headers, "x-claude-remote-container-id", &fp.ClaudeRemoteContainerID)
+	mergeHeader(headers, "x-claude-remote-session-id", &fp.ClaudeRemoteSessionID)
+	mergeHeader(headers, "x-client-app", &fp.ClientApp)
+	mergeHeader(headers, "x-anthropic-additional-protection", &fp.AdditionalProtection)
 	// X-Stainless-* 头：仅在请求中实际携带时才更新，否则保留缓存值
 	mergeHeader(headers, "X-Stainless-Lang", &fp.StainlessLang)
 	mergeHeader(headers, "X-Stainless-Package-Version", &fp.StainlessPackageVersion)
@@ -203,6 +231,254 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 	if fp.StainlessRuntimeVersion != "" {
 		req.Header.Set("X-Stainless-Runtime-Version", fp.StainlessRuntimeVersion)
 	}
+}
+
+// ApplyOpenAIFingerprint applies only the OpenAI-relevant fingerprint headers.
+func (s *IdentityService) ApplyOpenAIFingerprint(req *http.Request, fp *Fingerprint) {
+	if req == nil || fp == nil {
+		return
+	}
+	if strings.TrimSpace(fp.UserAgent) != "" {
+		req.Header.Set("user-agent", strings.TrimSpace(fp.UserAgent))
+	}
+	if strings.TrimSpace(fp.Originator) != "" {
+		req.Header.Set("originator", strings.TrimSpace(fp.Originator))
+	}
+}
+
+// ObserveOfficialFingerprintSample records a direct official client fingerprint sample.
+// First capture or materially changed samples are persisted immediately; unchanged
+// samples are refreshed only on a deterministic low-rate schedule to reduce Redis writes.
+func (s *IdentityService) ObserveOfficialFingerprintSample(ctx context.Context, accountID int64, headers http.Header) (*Fingerprint, error) {
+	if s == nil || s.cache == nil || accountID <= 0 || headers == nil {
+		return nil, nil
+	}
+	candidate := s.createFingerprintFromHeaders(headers)
+	candidate.OfficialSampled = true
+	candidate.TLSProfileID = resolveOfficialTLSProfileID(candidate.UserAgent, candidate.Originator)
+	candidate.UpdatedAt = time.Now().Unix()
+
+	current, err := s.cache.GetFingerprint(ctx, accountID)
+	if err != nil {
+		current = nil
+	}
+	if current != nil {
+		if current.ClientID == "" {
+			current.ClientID = generateClientID()
+		}
+		candidate.ClientID = current.ClientID
+	} else {
+		candidate.ClientID = generateClientID()
+	}
+
+	if !shouldPersistOfficialFingerprintSample(current, candidate, time.Now()) {
+		if current != nil {
+			return current, nil
+		}
+		return candidate, nil
+	}
+
+	if err := s.cache.SetFingerprint(ctx, accountID, candidate); err != nil {
+		return candidate, err
+	}
+	return candidate, nil
+}
+
+func (s *IdentityService) GetSampledFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error) {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return nil, nil
+	}
+	fp, err := s.cache.GetFingerprint(ctx, accountID)
+	if err != nil || fp == nil || !fp.OfficialSampled {
+		return nil, err
+	}
+	return fp, nil
+}
+
+func shouldPersistOfficialFingerprintSample(current, candidate *Fingerprint, now time.Time) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil || !current.OfficialSampled {
+		return true
+	}
+	if strings.TrimSpace(current.UserAgent) != strings.TrimSpace(candidate.UserAgent) ||
+		strings.TrimSpace(current.Originator) != strings.TrimSpace(candidate.Originator) ||
+		strings.TrimSpace(current.TLSProfileID) != strings.TrimSpace(candidate.TLSProfileID) ||
+		strings.TrimSpace(current.ClaudeCodeSessionID) != strings.TrimSpace(candidate.ClaudeCodeSessionID) ||
+		strings.TrimSpace(current.ClaudeRemoteContainerID) != strings.TrimSpace(candidate.ClaudeRemoteContainerID) ||
+		strings.TrimSpace(current.ClaudeRemoteSessionID) != strings.TrimSpace(candidate.ClaudeRemoteSessionID) ||
+		strings.TrimSpace(current.ClientApp) != strings.TrimSpace(candidate.ClientApp) ||
+		strings.TrimSpace(current.AdditionalProtection) != strings.TrimSpace(candidate.AdditionalProtection) ||
+		strings.TrimSpace(current.StainlessLang) != strings.TrimSpace(candidate.StainlessLang) ||
+		strings.TrimSpace(current.StainlessPackageVersion) != strings.TrimSpace(candidate.StainlessPackageVersion) ||
+		strings.TrimSpace(current.StainlessOS) != strings.TrimSpace(candidate.StainlessOS) ||
+		strings.TrimSpace(current.StainlessArch) != strings.TrimSpace(candidate.StainlessArch) ||
+		strings.TrimSpace(current.StainlessRuntime) != strings.TrimSpace(candidate.StainlessRuntime) ||
+		strings.TrimSpace(current.StainlessRuntimeVersion) != strings.TrimSpace(candidate.StainlessRuntimeVersion) {
+		return true
+	}
+	lastUpdated := time.Unix(current.UpdatedAt, 0)
+	if current.UpdatedAt <= 0 || now.Sub(lastUpdated) < identityOfficialSampleRefreshMinAge {
+		return false
+	}
+	if now.Sub(lastUpdated) >= identityOfficialSampleRefreshTTL {
+		return true
+	}
+	return shouldSampleOfficialFingerprintRefresh(now, current.ClientID, candidate.UserAgent, candidate.Originator)
+}
+
+func shouldSampleOfficialFingerprintRefresh(now time.Time, clientID, userAgent, originator string) bool {
+	bucket := now.UTC().Truncate(time.Hour).Format(time.RFC3339)
+	seed := clientID + "|" + strings.ToLower(strings.TrimSpace(userAgent)) + "|" + strings.ToLower(strings.TrimSpace(originator)) + "|" + bucket
+	return xxhash.Sum64String(seed)%16 == 0
+}
+
+func IsCodexOfficialHeaders(userAgent, originator string) bool {
+	return openai.IsCodexOfficialClientByHeaders(userAgent, originator)
+}
+
+func (s *IdentityService) ApplyAnthropicFingerprint(req *http.Request, body []byte, account *Account, fp *Fingerprint, preserveRemoteContainerID bool) {
+	if req == nil || fp == nil {
+		return
+	}
+	s.ApplyFingerprint(req, fp)
+	s.applyAnthropicSampledHeaders(req, body, account, fp, preserveRemoteContainerID)
+	ensureAnthropicClientRequestID(req)
+}
+
+func (s *IdentityService) applyAnthropicSampledHeaders(req *http.Request, body []byte, account *Account, fp *Fingerprint, preserveRequestScopedHeaders bool) {
+	if req == nil || fp == nil {
+		return
+	}
+	if strings.TrimSpace(fp.ClientApp) != "" {
+		req.Header.Set("x-client-app", strings.TrimSpace(fp.ClientApp))
+	}
+	if strings.TrimSpace(fp.AdditionalProtection) != "" {
+		req.Header.Set("x-anthropic-additional-protection", strings.TrimSpace(fp.AdditionalProtection))
+	}
+
+	sessionHeader := strings.TrimSpace(fp.ClaudeCodeSessionID)
+	if sessionHeader != "" || !preserveRequestScopedHeaders {
+		if rewritten := s.resolveClaudeCodeSessionHeader(body, account, fp, preserveRequestScopedHeaders); rewritten != "" {
+			req.Header.Set("x-claude-code-session-id", rewritten)
+		} else {
+			req.Header.Del("x-claude-code-session-id")
+		}
+	}
+
+	remoteSessionID := strings.TrimSpace(fp.ClaudeRemoteSessionID)
+	if remoteSessionID != "" || !preserveRequestScopedHeaders {
+		if rewritten := s.resolveClaudeRemoteSessionHeader(body, account, fp, preserveRequestScopedHeaders); rewritten != "" {
+			req.Header.Set("x-claude-remote-session-id", rewritten)
+		} else {
+			req.Header.Del("x-claude-remote-session-id")
+		}
+	}
+
+	remoteContainerID := strings.TrimSpace(fp.ClaudeRemoteContainerID)
+	if remoteContainerID == "" {
+		req.Header.Del("x-claude-remote-container-id")
+		return
+	}
+	if preserveRequestScopedHeaders {
+		req.Header.Set("x-claude-remote-container-id", remoteContainerID)
+		return
+	}
+
+	rewritten := s.rewriteClaudeRemoteContainerID(body, account, fp)
+	if rewritten == "" {
+		req.Header.Del("x-claude-remote-container-id")
+		return
+	}
+	req.Header.Set("x-claude-remote-container-id", rewritten)
+}
+
+func (s *IdentityService) resolveClaudeCodeSessionHeader(body []byte, account *Account, fp *Fingerprint, preserve bool) string {
+	raw := strings.TrimSpace(fp.ClaudeCodeSessionID)
+	if preserve {
+		return raw
+	}
+	seed := strings.TrimSpace(s.resolveClaudeSessionSeed(body, account, fp))
+	if seed == "" {
+		return ""
+	}
+	if raw == "" {
+		raw = "claude-code-session"
+	}
+	return generateUUIDFromSeed(fmt.Sprintf("%d::claude-code-session::%s::%s", account.ID, raw, seed))
+}
+
+func (s *IdentityService) resolveClaudeRemoteSessionHeader(body []byte, account *Account, fp *Fingerprint, preserve bool) string {
+	raw := strings.TrimSpace(fp.ClaudeRemoteSessionID)
+	if preserve {
+		return raw
+	}
+	if raw == "" {
+		return ""
+	}
+	seed := strings.TrimSpace(s.resolveClaudeSessionSeed(body, account, fp))
+	if seed == "" {
+		return ""
+	}
+	return generateUUIDFromSeed(fmt.Sprintf("%d::claude-remote-session::%s::%s", account.ID, raw, seed))
+}
+
+func (s *IdentityService) rewriteClaudeRemoteContainerID(body []byte, account *Account, fp *Fingerprint) string {
+	if account == nil || fp == nil {
+		return ""
+	}
+	rawContainerID := strings.TrimSpace(fp.ClaudeRemoteContainerID)
+	if rawContainerID == "" {
+		return ""
+	}
+	seed := strings.TrimSpace(s.resolveClaudeSessionSeed(body, account, fp))
+	if seed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d::%s::%s", account.ID, rawContainerID, seed)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *IdentityService) resolveClaudeSessionSeed(body []byte, account *Account, fp *Fingerprint) string {
+	userID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String())
+	if userID == "" {
+		return ""
+	}
+	parsed := ParseMetadataUserID(userID)
+	if parsed == nil || strings.TrimSpace(parsed.SessionID) == "" {
+		return ""
+	}
+	if account == nil || !account.IsSessionIDMaskingEnabled() {
+		return parsed.SessionID
+	}
+	maskedSessionID, err := s.getOrRefreshMaskedSessionID(context.Background(), account.ID)
+	if err != nil || strings.TrimSpace(maskedSessionID) == "" {
+		return parsed.SessionID
+	}
+	return maskedSessionID
+}
+
+func ensureAnthropicClientRequestID(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(req.Header.Get("x-client-request-id")) != "" {
+		return
+	}
+	req.Header.Set("x-client-request-id", generateRandomUUID())
+}
+
+func resolveOfficialTLSProfileID(userAgent, originator string) string {
+	ua := strings.TrimSpace(userAgent)
+	ori := strings.TrimSpace(originator)
+	if IsCodexOfficialHeaders(ua, ori) {
+		return tlsfingerprint.DefaultCodexProfileName
+	}
+	if NewClaudeCodeValidator().ValidateUserAgent(ua) {
+		return tlsfingerprint.DefaultProfileName
+	}
+	return ""
 }
 
 // RewriteUserID 重写body中的metadata.user_id
@@ -300,22 +576,9 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		return newBody, nil
 	}
 
-	// 获取或生成固定的伪装 session ID
-	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, account.ID)
-	if err != nil {
-		logger.LegacyPrintf("service.identity", "Warning: failed to get masked session ID for account %d: %v", account.ID, err)
+	maskedSessionID, err := s.getOrRefreshMaskedSessionID(ctx, account.ID)
+	if err != nil || strings.TrimSpace(maskedSessionID) == "" {
 		return newBody, nil
-	}
-
-	if maskedSessionID == "" {
-		// 首次或已过期，生成新的伪装 session ID
-		maskedSessionID = generateRandomUUID()
-		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d: %s", account.ID, maskedSessionID)
-	}
-
-	// 刷新 TTL（每次请求都刷新，保持 15 分钟有效期）
-	if err := s.cache.SetMaskedSessionID(ctx, account.ID, maskedSessionID); err != nil {
-		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
 	}
 
 	// 用 FormatMetadataUserID 重建（保持与 RewriteUserID 相同的格式）
@@ -337,6 +600,26 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 		return newBody, nil
 	}
 	return maskedBody, nil
+}
+
+func (s *IdentityService) getOrRefreshMaskedSessionID(ctx context.Context, accountID int64) (string, error) {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return "", nil
+	}
+	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, accountID)
+	if err != nil {
+		logger.LegacyPrintf("service.identity", "Warning: failed to get masked session ID for account %d: %v", accountID, err)
+		return "", err
+	}
+	if maskedSessionID == "" {
+		maskedSessionID = generateRandomUUID()
+		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d: %s", accountID, maskedSessionID)
+	}
+	if err := s.cache.SetMaskedSessionID(ctx, accountID, maskedSessionID); err != nil {
+		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", accountID, err)
+		return maskedSessionID, err
+	}
+	return maskedSessionID, nil
 }
 
 // generateRandomUUID 生成随机 UUID v4 格式字符串

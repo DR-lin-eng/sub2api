@@ -516,15 +516,26 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		transportCtx.SetValue("openai_responses_fallback_model", "")
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		groupSelection, err := selectOpenAIAPIKeyGroup(
 			transportCtx.Context(),
-			apiKey.GroupID,
+			apiKey,
 			previousResponseID,
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			h.gatewayService.SelectAccountWithScheduler,
 		)
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			selectedAPIKey   = apiKey
+		)
+		if err == nil && groupSelection != nil {
+			selection = groupSelection.Selection
+			scheduleDecision = groupSelection.Decision
+			selectedAPIKey = groupSelection.APIKey
+		}
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -536,16 +547,20 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 					reqLog.Info("openai.fallback_to_default_model",
 						zap.String("default_mapped_model", fallbackModel),
 					)
-					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+					groupSelection, err = selectOpenAIAPIKeyGroup(
 						transportCtx.Context(),
-						apiKey.GroupID,
+						apiKey,
 						previousResponseID,
 						sessionHash,
 						fallbackModel,
 						failedAccountIDs,
 						service.OpenAIUpstreamTransportAny,
+						h.gatewayService.SelectAccountWithScheduler,
 					)
-					if err == nil && selection != nil {
+					if err == nil && groupSelection != nil {
+						selection = groupSelection.Selection
+						scheduleDecision = groupSelection.Decision
+						selectedAPIKey = groupSelection.APIKey
 						transportCtx.SetValue("openai_responses_fallback_model", fallbackModel)
 					}
 				}
@@ -598,7 +613,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(transportCtx, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(transportCtx, selectedAPIKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
 			return
 		}
@@ -606,7 +621,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		// Forward request
 		service.SetOpsLatencyMsContext(transportCtx, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, getContextStringGateway(transportCtx, "openai_responses_fallback_model"))
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(selectedAPIKey, getContextStringGateway(transportCtx, "openai_responses_fallback_model"))
 		result, err := h.gatewayService.ForwardContext(transportCtx.Context(), transportCtx, account, body, defaultMappedModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
@@ -630,7 +645,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				if remoteCompact {
 					if failoverErr.TempUnscheduleFor > 0 || failoverErr.StatusCode == http.StatusUnauthorized {
-						_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), apiKey.GroupID, sessionHash, account.ID)
+						_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), selectedAPIKey.GroupID, sessionHash, account.ID)
 						h.gatewayService.TempUnscheduleRetryableError(transportCtx.Context(), account.ID, failoverErr)
 					}
 					if shouldRetryOpenAIRemoteCompactSilently(failoverErr, previousResponseID, switchCount) {
@@ -668,7 +683,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 						continue
 					}
 				}
-				_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), apiKey.GroupID, sessionHash, account.ID)
+				_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), selectedAPIKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(transportCtx.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -709,7 +724,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.gatewayService.MarkOpenAIAccountHealthy(account)
-		if err := h.gatewayService.PromoteStickySession(transportCtx.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+		if err := h.gatewayService.PromoteStickySession(transportCtx.Context(), selectedAPIKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
@@ -722,8 +737,8 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
+				APIKey:             selectedAPIKey,
+				User:               selectedAPIKey.User,
 				Account:            account,
 				Subscription:       subscription,
 				InboundEndpoint:    GetInboundEndpointContext(transportCtx),
@@ -736,8 +751,8 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
 					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", selectedAPIKey.ID),
+					zap.Any("group_id", selectedAPIKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
 				).Error("openai.record_usage_failed", zap.Error(err))
@@ -981,15 +996,26 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 		// 清除上一次迭代的降级模型标记，避免残留影响本次迭代
 		transportCtx.SetValue("openai_messages_fallback_model", "")
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		groupSelection, err := selectOpenAIAPIKeyGroup(
 			transportCtx.Context(),
-			apiKey.GroupID,
-			"", // no previous_response_id
+			apiKey,
+			"",
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			h.gatewayService.SelectAccountWithScheduler,
 		)
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			selectedAPIKey   = apiKey
+		)
+		if err == nil && groupSelection != nil {
+			selection = groupSelection.Selection
+			scheduleDecision = groupSelection.Decision
+			selectedAPIKey = groupSelection.APIKey
+		}
 		if err != nil {
 			reqLog.Warn("openai_messages.account_select_failed",
 				zap.Error(err),
@@ -1002,16 +1028,20 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 					reqLog.Info("openai_messages.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
 					)
-					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+					groupSelection, err = selectOpenAIAPIKeyGroup(
 						transportCtx.Context(),
-						apiKey.GroupID,
+						apiKey,
 						"",
 						sessionHash,
 						defaultModel,
 						failedAccountIDs,
 						service.OpenAIUpstreamTransportAny,
+						h.gatewayService.SelectAccountWithScheduler,
 					)
-					if err == nil && selection != nil {
+					if err == nil && groupSelection != nil {
+						selection = groupSelection.Selection
+						scheduleDecision = groupSelection.Decision
+						selectedAPIKey = groupSelection.APIKey
 						transportCtx.SetValue("openai_messages_fallback_model", defaultModel)
 					}
 				}
@@ -1053,7 +1083,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 		_ = scheduleDecision
 		setOpsSelectedAccountGateway(transportCtx, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(transportCtx, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotContext(transportCtx, selectedAPIKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
 			return
 		}
@@ -1063,7 +1093,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 
 		// Forward 层需要始终拿到 group 默认映射模型，这样未命中账号级映射的
 		// Claude 兼容模型才不会在后续 Codex 规范化中意外退化到 gpt-5.1。
-		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, getContextStringGateway(transportCtx, "openai_messages_fallback_model"))
+		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(selectedAPIKey, getContextStringGateway(transportCtx, "openai_messages_fallback_model"))
 		result, err := h.gatewayService.ForwardAsAnthropicContext(transportCtx.Context(), transportCtx, account, body, promptCacheKey, defaultMappedModel)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -1105,7 +1135,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 						continue
 					}
 				}
-				_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), apiKey.GroupID, sessionHash, account.ID)
+				_ = h.gatewayService.ClearStickySessionForAccount(transportCtx.Context(), selectedAPIKey.GroupID, sessionHash, account.ID)
 				h.gatewayService.TempUnscheduleRetryableError(transportCtx.Context(), account.ID, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -1138,7 +1168,7 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.gatewayService.MarkOpenAIAccountHealthy(account)
-		if err := h.gatewayService.PromoteStickySession(transportCtx.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+		if err := h.gatewayService.PromoteStickySession(transportCtx.Context(), selectedAPIKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai_messages.promote_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
@@ -1149,8 +1179,8 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
+				APIKey:             selectedAPIKey,
+				User:               selectedAPIKey.User,
 				Account:            account,
 				Subscription:       subscription,
 				InboundEndpoint:    GetInboundEndpointContext(transportCtx),
@@ -1163,8 +1193,8 @@ func (h *OpenAIGatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayCo
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.messages"),
 					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", selectedAPIKey.ID),
+					zap.Any("group_id", selectedAPIKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
 				).Error("openai_messages.record_usage_failed", zap.Error(err))
@@ -1604,20 +1634,24 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocketGateway(transportCtx gatewayctx
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
-	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+	groupSelection, err := selectOpenAIAPIKeyGroup(
 		ctx,
-		apiKey.GroupID,
+		apiKey,
 		previousResponseID,
 		sessionHash,
 		reqModel,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
+		h.gatewayService.SelectAccountWithScheduler,
 	)
 	if err != nil {
 		reqLog.Warn("openai.websocket_account_select_failed", zap.Error(err))
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
 	}
+	selection := groupSelection.Selection
+	scheduleDecision := groupSelection.Decision
+	selectedAPIKey := groupSelection.APIKey
 	if selection == nil || selection.Account == nil {
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
@@ -1651,7 +1685,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocketGateway(transportCtx gatewayctx
 		accountReleaseFunc = fastReleaseFunc
 	}
 	currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
-	if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
+	if err := h.gatewayService.BindStickySession(ctx, selectedAPIKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 
@@ -1713,8 +1747,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocketGateway(transportCtx gatewayctx
 			h.submitUsageRecordTask(func(taskCtx context.Context) {
 				if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
 					Result:             result,
-					APIKey:             apiKey,
-					User:               apiKey.User,
+					APIKey:             selectedAPIKey,
+					User:               selectedAPIKey.User,
 					Account:            account,
 					Subscription:       subscription,
 					InboundEndpoint:    GetInboundEndpointContext(transportCtx),

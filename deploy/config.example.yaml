@@ -462,10 +462,10 @@ gateway:
     slot_cleanup_interval: 30s
     # 是否允许受控回源到 DB（默认 true，保持现有行为）
     db_fallback_enabled: true
-    # 受控回源超时（秒），0 表示不额外收紧超时
-    db_fallback_timeout_seconds: 0
-    # 受控回源限流（实例级 QPS），0 表示不限制
-    db_fallback_max_qps: 0
+    # 受控回源超时（秒），建议显式收紧，避免 Redis miss 时长时间卡死
+    db_fallback_timeout_seconds: 5
+    # 受控回源限流（实例级 QPS），建议开启，避免缓存 miss 时直接把 DB 打爆
+    db_fallback_max_qps: 10
     # outbox 轮询周期（秒）
     outbox_poll_interval_seconds: 1
     # outbox 滞后告警阈值（秒）
@@ -839,12 +839,12 @@ database:
   # SSL 模式：disable（禁用）, prefer（优先加密，默认）, require（要求）, verify-ca（验证CA）, verify-full（完全验证）
   # 默认值为 "prefer"，数据库支持 SSL 时自动使用加密连接，不支持时回退明文
   sslmode: "prefer"
-  # Max open connections (高并发场景建议 256+，需配合 PostgreSQL max_connections 调整)
+  # Max open connections (单机/连接池场景建议先从 60 起步，避免远超 pgbouncer/DB 实际承载)
   # 最大打开连接数
-  max_open_conns: 256
-  # Max idle connections (建议为 max_open_conns 的 50%，减少频繁建连开销)
+  max_open_conns: 60
+  # Max idle connections (单机建议先从 20 起步，减少长期占用热连接)
   # 最大空闲连接数
-  max_idle_conns: 128
+  max_idle_conns: 20
   # Connection max lifetime (minutes)
   # 连接最大存活时间（分钟）
   conn_max_lifetime_minutes: 30
