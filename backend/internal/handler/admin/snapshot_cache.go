@@ -84,6 +84,17 @@ func (c *snapshotCache) GetOrLoad(key string, load func() (any, error)) (snapsho
 	if load == nil {
 		return snapshotCacheEntry{}, false, nil
 	}
+	var stale snapshotCacheEntry
+	var hasStale bool
+	if c != nil && key != "" {
+		now := time.Now()
+		c.mu.RLock()
+		if entry, ok := c.items[key]; ok {
+			stale = entry
+			hasStale = !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt)
+		}
+		c.mu.RUnlock()
+	}
 	if entry, ok := c.Get(key); ok {
 		return entry, true, nil
 	}
@@ -101,6 +112,9 @@ func (c *snapshotCache) GetOrLoad(key string, load func() (any, error)) (snapsho
 		}
 		payload, err := load()
 		if err != nil {
+			if hasStale {
+				return snapshotCacheLoadResult{Entry: stale, Hit: true}, nil
+			}
 			return nil, err
 		}
 		return snapshotCacheLoadResult{Entry: c.Set(key, payload), Hit: false}, nil

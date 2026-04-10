@@ -22,8 +22,8 @@ var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is dis
 const (
 	opsMaxStoredRequestBodyBytes = 10 * 1024
 	opsMaxStoredErrorBodyBytes   = 20 * 1024
-	opsRealtimeAccountListTTL    = 15 * time.Second
-	opsRealtimeUserListTTL       = 15 * time.Second
+	opsRealtimeAccountListTTL    = 60 * time.Second
+	opsRealtimeUserListTTL       = 60 * time.Second
 	opsSettingCacheTTL           = 30 * time.Second
 	opsRustSidecarHealthTTL      = 2 * time.Second
 )
@@ -206,6 +206,15 @@ func (s *OpsService) listAllAccountsForOpsCached(ctx context.Context, platformFi
 	}
 
 	value, err, _ := s.accountListSF.Do(cacheKey, func() (any, error) {
+		var stale *opsCachedAccounts
+		if cached, ok := s.accountListCache.Load(cacheKey); ok {
+			if entry, ok := cached.(*opsCachedAccounts); ok && entry != nil {
+				if time.Now().UnixNano() < entry.ExpiresAt {
+					return entry, nil
+				}
+				stale = entry
+			}
+		}
 		if cached, ok := s.accountListCache.Load(cacheKey); ok {
 			if entry, ok := cached.(*opsCachedAccounts); ok && entry != nil && time.Now().UnixNano() < entry.ExpiresAt {
 				return entry, nil
@@ -213,6 +222,10 @@ func (s *OpsService) listAllAccountsForOpsCached(ctx context.Context, platformFi
 		}
 		accounts, loadErr := s.loadAllAccountsForOps(ctx, platformFilter)
 		if loadErr != nil {
+			if stale != nil {
+				log.Printf("[Ops] listAllAccountsForOpsCached: serving stale cache after reload failure (platform=%q): %v", platformFilter, loadErr)
+				return stale, nil
+			}
 			return nil, loadErr
 		}
 		entry := &opsCachedAccounts{
@@ -239,8 +252,16 @@ func (s *OpsService) listAllActiveUsersForOpsCached(ctx context.Context) ([]User
 	if cached, ok := s.userListCache.Load().(*opsCachedUsers); ok && cached != nil && time.Now().UnixNano() < cached.ExpiresAt {
 		return cached.Users, nil
 	}
+	var stale *opsCachedUsers
+	if cached, ok := s.userListCache.Load().(*opsCachedUsers); ok && cached != nil {
+		stale = cached
+	}
 	users, err := s.loadAllActiveUsersForOps(ctx)
 	if err != nil {
+		if stale != nil {
+			log.Printf("[Ops] listAllActiveUsersForOpsCached: serving stale cache after reload failure: %v", err)
+			return stale.Users, nil
+		}
 		return nil, err
 	}
 	s.userListCache.Store(&opsCachedUsers{

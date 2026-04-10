@@ -152,6 +152,23 @@ func TestSnapshotCache_GetOrLoad_ConcurrentSingleflight(t *testing.T) {
 	require.Equal(t, int32(1), loads.Load())
 }
 
+func TestSnapshotCache_GetOrLoad_LoadErrorUsesStaleExpiredEntry(t *testing.T) {
+	c := newSnapshotCache(1 * time.Millisecond)
+	original := c.Set("key1", map[string]string{"hello": "world"})
+	time.Sleep(5 * time.Millisecond)
+
+	entry, hit, err := c.GetOrLoad("key1", func() (any, error) {
+		return nil, assertiveError("boom")
+	})
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, original.ETag, entry.ETag)
+}
+
+type assertiveError string
+
+func (e assertiveError) Error() string { return string(e) }
+
 func TestParseBoolQueryWithDefault(t *testing.T) {
 	tests := []struct {
 		name string
