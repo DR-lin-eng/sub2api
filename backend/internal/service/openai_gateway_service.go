@@ -2083,15 +2083,37 @@ func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context,
 	if s == nil || s.accountRepo == nil || failoverErr == nil || accountID <= 0 {
 		return
 	}
-	if account, err := s.accountRepo.GetByID(ctx, accountID); err == nil && account != nil && account.IgnorePauseSchedulingErrors() {
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] ignore_pause_scheduling_errors enabled, skip temp unschedule account=%d", accountID)
+	var account *Account
+	if current, err := s.accountRepo.GetByID(ctx, accountID); err == nil && current != nil {
+		account = current
+		if account.IgnorePauseSchedulingErrors() {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] ignore_pause_scheduling_errors enabled, skip temp unschedule account=%d", accountID)
+			return
+		}
+	}
+	if !shouldPersistOpenAITempUnschedule(failoverErr) {
+		if account == nil {
+			if current, err := s.accountRepo.GetByID(ctx, accountID); err == nil {
+				account = current
+			}
+		}
+		if account != nil {
+			s.registerOpenAIRuntimeFailure(account, failoverErr)
+		} else {
+			s.registerOpenAIRuntimeFailure(&Account{ID: accountID}, failoverErr)
+		}
+		s.queueOpenAIRuntimeStateSync(accountID)
 		return
 	}
 	if failoverErr.TempUnscheduleFor <= 0 {
 		return
 	}
 	if !s.tempUnscheduleThrottle.Allow(accountID, time.Now()) {
-		s.registerOpenAIRuntimeFailure(&Account{ID: accountID}, failoverErr)
+		if account != nil {
+			s.registerOpenAIRuntimeFailure(account, failoverErr)
+		} else {
+			s.registerOpenAIRuntimeFailure(&Account{ID: accountID}, failoverErr)
+		}
 		s.queueOpenAIRuntimeStateSync(accountID)
 		return
 	}

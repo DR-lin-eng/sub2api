@@ -19,7 +19,10 @@ var (
 	ErrSchedulerFallbackLimited = errors.New("scheduler db fallback limited")
 )
 
-const outboxEventTimeout = 2 * time.Minute
+const (
+	outboxEventTimeout            = 5 * time.Minute
+	schedulerBucketRebuildTimeout = 90 * time.Second
+)
 
 type SchedulerSnapshotService struct {
 	cache           SchedulerCache
@@ -574,7 +577,7 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 		return nil
 	}
 
-	rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rebuildCtx, cancel := context.WithTimeout(ctx, schedulerBucketRebuildTimeout)
 	defer cancel()
 
 	accounts, err := s.loadAccountsFromDB(rebuildCtx, bucket, bucket.Mode == SchedulerModeMixed)

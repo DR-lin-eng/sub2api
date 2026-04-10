@@ -847,15 +847,27 @@ func (s *OpenAIGatewayService) registerOpenAIRuntimeFailure(account *Account, fa
 			s.proxyCircuit.recordFailure(failoverErr.FailedProxyID, "proxy/network failure", s.openAIProxyBreakerCooldown(), account.ID, false)
 		}
 		if s.accountCircuit != nil {
-			s.accountCircuit.recordFailure(account.ID, "proxy/network failure", maxDuration(failoverErr.TempUnscheduleFor, s.openAIAccountBreakerCooldown()), account.ID, true)
+			s.accountCircuit.recordFailure(account.ID, "proxy/network failure", s.openAIAccountBreakerCooldown(), account.ID, true)
 		}
 		return
 	}
 	if strings.Contains(bodyText, "context deadline exceeded") || strings.Contains(reason, "timeout") {
 		if s.accountCircuit != nil {
-			s.accountCircuit.recordFailure(account.ID, "header timeout", maxDuration(failoverErr.TempUnscheduleFor, s.openAIAccountBreakerCooldown()), account.ID, true)
+			s.accountCircuit.recordFailure(account.ID, "header timeout", s.openAIAccountBreakerCooldown(), account.ID, true)
 		}
 	}
+}
+
+func shouldPersistOpenAITempUnschedule(failoverErr *UpstreamFailoverError) bool {
+	if failoverErr == nil {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(failoverErr.TempUnscheduleReason))
+	bodyText := strings.ToLower(strings.TrimSpace(string(failoverErr.ResponseBody)))
+	if failoverErr.FailedProxyID > 0 || strings.Contains(reason, "proxy") || strings.Contains(reason, "network") || strings.Contains(bodyText, "connection refused") || strings.Contains(bodyText, "connection reset") || strings.Contains(bodyText, "socks connect") || strings.Contains(bodyText, "eof") {
+		return false
+	}
+	return failoverErr.TempUnscheduleFor > 0
 }
 
 func maxDuration(a, b time.Duration) time.Duration {

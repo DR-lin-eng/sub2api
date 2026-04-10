@@ -226,7 +226,13 @@ func (s *OpsService) listAllAccountsForOpsCached(ctx context.Context, platformFi
 				log.Printf("[Ops] listAllAccountsForOpsCached: serving stale cache after reload failure (platform=%q): %v", platformFilter, loadErr)
 				return stale, nil
 			}
-			return nil, loadErr
+			log.Printf("[Ops] listAllAccountsForOpsCached: returning empty snapshot after reload failure with no cache (platform=%q): %v", platformFilter, loadErr)
+			entry := &opsCachedAccounts{
+				Accounts:  []Account{},
+				ExpiresAt: time.Now().Add(opsRealtimeAccountListTTL).UnixNano(),
+			}
+			s.accountListCache.Store(cacheKey, entry)
+			return entry, nil
 		}
 		entry := &opsCachedAccounts{
 			Accounts:  accounts,
@@ -262,7 +268,12 @@ func (s *OpsService) listAllActiveUsersForOpsCached(ctx context.Context) ([]User
 			log.Printf("[Ops] listAllActiveUsersForOpsCached: serving stale cache after reload failure: %v", err)
 			return stale.Users, nil
 		}
-		return nil, err
+		log.Printf("[Ops] listAllActiveUsersForOpsCached: returning empty snapshot after reload failure with no cache: %v", err)
+		s.userListCache.Store(&opsCachedUsers{
+			Users:     []User{},
+			ExpiresAt: time.Now().Add(opsRealtimeUserListTTL).UnixNano(),
+		})
+		return []User{}, nil
 	}
 	s.userListCache.Store(&opsCachedUsers{
 		Users:     users,
