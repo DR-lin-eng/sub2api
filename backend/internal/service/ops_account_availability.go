@@ -6,41 +6,16 @@ import (
 	"time"
 )
 
-// GetAccountAvailabilityStats returns current account availability stats.
-//
-// Query-level filtering is intentionally limited to platform/group to match the dashboard scope.
-func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFilter string, groupIDFilter *int64) (
+func buildAccountAvailabilityStats(
+	accounts []Account,
+	groupIDFilter *int64,
+	includeAccount bool,
+	now time.Time,
+) (
 	map[string]*PlatformAvailability,
 	map[int64]*GroupAvailability,
 	map[int64]*AccountAvailability,
-	*time.Time,
-	error,
 ) {
-	if err := s.RequireMonitoringEnabled(ctx); err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	if groupIDFilter != nil && *groupIDFilter > 0 {
-		filtered := make([]Account, 0, len(accounts))
-		for _, acc := range accounts {
-			for _, grp := range acc.Groups {
-				if grp != nil && grp.ID == *groupIDFilter {
-					filtered = append(filtered, acc)
-					break
-				}
-			}
-		}
-		accounts = filtered
-	}
-
-	now := time.Now()
-	collectedAt := now
-
 	platform := make(map[string]*PlatformAvailability)
 	group := make(map[int64]*GroupAvailability)
 	account := make(map[int64]*AccountAvailability)
@@ -59,7 +34,6 @@ func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFi
 		isOverloaded := acc.OverloadUntil != nil && now.Before(*acc.OverloadUntil)
 		hasError := acc.Status == StatusError
 
-		// Normalize exclusive status flags so the UI doesn't show conflicting badges.
 		if hasError {
 			isRateLimited = false
 			isOverloaded = false
@@ -90,6 +64,9 @@ func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFi
 			if grp == nil || grp.ID <= 0 {
 				continue
 			}
+			if groupIDFilter != nil && *groupIDFilter > 0 && grp.ID != *groupIDFilter {
+				continue
+			}
 			if _, ok := group[grp.ID]; !ok {
 				group[grp.ID] = &GroupAvailability{
 					GroupID:   grp.ID,
@@ -108,6 +85,10 @@ func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFi
 			if hasError {
 				g.ErrorCount++
 			}
+		}
+
+		if !includeAccount {
+			continue
 		}
 
 		displayGroupID := int64(0)
@@ -154,6 +135,44 @@ func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFi
 		account[acc.ID] = item
 	}
 
+	return platform, group, account
+}
+
+// GetAccountAvailabilityStats returns current account availability stats.
+//
+// Query-level filtering is intentionally limited to platform/group to match the dashboard scope.
+func (s *OpsService) GetAccountAvailabilityStats(ctx context.Context, platformFilter string, groupIDFilter *int64, includeAccount bool) (
+	map[string]*PlatformAvailability,
+	map[int64]*GroupAvailability,
+	map[int64]*AccountAvailability,
+	*time.Time,
+	error,
+) {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	if groupIDFilter != nil && *groupIDFilter > 0 {
+		filtered := make([]Account, 0, len(accounts))
+		for _, acc := range accounts {
+			for _, grp := range acc.Groups {
+				if grp != nil && grp.ID == *groupIDFilter {
+					filtered = append(filtered, acc)
+					break
+				}
+			}
+		}
+		accounts = filtered
+	}
+
+	now := time.Now()
+	collectedAt := now
+	platform, group, account := buildAccountAvailabilityStats(accounts, groupIDFilter, includeAccount, now)
 	return platform, group, account, &collectedAt, nil
 }
 
@@ -172,7 +191,7 @@ func (s *OpsService) GetAccountAvailability(ctx context.Context, platformFilter 
 		return s.getAccountAvailability(ctx, platformFilter, groupIDFilter)
 	}
 
-	_, groupStats, accountStats, collectedAt, err := s.GetAccountAvailabilityStats(ctx, platformFilter, groupIDFilter)
+	_, groupStats, accountStats, collectedAt, err := s.GetAccountAvailabilityStats(ctx, platformFilter, groupIDFilter, true)
 	if err != nil {
 		return nil, err
 	}

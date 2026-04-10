@@ -75,6 +75,8 @@ onMounted(() => {
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Generic path runtime selection and transport reuse</p>
       </div>
       <div class="text-right text-xs text-gray-500 dark:text-gray-400">
+        <div>{{ runtime?.active_scheduling_accounts ?? 0 }} scheduling</div>
+        <div>{{ runtime?.pool_accounts_total ?? 0 }} in pool</div>
         <div>{{ runtime?.metrics?.runtime_stats_account_count ?? 0 }} tracked</div>
         <div>{{ runtime?.transport?.active_clients ?? 0 }} clients</div>
       </div>

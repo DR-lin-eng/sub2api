@@ -2,6 +2,8 @@
 package response
 
 import (
+	"context"
+	"errors"
 	"log"
 	"math"
 	"net/http"
@@ -191,6 +193,9 @@ func ErrorWithDetailsContext(c jsonResponder, statusCode int, message, reason st
 
 func ErrorFromContext(c jsonResponder, err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 

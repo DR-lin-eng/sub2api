@@ -763,7 +763,7 @@ func (s *OpenAIGatewayService) probeOpenAIAccountHealth(ctx context.Context, acc
 	if err != nil {
 		failoverErr := newProxyRequestFailoverError(account, proxyURL, err)
 		s.RegisterOpenAIRuntimeFailure(account, failoverErr)
-		s.TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
+		s.queueOpenAIRuntimeStateSync(account.ID)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -771,16 +771,24 @@ func (s *OpenAIGatewayService) probeOpenAIAccountHealth(ctx context.Context, acc
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		failoverErr := buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
-		if s.rateLimitService != nil {
+		if s.rateLimitService != nil && shouldMutateAccountStateFromOpenAIHealthPrefetch(resp.StatusCode) {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
 		s.RegisterOpenAIRuntimeFailure(account, failoverErr)
-		s.TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
 		s.queueOpenAIRuntimeStateSync(account.ID)
 		return
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
 	s.MarkOpenAIAccountHealthy(account)
+}
+
+func shouldMutateAccountStateFromOpenAIHealthPrefetch(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *OpenAIGatewayService) snapshotOpenAICircuitRuntime(limit int) OpenAICircuitRuntimeSnapshot {

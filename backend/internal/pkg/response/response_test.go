@@ -3,6 +3,7 @@
 package response
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -206,6 +207,11 @@ func TestErrorFrom(t *testing.T) {
 				Code:    http.StatusInternalServerError,
 				Message: errors2.UnknownMessage,
 			},
+		},
+		{
+			name:        "context_canceled_is_ignored",
+			err:         context.Canceled,
+			wantWritten: false,
 		},
 	}
 

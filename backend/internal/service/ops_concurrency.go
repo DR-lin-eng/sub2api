@@ -101,28 +101,16 @@ func (s *OpsService) getAccountsLoadMapBestEffort(ctx context.Context, accounts 
 	return out
 }
 
-// GetConcurrencyStats returns real-time concurrency usage aggregated by platform/group/account.
-//
-// Optional filters:
-// - platformFilter: only include accounts in that platform (best-effort reduces DB load)
-// - groupIDFilter: only include accounts that belong to that group
-func (s *OpsService) GetConcurrencyStats(
-	ctx context.Context,
-	platformFilter string,
+func buildConcurrencyStats(
+	accounts []Account,
+	loadMap map[int64]*AccountLoadInfo,
 	groupIDFilter *int64,
-) (map[string]*PlatformConcurrencyInfo, map[int64]*GroupConcurrencyInfo, map[int64]*AccountConcurrencyInfo, *time.Time, error) {
-	if err := s.RequireMonitoringEnabled(ctx); err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	collectedAt := time.Now()
-	loadMap := s.getAccountsLoadMapBestEffort(ctx, accounts)
-
+	includeAccount bool,
+) (
+	map[string]*PlatformConcurrencyInfo,
+	map[int64]*GroupConcurrencyInfo,
+	map[int64]*AccountConcurrencyInfo,
+) {
 	platform := make(map[string]*PlatformConcurrencyInfo)
 	group := make(map[int64]*GroupConcurrencyInfo)
 	account := make(map[int64]*AccountConcurrencyInfo)
@@ -143,7 +131,6 @@ func (s *OpsService) GetConcurrencyStats(
 					break
 				}
 			}
-			// Group filter provided: skip accounts not in that group.
 			if matchedGroup == nil {
 				continue
 			}
@@ -157,35 +144,35 @@ func (s *OpsService) GetConcurrencyStats(
 			waiting = int64(load.WaitingCount)
 		}
 
-		// Account-level view picks one display group (the first group).
-		displayGroupID := int64(0)
-		displayGroupName := ""
-		if matchedGroup != nil {
-			displayGroupID = matchedGroup.ID
-			displayGroupName = matchedGroup.Name
-		} else if len(acc.Groups) > 0 && acc.Groups[0] != nil {
-			displayGroupID = acc.Groups[0].ID
-			displayGroupName = acc.Groups[0].Name
+		if includeAccount {
+			displayGroupID := int64(0)
+			displayGroupName := ""
+			if matchedGroup != nil {
+				displayGroupID = matchedGroup.ID
+				displayGroupName = matchedGroup.Name
+			} else if len(acc.Groups) > 0 && acc.Groups[0] != nil {
+				displayGroupID = acc.Groups[0].ID
+				displayGroupName = acc.Groups[0].Name
+			}
+
+			if _, ok := account[acc.ID]; !ok {
+				info := &AccountConcurrencyInfo{
+					AccountID:      acc.ID,
+					AccountName:    acc.Name,
+					Platform:       acc.Platform,
+					GroupID:        displayGroupID,
+					GroupName:      displayGroupName,
+					CurrentInUse:   currentInUse,
+					MaxCapacity:    int64(acc.Concurrency),
+					WaitingInQueue: waiting,
+				}
+				if info.MaxCapacity > 0 {
+					info.LoadPercentage = float64(info.CurrentInUse) / float64(info.MaxCapacity) * 100
+				}
+				account[acc.ID] = info
+			}
 		}
 
-		if _, ok := account[acc.ID]; !ok {
-			info := &AccountConcurrencyInfo{
-				AccountID:      acc.ID,
-				AccountName:    acc.Name,
-				Platform:       acc.Platform,
-				GroupID:        displayGroupID,
-				GroupName:      displayGroupName,
-				CurrentInUse:   currentInUse,
-				MaxCapacity:    int64(acc.Concurrency),
-				WaitingInQueue: waiting,
-			}
-			if info.MaxCapacity > 0 {
-				info.LoadPercentage = float64(info.CurrentInUse) / float64(info.MaxCapacity) * 100
-			}
-			account[acc.ID] = info
-		}
-
-		// Platform aggregation.
 		if acc.Platform != "" {
 			if _, ok := platform[acc.Platform]; !ok {
 				platform[acc.Platform] = &PlatformConcurrencyInfo{
@@ -198,7 +185,6 @@ func (s *OpsService) GetConcurrencyStats(
 			p.WaitingInQueue += waiting
 		}
 
-		// Group aggregation (one account may contribute to multiple groups).
 		if matchedGroup != nil {
 			grp := matchedGroup
 			if _, ok := group[grp.ID]; !ok {
@@ -213,7 +199,6 @@ func (s *OpsService) GetConcurrencyStats(
 				g.GroupName = grp.Name
 			}
 			if g.Platform != "" && grp.Platform != "" && g.Platform != grp.Platform {
-				// Groups are expected to be platform-scoped. If mismatch is observed, avoid misleading labels.
 				g.Platform = ""
 			}
 			g.MaxCapacity += int64(acc.Concurrency)
@@ -236,7 +221,6 @@ func (s *OpsService) GetConcurrencyStats(
 					g.GroupName = grp.Name
 				}
 				if g.Platform != "" && grp.Platform != "" && g.Platform != grp.Platform {
-					// Groups are expected to be platform-scoped. If mismatch is observed, avoid misleading labels.
 					g.Platform = ""
 				}
 				g.MaxCapacity += int64(acc.Concurrency)
@@ -256,6 +240,34 @@ func (s *OpsService) GetConcurrencyStats(
 			info.LoadPercentage = float64(info.CurrentInUse) / float64(info.MaxCapacity) * 100
 		}
 	}
+
+	return platform, group, account
+}
+
+// GetConcurrencyStats returns real-time concurrency usage aggregated by platform/group/account.
+//
+// Optional filters:
+// - platformFilter: only include accounts in that platform (best-effort reduces DB load)
+// - groupIDFilter: only include accounts that belong to that group
+func (s *OpsService) GetConcurrencyStats(
+	ctx context.Context,
+	platformFilter string,
+	groupIDFilter *int64,
+	includeAccount bool,
+) (map[string]*PlatformConcurrencyInfo, map[int64]*GroupConcurrencyInfo, map[int64]*AccountConcurrencyInfo, *time.Time, error) {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	accounts, err := s.listAllAccountsForOpsCached(ctx, platformFilter)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	collectedAt := time.Now()
+	loadMap := s.getAccountsLoadMapBestEffort(ctx, accounts)
+
+	platform, group, account := buildConcurrencyStats(accounts, loadMap, groupIDFilter, includeAccount)
 
 	return platform, group, account, &collectedAt, nil
 }

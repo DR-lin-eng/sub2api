@@ -599,13 +599,11 @@ func (h *OpsHandler) GetConcurrencyStatsGateway(c gatewayctx.GatewayContext) {
 		cacheKey += ":" + strconv.FormatInt(*groupID, 10)
 	}
 	entry, _, err := opsConcurrencySnapshotCache.GetOrLoad(cacheKey, func() (any, error) {
-		platform, group, account, collectedAt, loadErr := h.opsService.GetConcurrencyStats(c.Request().Context(), platformFilter, groupID)
+		platform, group, account, collectedAt, loadErr := h.opsService.GetConcurrencyStats(c.Request().Context(), platformFilter, groupID, includeAccount)
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		if !includeAccount {
-			account = map[int64]*service.AccountConcurrencyInfo{}
-		} else if accountLimit > 0 {
+		if includeAccount && accountLimit > 0 {
 			account = limitAccountConcurrencyMap(account, accountLimit)
 		}
 		payload := map[string]any{
@@ -713,13 +711,11 @@ func (h *OpsHandler) GetAccountAvailabilityGateway(c gatewayctx.GatewayContext) 
 		cacheKey += ":" + strconv.FormatInt(*groupID, 10)
 	}
 	entry, _, err := opsAvailabilitySnapshotCache.GetOrLoad(cacheKey, func() (any, error) {
-		platformStats, groupStats, accountStats, collectedAt, loadErr := h.opsService.GetAccountAvailabilityStats(c.Request().Context(), platform, groupID)
+		platformStats, groupStats, accountStats, collectedAt, loadErr := h.opsService.GetAccountAvailabilityStats(c.Request().Context(), platform, groupID, includeAccount)
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		if !includeAccount {
-			accountStats = map[int64]*service.AccountAvailability{}
-		} else if accountLimit > 0 {
+		if includeAccount && accountLimit > 0 {
 			accountStats = limitAccountAvailabilityMap(accountStats, accountLimit)
 		}
 		payload := map[string]any{

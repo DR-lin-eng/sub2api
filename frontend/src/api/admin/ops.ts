@@ -438,6 +438,8 @@ export interface HTTPUpstreamMetricsSnapshot {
 export interface GatewaySchedulerRuntimeResponse {
   metrics: GatewaySchedulerRuntimeMetrics
   transport: HTTPUpstreamMetricsSnapshot
+  active_scheduling_accounts: number
+  pool_accounts_total: number
   items: GatewaySchedulerRuntimeEntry[]
   timestamp: string
 }

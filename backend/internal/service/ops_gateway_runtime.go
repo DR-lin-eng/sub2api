@@ -28,10 +28,12 @@ type GatewaySchedulerRuntimeEntry struct {
 }
 
 type GatewaySchedulerRuntimeResponse struct {
-	Metrics   GatewayAccountSchedulerMetricsSnapshot `json:"metrics"`
-	Transport HTTPUpstreamMetricsSnapshot            `json:"transport"`
-	Items     []*GatewaySchedulerRuntimeEntry        `json:"items"`
-	Timestamp time.Time                              `json:"timestamp"`
+	Metrics                  GatewayAccountSchedulerMetricsSnapshot `json:"metrics"`
+	Transport                HTTPUpstreamMetricsSnapshot            `json:"transport"`
+	ActiveSchedulingAccounts int                                    `json:"active_scheduling_accounts"`
+	PoolAccountsTotal        int                                    `json:"pool_accounts_total"`
+	Items                    []*GatewaySchedulerRuntimeEntry        `json:"items"`
+	Timestamp                time.Time                              `json:"timestamp"`
 }
 
 type OpenAIWSRuntimeResponse struct {
@@ -56,29 +58,45 @@ type OpenAIWSRuntimeResponse struct {
 }
 
 type RustSidecarRuntimeResponse struct {
-	Enabled                        bool   `json:"enabled"`
-	Available                      bool   `json:"available"`
-	Status                         string `json:"status,omitempty"`
-	Service                        string `json:"service,omitempty"`
-	Version                        string `json:"version,omitempty"`
-	ActiveConnections              int64  `json:"active_connections,omitempty"`
-	TotalConnections               int64  `json:"total_connections,omitempty"`
-	ActiveUpgrades                 int64  `json:"active_upgrades,omitempty"`
-	TotalUpgrades                  int64  `json:"total_upgrades,omitempty"`
-	TotalRequests                  int64  `json:"total_requests,omitempty"`
-	TotalRequestErrors             int64  `json:"total_request_errors,omitempty"`
-	UpstreamUnavailableTotal       int64  `json:"upstream_unavailable_total,omitempty"`
-	UpstreamHandshakeFailedTotal   int64  `json:"upstream_handshake_failed_total,omitempty"`
-	UpstreamRequestFailedTotal     int64  `json:"upstream_request_failed_total,omitempty"`
-	UpgradeErrorsTotal             int64  `json:"upgrade_errors_total,omitempty"`
-	RelayBytesDownstreamToUpstream int64  `json:"relay_bytes_downstream_to_upstream,omitempty"`
-	RelayBytesUpstreamToDownstream int64  `json:"relay_bytes_upstream_to_downstream,omitempty"`
-	RelayFramesDownstreamToUpstream int64 `json:"relay_frames_downstream_to_upstream,omitempty"`
-	RelayFramesUpstreamToDownstream int64 `json:"relay_frames_upstream_to_downstream,omitempty"`
-	RelayCloseFramesTotal           int64 `json:"relay_close_frames_total,omitempty"`
-	RelayPingFramesTotal            int64 `json:"relay_ping_frames_total,omitempty"`
-	RelayPongFramesTotal            int64 `json:"relay_pong_frames_total,omitempty"`
-	Error                          string `json:"error,omitempty"`
+	Enabled                         bool   `json:"enabled"`
+	Available                       bool   `json:"available"`
+	Status                          string `json:"status,omitempty"`
+	Service                         string `json:"service,omitempty"`
+	Version                         string `json:"version,omitempty"`
+	ActiveConnections               int64  `json:"active_connections,omitempty"`
+	TotalConnections                int64  `json:"total_connections,omitempty"`
+	ActiveUpgrades                  int64  `json:"active_upgrades,omitempty"`
+	TotalUpgrades                   int64  `json:"total_upgrades,omitempty"`
+	TotalRequests                   int64  `json:"total_requests,omitempty"`
+	TotalRequestErrors              int64  `json:"total_request_errors,omitempty"`
+	UpstreamUnavailableTotal        int64  `json:"upstream_unavailable_total,omitempty"`
+	UpstreamHandshakeFailedTotal    int64  `json:"upstream_handshake_failed_total,omitempty"`
+	UpstreamRequestFailedTotal      int64  `json:"upstream_request_failed_total,omitempty"`
+	UpgradeErrorsTotal              int64  `json:"upgrade_errors_total,omitempty"`
+	RelayBytesDownstreamToUpstream  int64  `json:"relay_bytes_downstream_to_upstream,omitempty"`
+	RelayBytesUpstreamToDownstream  int64  `json:"relay_bytes_upstream_to_downstream,omitempty"`
+	RelayFramesDownstreamToUpstream int64  `json:"relay_frames_downstream_to_upstream,omitempty"`
+	RelayFramesUpstreamToDownstream int64  `json:"relay_frames_upstream_to_downstream,omitempty"`
+	RelayCloseFramesTotal           int64  `json:"relay_close_frames_total,omitempty"`
+	RelayPingFramesTotal            int64  `json:"relay_ping_frames_total,omitempty"`
+	RelayPongFramesTotal            int64  `json:"relay_pong_frames_total,omitempty"`
+	Error                           string `json:"error,omitempty"`
+}
+
+func summarizeGatewaySchedulerPool(accounts []Account, loadMap map[int64]*AccountLoadInfo) (int, int) {
+	poolAccountsTotal := 0
+	activeSchedulingAccounts := 0
+	for _, acc := range accounts {
+		if acc.ID <= 0 {
+			continue
+		}
+		poolAccountsTotal++
+		loadInfo := loadMap[acc.ID]
+		if loadInfo != nil && (loadInfo.CurrentConcurrency > 0 || loadInfo.WaitingCount > 0) {
+			activeSchedulingAccounts++
+		}
+	}
+	return poolAccountsTotal, activeSchedulingAccounts
 }
 
 func (s *OpsService) GetGatewaySchedulerRuntime(
@@ -112,6 +130,7 @@ func (s *OpsService) GetGatewaySchedulerRuntime(
 	}
 
 	loadMap := s.getAccountsLoadMapBestEffort(ctx, accounts)
+	poolAccountsTotal, activeSchedulingAccounts := summarizeGatewaySchedulerPool(accounts, loadMap)
 	runtimeStats := s.gatewayService.SnapshotGatewayAccountSchedulerRuntime()
 	runtimeByID := make(map[int64]GatewayAccountSchedulerRuntimeSnapshot, len(runtimeStats))
 	for _, item := range runtimeStats {
@@ -164,10 +183,12 @@ func (s *OpsService) GetGatewaySchedulerRuntime(
 	}
 
 	return &GatewaySchedulerRuntimeResponse{
-		Metrics:   s.gatewayService.SnapshotGatewayAccountSchedulerMetrics(),
-		Transport: transport,
-		Items:     items,
-		Timestamp: time.Now().UTC(),
+		Metrics:                  s.gatewayService.SnapshotGatewayAccountSchedulerMetrics(),
+		Transport:                transport,
+		ActiveSchedulingAccounts: activeSchedulingAccounts,
+		PoolAccountsTotal:        poolAccountsTotal,
+		Items:                    items,
+		Timestamp:                time.Now().UTC(),
 	}, nil
 }
 
