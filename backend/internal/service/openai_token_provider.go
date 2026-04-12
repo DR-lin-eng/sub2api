@@ -137,6 +137,37 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	cacheKey := OpenAITokenCacheKey(account)
 
+	if account.IsOpenAIChatWebMode() {
+		if token := strings.TrimSpace(account.GetOpenAIAccessToken()); token != "" && !account.IsOpenAITokenExpired() {
+			return token, nil
+		}
+		sessionToken := strings.TrimSpace(account.GetOpenAISessionToken())
+		if sessionToken != "" && p.openAIOAuthService != nil {
+			tokenInfo, err := p.openAIOAuthService.ExchangeChatGPTSessionToken(ctx, sessionToken, account.ProxyID)
+			if err == nil && tokenInfo != nil && strings.TrimSpace(tokenInfo.AccessToken) != "" {
+				if account.Credentials == nil {
+					account.Credentials = map[string]any{}
+				}
+				account.Credentials["access_token"] = tokenInfo.AccessToken
+				if tokenInfo.ExpiresAt > 0 {
+					account.Credentials["expires_at"] = time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
+				}
+				if tokenInfo.ChatGPTAccountID != "" {
+					account.Credentials["chatgpt_account_id"] = tokenInfo.ChatGPTAccountID
+				}
+				if tokenInfo.ChatGPTUserID != "" {
+					account.Credentials["chatgpt_user_id"] = tokenInfo.ChatGPTUserID
+				}
+				if tokenInfo.OrganizationID != "" {
+					account.Credentials["organization_id"] = tokenInfo.OrganizationID
+				}
+				if tokenInfo.Email != "" {
+					account.Credentials["email"] = tokenInfo.Email
+				}
+			}
+		}
+	}
+
 	// 1) Try cache first.
 	if p.tokenCache != nil {
 		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {

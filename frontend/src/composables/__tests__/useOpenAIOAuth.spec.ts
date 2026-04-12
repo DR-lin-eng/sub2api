@@ -12,7 +12,8 @@ vi.mock('@/api/admin', () => ({
       generateAuthUrl: vi.fn(),
       exchangeCode: vi.fn(),
       refreshOpenAIToken: vi.fn(),
-      validateSoraSessionToken: vi.fn()
+      validateSoraSessionToken: vi.fn(),
+      inspectOpenAIAccessToken: vi.fn()
     }
   }
 }))
@@ -21,6 +22,7 @@ import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { adminAPI } from '@/api/admin'
 
 const refreshOpenAITokenMock = vi.mocked(adminAPI.accounts.refreshOpenAIToken)
+const inspectOpenAIAccessTokenMock = vi.mocked(adminAPI.accounts.inspectOpenAIAccessToken)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -97,5 +99,29 @@ describe('useOpenAIOAuth.validateRefreshToken', () => {
 
     expect(result).toBeNull()
     expect(oauth.error.value).toBe('token refresh failed: status 502')
+  })
+})
+
+describe('useOpenAIOAuth.validateAccessToken', () => {
+  it('should validate access token through at2info endpoint', async () => {
+    inspectOpenAIAccessTokenMock.mockResolvedValueOnce({ access_token: 'at', client_id: 'app_chatweb' })
+    const oauth = useOpenAIOAuth({ platform: 'openai' })
+
+    await oauth.validateAccessToken('at-token')
+
+    expect(inspectOpenAIAccessTokenMock).toHaveBeenCalledWith(
+      'at-token',
+      '/admin/openai/at2info'
+    )
+  })
+
+  it('should prefer interceptor error.message for access token validation', async () => {
+    inspectOpenAIAccessTokenMock.mockRejectedValueOnce({ message: 'access token inspect failed: status 400' })
+    const oauth = useOpenAIOAuth({ platform: 'openai' })
+
+    const result = await oauth.validateAccessToken('at-token')
+
+    expect(result).toBeNull()
+    expect(oauth.error.value).toBe('access token inspect failed: status 400')
   })
 })

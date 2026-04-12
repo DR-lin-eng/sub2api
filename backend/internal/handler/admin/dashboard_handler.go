@@ -21,6 +21,7 @@ import (
 type DashboardHandler struct {
 	dashboardService   *service.DashboardService
 	aggregationService *service.DashboardAggregationService
+	opsService         *service.OpsService
 	startTime          time.Time // Server start time for uptime calculation
 }
 
@@ -31,6 +32,13 @@ func NewDashboardHandler(dashboardService *service.DashboardService, aggregation
 		aggregationService: aggregationService,
 		startTime:          time.Now(),
 	}
+}
+
+func (h *DashboardHandler) SetOpsService(opsService *service.OpsService) {
+	if h == nil {
+		return
+	}
+	h.opsService = opsService
 }
 
 // parseTimeRange parses start_date, end_date query parameters
@@ -196,12 +204,40 @@ func (h *DashboardHandler) GetRealtimeMetrics(c *gin.Context) {
 }
 
 func (h *DashboardHandler) GetRealtimeMetricsGateway(c gatewayctx.GatewayContext) {
-	// Return mock data for now
+	if h.dashboardService == nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Dashboard service not available")
+		return
+	}
+	stats, err := h.dashboardService.GetDashboardStats(c.Request().Context())
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	activeRequests := int64(0)
+	errorRate := 0.0
+	if h.opsService != nil {
+		endTime := time.Now().UTC()
+		startTime := endTime.Add(-5 * time.Minute)
+		if overview, overviewErr := h.opsService.GetDashboardOverview(c.Request().Context(), &service.OpsDashboardFilter{
+			StartTime: startTime,
+			EndTime:   endTime,
+			QueryMode: service.OpsQueryModeRaw,
+		}); overviewErr == nil && overview != nil {
+			errorRate = overview.ErrorRate
+		}
+		if platformStats, _, _, _, concErr := h.opsService.GetConcurrencyStats(c.Request().Context(), "", nil, false); concErr == nil {
+			for _, item := range platformStats {
+				if item != nil {
+					activeRequests += item.CurrentInUse
+				}
+			}
+		}
+	}
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
-		"active_requests":       0,
-		"requests_per_minute":   0,
-		"average_response_time": 0,
-		"error_rate":            0.0,
+		"active_requests":       activeRequests,
+		"requests_per_minute":   stats.Rpm,
+		"average_response_time": stats.AverageDurationMs,
+		"error_rate":            errorRate,
 	})
 }
 

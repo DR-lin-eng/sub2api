@@ -740,6 +740,22 @@ export async function validateSoraSessionToken(
 }
 
 /**
+ * Inspect OpenAI / ChatGPT Web access token and extract structured account info.
+ * @param accessToken - ChatGPT Web access token
+ * @param endpoint - API endpoint path
+ */
+export async function inspectOpenAIAccessToken(
+  accessToken: string,
+  endpoint: string = '/admin/openai/at2info'
+): Promise<Record<string, unknown>> {
+  const payload: { access_token: string } = {
+    access_token: accessToken
+  }
+  const { data } = await apiClient.post<Record<string, unknown>>(endpoint, payload)
+  return data
+}
+
+/**
  * Batch operation result type
  */
 export interface BatchOperationResult {
@@ -823,6 +839,7 @@ export const accountsAPI = {
   exchangeCode,
   refreshOpenAIToken,
   validateSoraSessionToken,
+  inspectOpenAIAccessToken,
   batchCreate,
   batchUpdateCredentials,
   bulkUpdate,

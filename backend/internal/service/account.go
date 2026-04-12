@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 type Account struct {
@@ -1033,6 +1034,33 @@ func (a *Account) IsOpenAIOAuth() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeOAuth
 }
 
+const (
+	OpenAIAuthModeOAuthCodex = "oauth_codex"
+	OpenAIAuthModeChatWeb    = "chatweb"
+)
+
+func (a *Account) ResolveOpenAIAuthMode() string {
+	if !a.IsOpenAIOAuth() || a.Extra == nil {
+		return OpenAIAuthModeOAuthCodex
+	}
+	if mode, ok := a.Extra["openai_auth_mode"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(mode)) {
+		case OpenAIAuthModeChatWeb:
+			return OpenAIAuthModeChatWeb
+		case "", OpenAIAuthModeOAuthCodex:
+			return OpenAIAuthModeOAuthCodex
+		}
+	}
+	if enabled, ok := a.Extra["openai_chatweb_mode"].(bool); ok && enabled {
+		return OpenAIAuthModeChatWeb
+	}
+	return OpenAIAuthModeOAuthCodex
+}
+
+func (a *Account) IsOpenAIChatWebMode() bool {
+	return a.IsOpenAIOAuth() && a.ResolveOpenAIAuthMode() == OpenAIAuthModeChatWeb
+}
+
 func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
 }
@@ -1064,6 +1092,13 @@ func (a *Account) GetOpenAIRefreshToken() string {
 	return a.GetCredential("refresh_token")
 }
 
+func (a *Account) GetOpenAISessionToken() string {
+	if !a.IsOpenAIOAuth() {
+		return ""
+	}
+	return a.GetCredential("session_token")
+}
+
 func (a *Account) GetOpenAIIDToken() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
@@ -1089,21 +1124,39 @@ func (a *Account) GetChatGPTAccountID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
 	}
-	return a.GetCredential("chatgpt_account_id")
+	if value := a.GetCredential("chatgpt_account_id"); value != "" {
+		return value
+	}
+	if claims, err := openaipkg.DecodeAccessToken(a.GetOpenAIAccessToken()); err == nil && claims != nil {
+		return strings.TrimSpace(claims.GetUserInfo().ChatGPTAccountID)
+	}
+	return ""
 }
 
 func (a *Account) GetChatGPTUserID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
 	}
-	return a.GetCredential("chatgpt_user_id")
+	if value := a.GetCredential("chatgpt_user_id"); value != "" {
+		return value
+	}
+	if claims, err := openaipkg.DecodeAccessToken(a.GetOpenAIAccessToken()); err == nil && claims != nil {
+		return strings.TrimSpace(claims.GetUserInfo().ChatGPTUserID)
+	}
+	return ""
 }
 
 func (a *Account) GetOpenAIOrganizationID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
 	}
-	return a.GetCredential("organization_id")
+	if value := a.GetCredential("organization_id"); value != "" {
+		return value
+	}
+	if claims, err := openaipkg.DecodeAccessToken(a.GetOpenAIAccessToken()); err == nil && claims != nil {
+		return strings.TrimSpace(claims.GetUserInfo().OrganizationID)
+	}
+	return ""
 }
 
 func (a *Account) GetOpenAITokenExpiresAt() *time.Time {
@@ -1162,6 +1215,9 @@ func (a *Account) IsOveragesEnabled() bool {
 func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return false
+	}
+	if a.IsOpenAIChatWebMode() {
+		return true
 	}
 	if enabled, ok := a.Extra["openai_passthrough"].(bool); ok {
 		return enabled
@@ -1253,6 +1309,9 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)
 	if a == nil || !a.IsOpenAI() {
+		return OpenAIWSIngressModeOff
+	}
+	if a.IsOpenAIChatWebMode() {
 		return OpenAIWSIngressModeOff
 	}
 	if a.Extra == nil {
@@ -1358,7 +1417,7 @@ func (a *Account) IsAnthropicAPIKeyPassthroughEnabled() bool {
 // 字段：accounts.extra.codex_cli_only。
 // 字段缺失或类型不正确时，按 false（关闭）处理。
 func (a *Account) IsCodexCLIOnlyEnabled() bool {
-	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil || a.IsOpenAIChatWebMode() {
 		return false
 	}
 	enabled, ok := a.Extra["codex_cli_only"].(bool)

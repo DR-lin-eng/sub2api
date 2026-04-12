@@ -36,6 +36,20 @@ type stubOpenAIGroupRepo struct {
 	groups map[int64]*Group
 }
 
+type failingSchedulerCacheStub struct {
+	SchedulerCache
+	snapshotErr error
+	accountErr  error
+}
+
+func (s *failingSchedulerCacheStub) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
+	return nil, false, s.snapshotErr
+}
+
+func (s *failingSchedulerCacheStub) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
+	return nil, s.accountErr
+}
+
 func (r *stubOpenAIGroupRepo) GetByIDLite(ctx context.Context, id int64) (*Group, error) {
 	if group, ok := r.groups[id]; ok {
 		return group, nil
@@ -93,6 +107,49 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 
 func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccounts_FallsBackToRepoWhenSnapshotFails(t *testing.T) {
+	accounts := []Account{
+		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1},
+		{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1},
+	}
+	repo := stubOpenAIAccountRepo{accounts: accounts}
+	snapshot := &SchedulerSnapshotService{
+		cache:       &failingSchedulerCacheStub{snapshotErr: context.DeadlineExceeded},
+		accountRepo: repo,
+		cfg:         &config.Config{},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cfg:                &config.Config{},
+		schedulerSnapshot:  snapshot,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	got, err := svc.listSchedulableAccounts(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+}
+
+func TestOpenAIGatewayService_GetSchedulableAccount_FallsBackToRepoWhenSnapshotGetFails(t *testing.T) {
+	account := Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1}
+	repo := stubOpenAIAccountRepo{accounts: []Account{account}}
+	snapshot := &SchedulerSnapshotService{
+		cache:       &failingSchedulerCacheStub{accountErr: context.DeadlineExceeded},
+		accountRepo: repo,
+		cfg:         &config.Config{},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:       repo,
+		cfg:               &config.Config{},
+		schedulerSnapshot: snapshot,
+	}
+
+	got, err := svc.getSchedulableAccount(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, account.ID, got.ID)
 }
 
 type stubConcurrencyCache struct {

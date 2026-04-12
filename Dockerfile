@@ -96,6 +96,7 @@ LABEL org.opencontainers.image.source="${REPO_URL}"
 # Install runtime dependencies
 RUN apk add --no-cache \
     ca-certificates \
+    python3 \
     tzdata \
     su-exec \
     libpq \

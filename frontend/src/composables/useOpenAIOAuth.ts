@@ -163,7 +163,8 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
   // Validate Sora session token and get access token
   const validateSessionToken = async (
     sessionToken: string,
-    proxyId?: number | null
+    proxyId?: number | null,
+    endpoint?: string
   ): Promise<OpenAITokenInfo | null> => {
     if (!sessionToken.trim()) {
       error.value = 'Missing session token'
@@ -175,11 +176,37 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
       const tokenInfo = await adminAPI.accounts.validateSoraSessionToken(
         sessionToken.trim(),
         proxyId,
-        `${endpointPrefix}/st2at`
+        endpoint || `${endpointPrefix}/st2at`
       )
       return tokenInfo as OpenAITokenInfo
     } catch (err: any) {
       error.value = err.response?.data?.detail || 'Failed to validate session token'
+      appStore.showError(error.value)
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
+  const validateAccessToken = async (
+    accessToken: string,
+    endpoint?: string
+  ): Promise<OpenAITokenInfo | null> => {
+    if (!accessToken.trim()) {
+      error.value = 'Missing access token'
+      return null
+    }
+
+    loading.value = true
+    error.value = ''
+    try {
+      const tokenInfo = await adminAPI.accounts.inspectOpenAIAccessToken(
+        accessToken.trim(),
+        endpoint || '/admin/openai/at2info'
+      )
+      return tokenInfo as OpenAITokenInfo
+    } catch (err: any) {
+      error.value = buildAuthErrorMessage(err, { fallback: 'Failed to validate access token' })
       appStore.showError(error.value)
       return null
     } finally {
@@ -241,6 +268,7 @@ export function useOpenAIOAuth(options?: UseOpenAIOAuthOptions) {
     exchangeAuthCode,
     validateRefreshToken,
     validateSessionToken,
+    validateAccessToken,
     buildCredentials,
     buildExtraInfo
   }

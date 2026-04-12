@@ -201,6 +201,73 @@ func (h *OpenAIOAuthHandler) ExchangeSoraSessionTokenGateway(c gatewayctx.Gatewa
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
 }
 
+// ExchangeOpenAIChatWebSessionToken exchanges ChatGPT Web session token to access token.
+// POST /api/v1/admin/openai/st2at
+func (h *OpenAIOAuthHandler) ExchangeOpenAIChatWebSessionToken(c *gin.Context) {
+	h.ExchangeOpenAIChatWebSessionTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) ExchangeOpenAIChatWebSessionTokenGateway(c gatewayctx.GatewayContext) {
+	var req struct {
+		SessionToken string `json:"session_token"`
+		ST           string `json:"st"`
+		ProxyID      *int64 `json:"proxy_id"`
+	}
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+
+	sessionToken := strings.TrimSpace(req.SessionToken)
+	if sessionToken == "" {
+		sessionToken = strings.TrimSpace(req.ST)
+	}
+	if sessionToken == "" {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "session_token is required")
+		return
+	}
+
+	tokenInfo, err := h.openaiOAuthService.ExchangeChatGPTSessionToken(c.Request().Context(), sessionToken, req.ProxyID)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
+}
+
+// InspectOpenAIChatWebAccessToken decodes ChatGPT/OpenAI Web AT metadata.
+// POST /api/v1/admin/openai/at2info
+func (h *OpenAIOAuthHandler) InspectOpenAIChatWebAccessToken(c *gin.Context) {
+	h.InspectOpenAIChatWebAccessTokenGateway(gatewayctx.FromGin(c))
+}
+
+func (h *OpenAIOAuthHandler) InspectOpenAIChatWebAccessTokenGateway(c gatewayctx.GatewayContext) {
+	var req struct {
+		AccessToken string `json:"access_token"`
+		AT          string `json:"at"`
+	}
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+
+	accessToken := strings.TrimSpace(req.AccessToken)
+	if accessToken == "" {
+		accessToken = strings.TrimSpace(req.AT)
+	}
+	if accessToken == "" {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "access_token is required")
+		return
+	}
+
+	tokenInfo, err := h.openaiOAuthService.InspectAccessToken(accessToken)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, tokenInfo)
+}
+
 // RefreshAccountToken refreshes token for a specific OpenAI/Sora account
 // POST /api/v1/admin/openai/accounts/:id/refresh
 // POST /api/v1/admin/sora/accounts/:id/refresh

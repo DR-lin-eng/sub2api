@@ -2618,8 +2618,8 @@
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'sora' || form.platform === 'antigravity'"
-        :show-session-token-option="form.platform === 'sora'"
-        :show-access-token-option="form.platform === 'sora'"
+        :show-session-token-option="form.platform === 'sora' || form.platform === 'openai'"
+        :show-access-token-option="form.platform === 'sora' || form.platform === 'openai'"
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
@@ -3008,6 +3008,9 @@ interface OAuthFlowExposed {
   inputMethod: AuthInputMethod
   reset: () => void
 }
+
+const OPENAI_AUTH_MODE_OAUTH_CODEX = 'oauth_codex'
+const OPENAI_AUTH_MODE_CHATWEB = 'chatweb'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -3937,15 +3940,24 @@ const handleClose = () => {
   emit('close')
 }
 
-const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
+const buildOpenAIExtra = (
+  base?: Record<string, unknown>,
+  authMode: string = OPENAI_AUTH_MODE_OAUTH_CODEX
+): Record<string, unknown> | undefined => {
   if (form.platform !== 'openai') {
     return base
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
   if (accountCategory.value === 'oauth-based') {
-    extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-    extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+    extra.openai_auth_mode = authMode
+    if (authMode === OPENAI_AUTH_MODE_CHATWEB) {
+      extra.openai_oauth_responses_websockets_v2_mode = OPENAI_WS_MODE_OFF
+      extra.openai_oauth_responses_websockets_v2_enabled = false
+    } else {
+      extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
+      extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+    }
   } else if (accountCategory.value === 'apikey') {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
@@ -3953,14 +3965,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
-  if (openaiPassthroughEnabled.value) {
+  if (authMode === OPENAI_AUTH_MODE_CHATWEB || openaiPassthroughEnabled.value) {
     extra.openai_passthrough = true
   } else {
     delete extra.openai_passthrough
     delete extra.openai_oauth_passthrough
   }
 
-  if (accountCategory.value === 'oauth-based' && codexCLIOnlyEnabled.value) {
+  if (accountCategory.value === 'oauth-based' && authMode !== OPENAI_AUTH_MODE_CHATWEB && codexCLIOnlyEnabled.value) {
     extra.codex_cli_only = true
   } else {
     delete extra.codex_cli_only
@@ -4324,10 +4336,12 @@ const handleValidateRefreshToken = (rt: string) => {
 const handleValidateSessionToken = (sessionToken: string) => {
   if (form.platform === 'sora') {
     handleSoraValidateST(sessionToken)
+  } else if (form.platform === 'openai') {
+    handleOpenAIChatWebValidateST(sessionToken)
   }
 }
 
-// Sora 手动 AT 批量导入
+// OpenAI ChatWeb / Sora 手动 AT 批量导入
 const handleImportAccessToken = async (accessTokenInput: string) => {
   const oauthClient = activeOpenAIOAuth.value
   if (!accessTokenInput.trim()) return
@@ -4352,19 +4366,40 @@ const handleImportAccessToken = async (accessTokenInput: string) => {
   try {
     for (let i = 0; i < accessTokens.length; i++) {
       try {
-        const credentials: Record<string, unknown> = {
-          access_token: accessTokens[i],
+        const isOpenAIChatWeb = form.platform === 'openai'
+        const tokenInfo = await oauthClient.validateAccessToken(accessTokens[i], '/admin/openai/at2info')
+        if (!tokenInfo) {
+          failedCount++
+          errors.push(`#${i + 1}: ${oauthClient.error.value || 'Validation failed'}`)
+          oauthClient.error.value = ''
+          continue
         }
-        const soraExtra = buildSoraExtra()
+
+        const credentials = oauthClient.buildCredentials(tokenInfo)
+        const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
+        const extra = isOpenAIChatWeb
+          ? buildOpenAIExtra(oauthExtra, OPENAI_AUTH_MODE_CHATWEB)
+          : buildSoraExtra(oauthExtra)
+
+        if (isOpenAIChatWeb && !isOpenAIModelRestrictionDisabled.value) {
+          const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+          if (modelMapping) {
+            credentials.model_mapping = modelMapping
+          }
+        }
+
+        if (!applyTempUnschedConfig(credentials)) {
+          return
+        }
 
         const accountName = accessTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
         await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,
-          platform: 'sora',
+          platform: isOpenAIChatWeb ? 'openai' : 'sora',
           type: 'oauth',
           credentials,
-          extra: soraExtra,
+          extra,
           proxy_id: form.proxy_id,
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
@@ -4493,7 +4528,7 @@ const handleOpenAIExchange = async (authCode: string) => {
 
     const credentials = oauthClient.buildCredentials(tokenInfo)
     const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
-    const extra = buildOpenAIExtra(oauthExtra)
+    const extra = buildOpenAIExtra(oauthExtra, OPENAI_AUTH_MODE_OAUTH_CODEX)
     const shouldCreateOpenAI = form.platform === 'openai'
     const shouldCreateSora = form.platform === 'sora'
 
@@ -4610,7 +4645,7 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
 
         const credentials = oauthClient.buildCredentials(tokenInfo)
         const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
-        const extra = buildOpenAIExtra(oauthExtra)
+        const extra = buildOpenAIExtra(oauthExtra, OPENAI_AUTH_MODE_OAUTH_CODEX)
 
         // Add model mapping for OpenAI OAuth accounts（透传模式下不应用）
         if (shouldCreateOpenAI && !isOpenAIModelRestrictionDisabled.value) {
@@ -4684,6 +4719,107 @@ const handleOpenAIValidateRT = async (refreshTokenInput: string) => {
     if (successCount > 0 && failedCount === 0) {
       appStore.showSuccess(
         refreshTokenEntries.length > 1
+          ? t('admin.accounts.oauth.batchSuccess', { count: successCount })
+          : t('admin.accounts.accountCreated')
+      )
+      emit('created')
+      handleClose()
+    } else if (successCount > 0 && failedCount > 0) {
+      appStore.showWarning(
+        t('admin.accounts.oauth.batchPartialSuccess', { success: successCount, failed: failedCount })
+      )
+      oauthClient.error.value = errors.join('\n')
+      emit('created')
+    } else {
+      oauthClient.error.value = errors.join('\n')
+      appStore.showError(t('admin.accounts.oauth.batchFailed'))
+    }
+  } finally {
+    oauthClient.loading.value = false
+  }
+}
+
+// OpenAI ChatWeb 手动 ST 批量验证和创建
+const handleOpenAIChatWebValidateST = async (sessionTokenInput: string) => {
+  const oauthClient = activeOpenAIOAuth.value
+  if (!sessionTokenInput.trim()) return
+
+  const sessionTokens = sessionTokenInput
+    .split('\n')
+    .map((st) => st.trim())
+    .filter((st) => st)
+
+  if (sessionTokens.length === 0) {
+    oauthClient.error.value = t('admin.accounts.oauth.openai.pleaseEnterSessionToken')
+    return
+  }
+
+  oauthClient.loading.value = true
+  oauthClient.error.value = ''
+
+  let successCount = 0
+  let failedCount = 0
+  const errors: string[] = []
+
+  try {
+    for (let i = 0; i < sessionTokens.length; i++) {
+      try {
+        const tokenInfo = await oauthClient.validateSessionToken(
+          sessionTokens[i],
+          form.proxy_id,
+          '/admin/openai/st2at'
+        )
+        if (!tokenInfo) {
+          failedCount++
+          errors.push(`#${i + 1}: ${oauthClient.error.value || 'Validation failed'}`)
+          oauthClient.error.value = ''
+          continue
+        }
+
+        const credentials = oauthClient.buildCredentials(tokenInfo)
+        credentials.session_token = sessionTokens[i]
+        const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
+        const extra = buildOpenAIExtra(oauthExtra, OPENAI_AUTH_MODE_CHATWEB)
+
+        if (!isOpenAIModelRestrictionDisabled.value) {
+          const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+          if (modelMapping) {
+            credentials.model_mapping = modelMapping
+          }
+        }
+
+        if (!applyTempUnschedConfig(credentials)) {
+          return
+        }
+        const accountName = sessionTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
+
+        await adminAPI.accounts.create({
+          name: accountName,
+          notes: form.notes,
+          platform: 'openai',
+          type: 'oauth',
+          credentials,
+          extra,
+          proxy_id: form.proxy_id,
+          concurrency: form.concurrency,
+          load_factor: form.load_factor ?? undefined,
+          priority: form.priority,
+          rate_multiplier: form.rate_multiplier,
+          group_ids: form.group_ids,
+          expires_at: form.expires_at,
+          auto_pause_on_expired: autoPauseOnExpired.value
+        })
+        successCount++
+      } catch (error: any) {
+        failedCount++
+        const errMsg = error.response?.data?.detail || error.message || 'Unknown error'
+        errors.push(`#${i + 1}: ${errMsg}`)
+      }
+    }
+
+    if (successCount > 0 && failedCount === 0) {
+      appStore.showSuccess(
+        sessionTokens.length > 1
           ? t('admin.accounts.oauth.batchSuccess', { count: successCount })
           : t('admin.accounts.accountCreated')
       )

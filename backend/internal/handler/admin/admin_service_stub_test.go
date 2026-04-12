@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -350,7 +351,7 @@ func (s *stubAdminService) BatchDeleteProxies(ctx context.Context, ids []int64) 
 }
 
 func (s *stubAdminService) GetProxyAccounts(ctx context.Context, proxyID int64) ([]service.ProxyAccountSummary, error) {
-	return []service.ProxyAccountSummary{{ID: 1, Name: "account"}}, nil
+	return []service.ProxyAccountSummary{{ID: 1, Name: "account", Status: service.StatusActive}}, nil
 }
 
 func (s *stubAdminService) CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error) {
@@ -383,6 +384,10 @@ func (s *stubAdminService) CheckProxyQuality(ctx context.Context, id int64) (*se
 			{Target: "sora", Status: "pass", HTTPStatus: 401},
 		},
 	}, nil
+}
+
+func (s *stubAdminService) GetProxyUsageStats(ctx context.Context, proxyID int64) (*usagestats.UsageStats, error) {
+	return &usagestats.UsageStats{TotalRequests: 12}, nil
 }
 
 func (s *stubAdminService) ListRedeemCodes(ctx context.Context, page, pageSize int, codeType, status, search string) ([]service.RedeemCode, int64, error) {

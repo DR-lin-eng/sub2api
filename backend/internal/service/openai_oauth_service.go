@@ -19,6 +19,7 @@ import (
 )
 
 var openAISoraSessionAuthURL = "https://sora.chatgpt.com/api/auth/session"
+var openAIChatGPTSessionAuthURL = "https://chatgpt.com/api/auth/session"
 
 var soraSessionCookiePattern = regexp.MustCompile(`(?i)(?:^|[\n\r;])\s*(?:(?:set-cookie|cookie)\s*:\s*)?__Secure-(?:next-auth|authjs)\.session-token(?:\.(\d+))?=([^;\r\n]+)`)
 
@@ -327,6 +328,131 @@ func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessi
 		ClientID:    openai.SoraClientID,
 		Email:       strings.TrimSpace(sessionResp.User.Email),
 	}, nil
+}
+
+// ExchangeChatGPTSessionToken exchanges ChatGPT Web session_token to access_token.
+func (s *OpenAIOAuthService) ExchangeChatGPTSessionToken(ctx context.Context, sessionToken string, proxyID *int64) (*OpenAITokenInfo, error) {
+	sessionToken = normalizeSoraSessionTokenInput(sessionToken)
+	if strings.TrimSpace(sessionToken) == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_CHATWEB_SESSION_TOKEN_REQUIRED", "session_token is required")
+	}
+
+	proxyURL, err := s.resolveProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIChatGPTSessionAuthURL, nil)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CHATWEB_SESSION_REQUEST_BUILD_FAILED", "failed to build request: %v", err)
+	}
+	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+strings.TrimSpace(sessionToken))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+
+	client, err := httpclient.GetClient(httpclient.Options{
+		ProxyURL: proxyURL,
+		Timeout:  120 * time.Second,
+	})
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_CLIENT_FAILED", "create http client failed: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_REQUEST_FAILED", "request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_EXCHANGE_FAILED", "status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var sessionResp struct {
+		AccessToken string `json:"accessToken"`
+		Expires     string `json:"expires"`
+		User        struct {
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &sessionResp); err != nil {
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_PARSE_FAILED", "failed to parse response: %v", err)
+	}
+	accessToken := strings.TrimSpace(sessionResp.AccessToken)
+	if accessToken == "" {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_ACCESS_TOKEN_MISSING", "session exchange response missing access token")
+	}
+
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	if strings.TrimSpace(sessionResp.Expires) != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, sessionResp.Expires); parseErr == nil {
+			expiresAt = parsed.Unix()
+		}
+	}
+	expiresIn := expiresAt - time.Now().Unix()
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+
+	tokenInfo := &OpenAITokenInfo{
+		AccessToken: accessToken,
+		ExpiresIn:   expiresIn,
+		ExpiresAt:   expiresAt,
+		Email:       strings.TrimSpace(sessionResp.User.Email),
+	}
+	if claims, parseErr := openai.DecodeAccessToken(accessToken); parseErr == nil && claims != nil {
+		if info := claims.GetUserInfo(); info != nil {
+			if tokenInfo.Email == "" {
+				tokenInfo.Email = strings.TrimSpace(info.Email)
+			}
+			tokenInfo.ChatGPTAccountID = strings.TrimSpace(info.ChatGPTAccountID)
+			tokenInfo.ChatGPTUserID = strings.TrimSpace(info.ChatGPTUserID)
+			tokenInfo.OrganizationID = strings.TrimSpace(info.OrganizationID)
+			tokenInfo.PlanType = strings.TrimSpace(info.PlanType)
+		}
+	}
+	return tokenInfo, nil
+}
+
+// InspectAccessToken decodes a ChatGPT/OpenAI Web access token and extracts
+// the structured account metadata used by ChatWeb account import/reauth flows.
+func (s *OpenAIOAuthService) InspectAccessToken(accessToken string) (*OpenAITokenInfo, error) {
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_CHATWEB_ACCESS_TOKEN_REQUIRED", "access_token is required")
+	}
+
+	claims, err := openai.DecodeAccessToken(accessToken)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_CHATWEB_ACCESS_TOKEN_INVALID", "failed to decode access token: %v", err)
+	}
+
+	tokenInfo := &OpenAITokenInfo{
+		AccessToken: accessToken,
+		ClientID:    strings.TrimSpace(claims.ClientID),
+	}
+
+	if claims.Exp > 0 {
+		tokenInfo.ExpiresAt = claims.Exp
+		expiresIn := claims.Exp - time.Now().Unix()
+		if expiresIn < 0 {
+			expiresIn = 0
+		}
+		tokenInfo.ExpiresIn = expiresIn
+	}
+
+	if userInfo := claims.GetUserInfo(); userInfo != nil {
+		tokenInfo.Email = userInfo.Email
+		tokenInfo.ChatGPTAccountID = userInfo.ChatGPTAccountID
+		tokenInfo.ChatGPTUserID = userInfo.ChatGPTUserID
+		tokenInfo.OrganizationID = userInfo.OrganizationID
+		tokenInfo.PlanType = userInfo.PlanType
+	}
+
+	return tokenInfo, nil
 }
 
 func normalizeSoraSessionTokenInput(raw string) string {

@@ -128,12 +128,18 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-refresh-token-option="isSora || (isOpenAI && !isOpenAIChatWebAccount)"
+        :show-session-token-option="isSora || isOpenAIChatWebAccount"
+        :show-access-token-option="isSora || isOpenAIChatWebAccount"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isSora ? 'sora' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
+        :initial-input-method="initialOAuthInputMethod"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @validate-session-token="handleValidateSessionToken"
+        @import-access-token="handleImportAccessToken"
       />
 
     </div>
@@ -206,6 +212,7 @@ interface OAuthFlowExposed {
   oauthState: string
   projectId: string
   sessionKey: string
+  accessToken: string
   inputMethod: AuthInputMethod
   reset: () => void
 }
@@ -242,6 +249,11 @@ const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('code_as
 const isOpenAI = computed(() => props.account?.platform === 'openai')
 const isSora = computed(() => props.account?.platform === 'sora')
 const isOpenAILike = computed(() => isOpenAI.value || isSora.value)
+const isOpenAIChatWebAccount = computed(() => (
+  isOpenAI.value &&
+  props.account?.type === 'oauth' &&
+  ((props.account?.extra as Record<string, unknown> | undefined)?.openai_auth_mode === 'chatweb')
+))
 const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
 const isAntigravity = computed(() => props.account?.platform === 'antigravity')
@@ -275,8 +287,7 @@ const currentError = computed(() => {
 
 // Computed
 const isManualInputMethod = computed(() => {
-  // OpenAI/Sora/Gemini/Antigravity always use manual input (no cookie auth option)
-  return isOpenAILike.value || isGemini.value || isAntigravity.value || oauthFlowRef.value?.inputMethod === 'manual'
+  return (oauthFlowRef.value?.inputMethod || initialOAuthInputMethod.value) === 'manual'
 })
 
 const canExchangeCode = computed(() => {
@@ -285,6 +296,32 @@ const canExchangeCode = computed(() => {
   const loading = currentLoading.value
   return authCode.trim() && sessionId && !loading
 })
+
+const initialOAuthInputMethod = computed<AuthInputMethod>(() => {
+  if (isOpenAIChatWebAccount.value) return 'session_token'
+  if (isSora.value) return 'refresh_token'
+  return 'manual'
+})
+
+const buildOpenAIExtra = (
+  base?: Record<string, unknown>,
+  authMode: 'oauth_codex' | 'chatweb' = 'oauth_codex'
+): Record<string, unknown> => {
+  const extra: Record<string, unknown> = {
+    ...(((props.account?.extra as Record<string, unknown>) || {})),
+    ...(base || {}),
+    openai_auth_mode: authMode
+  }
+
+  if (authMode === 'chatweb') {
+    extra.openai_passthrough = true
+    extra.openai_oauth_responses_websockets_v2_mode = 'off'
+    extra.openai_oauth_responses_websockets_v2_enabled = false
+    delete extra.codex_cli_only
+  }
+
+  return extra
+}
 
 // Watchers
 watch(
@@ -374,7 +411,10 @@ const handleExchangeCode = async () => {
 
     // Build credentials and extra info
     const credentials = oauthClient.buildCredentials(tokenInfo)
-    const extra = oauthClient.buildExtraInfo(tokenInfo)
+    const extra = buildOpenAIExtra(
+      oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined,
+      'oauth_codex'
+    )
 
     try {
       // Update account with new credentials
@@ -501,6 +541,74 @@ const handleExchangeCode = async () => {
     } finally {
       claudeOAuth.loading.value = false
     }
+  }
+}
+
+const handleValidateSessionToken = async (sessionTokenInput: string) => {
+  if (!props.account || !sessionTokenInput.trim()) return
+
+  const oauthClient = activeOpenAIOAuth.value
+  const sessionToken = sessionTokenInput
+    .split('\n')
+    .map((st) => st.trim())
+    .find(Boolean)
+  if (!sessionToken) return
+
+  const endpoint = isOpenAI.value ? '/admin/openai/st2at' : '/admin/sora/st2at'
+  const tokenInfo = await oauthClient.validateSessionToken(sessionToken, props.account.proxy_id, endpoint)
+  if (!tokenInfo) return
+
+  const credentials = oauthClient.buildCredentials(tokenInfo)
+  credentials.session_token = sessionToken
+
+  try {
+    await adminAPI.accounts.update(props.account.id, {
+      type: 'oauth',
+      credentials,
+      extra: isOpenAI.value
+        ? buildOpenAIExtra(oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined, 'chatweb')
+        : props.account.extra
+    })
+    await adminAPI.accounts.clearError(props.account.id)
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized')
+    handleClose()
+  } catch (error: any) {
+    oauthClient.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(oauthClient.error.value)
+  }
+}
+
+const handleImportAccessToken = async (accessTokenInput: string) => {
+  if (!props.account || !accessTokenInput.trim()) return
+
+  const oauthClient = activeOpenAIOAuth.value
+  const accessToken = accessTokenInput
+    .split('\n')
+    .map((at) => at.trim())
+    .find(Boolean)
+  if (!accessToken) return
+
+  const tokenInfo = await oauthClient.validateAccessToken(accessToken, '/admin/openai/at2info')
+  if (!tokenInfo) return
+
+  const credentials = oauthClient.buildCredentials(tokenInfo)
+
+  try {
+    await adminAPI.accounts.update(props.account.id, {
+      type: 'oauth',
+      credentials,
+      extra: isOpenAI.value
+        ? buildOpenAIExtra(oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined, 'chatweb')
+        : props.account.extra
+    })
+    await adminAPI.accounts.clearError(props.account.id)
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized')
+    handleClose()
+  } catch (error: any) {
+    oauthClient.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(oauthClient.error.value)
   }
 }
 

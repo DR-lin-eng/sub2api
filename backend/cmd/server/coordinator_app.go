@@ -147,6 +147,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		proxyRepository,
 		apiKeyRepository,
 		repository.NewRedeemCodeRepository(client),
+		usageLogRepository,
 		userGroupRateRepository,
 		billingCacheService,
 		repository.NewProxyExitInfoProber(cfg),

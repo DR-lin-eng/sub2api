@@ -716,7 +716,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 			return
 		}
 		if result != nil {
-			if account.Type == service.AccountTypeOAuth {
+			if account.Type == service.AccountTypeOAuth && !account.IsOpenAIChatWebMode() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(transportCtx.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
@@ -1740,7 +1740,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocketGateway(transportCtx gatewayctx
 			if turnErr != nil || result == nil {
 				return
 			}
-			if account.Type == service.AccountTypeOAuth {
+			if account.Type == service.AccountTypeOAuth && !account.IsOpenAIChatWebMode() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)

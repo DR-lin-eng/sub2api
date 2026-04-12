@@ -228,6 +228,8 @@ func ExecutableAdminRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/generate-auth-url", Handler: h.Admin.OpenAIOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/exchange-code", Handler: h.Admin.OpenAIOAuth.ExchangeCodeGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/refresh-token", Handler: h.Admin.OpenAIOAuth.RefreshTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/st2at", Handler: h.Admin.OpenAIOAuth.ExchangeOpenAIChatWebSessionTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/at2info", Handler: h.Admin.OpenAIOAuth.InspectOpenAIChatWebAccessTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/accounts/:id/refresh", Handler: h.Admin.OpenAIOAuth.RefreshAccountTokenGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/openai/create-from-oauth", Handler: h.Admin.OpenAIOAuth.CreateAccountFromOAuthGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/sora/generate-auth-url", Handler: h.Admin.OpenAIOAuth.GenerateAuthURLGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
@@ -725,6 +727,8 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/generate-auth-url", h.Admin.OpenAIOAuth.GenerateAuthURL)
 		openai.POST("/exchange-code", h.Admin.OpenAIOAuth.ExchangeCode)
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
+		openai.POST("/st2at", h.Admin.OpenAIOAuth.ExchangeOpenAIChatWebSessionToken)
+		openai.POST("/at2info", h.Admin.OpenAIOAuth.InspectOpenAIChatWebAccessToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
 	}

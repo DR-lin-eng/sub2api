@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/soraerror"
 )
 
@@ -84,6 +85,7 @@ type AdminService interface {
 	CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error)
 	TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error)
 	CheckProxyQuality(ctx context.Context, id int64) (*ProxyQualityCheckResult, error)
+	GetProxyUsageStats(ctx context.Context, proxyID int64) (*usagestats.UsageStats, error)
 
 	// Redeem code management
 	ListRedeemCodes(ctx context.Context, page, pageSize int, codeType, status, search string) ([]RedeemCode, int64, error)
@@ -441,6 +443,7 @@ type adminServiceImpl struct {
 	proxyRepo            ProxyRepository
 	apiKeyRepo           APIKeyRepository
 	redeemCodeRepo       RedeemCodeRepository
+	usageLogRepo         UsageLogRepository
 	userGroupRateRepo    UserGroupRateRepository
 	billingCacheService  *BillingCacheService
 	proxyProber          ProxyExitInfoProber
@@ -466,6 +469,7 @@ func NewAdminService(
 	proxyRepo ProxyRepository,
 	apiKeyRepo APIKeyRepository,
 	redeemCodeRepo RedeemCodeRepository,
+	usageLogRepo UsageLogRepository,
 	userGroupRateRepo UserGroupRateRepository,
 	billingCacheService *BillingCacheService,
 	proxyProber ProxyExitInfoProber,
@@ -485,6 +489,7 @@ func NewAdminService(
 		proxyRepo:            proxyRepo,
 		apiKeyRepo:           apiKeyRepo,
 		redeemCodeRepo:       redeemCodeRepo,
+		usageLogRepo:         usageLogRepo,
 		userGroupRateRepo:    userGroupRateRepo,
 		billingCacheService:  billingCacheService,
 		proxyProber:          proxyProber,
@@ -782,14 +787,80 @@ func (s *adminServiceImpl) GetUserAPIKeys(ctx context.Context, userID int64, pag
 }
 
 func (s *adminServiceImpl) GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error) {
-	// Return mock data for now
+	if s.usageLogRepo == nil {
+		return map[string]any{
+			"period":          period,
+			"total_requests":  0,
+			"total_cost":      0.0,
+			"total_tokens":    0,
+			"avg_duration_ms": 0,
+		}, nil
+	}
+	startTime, endTime := resolveAdminUsagePeriodRange(period)
+	stats, err := s.usageLogRepo.GetStatsWithFilters(ctx, usagestats.UsageLogFilters{
+		UserID:    userID,
+		StartTime: &startTime,
+		EndTime:   &endTime,
+	})
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"period":          period,
-		"total_requests":  0,
-		"total_cost":      0.0,
-		"total_tokens":    0,
-		"avg_duration_ms": 0,
+		"total_requests":  stats.TotalRequests,
+		"total_cost":      stats.TotalCost,
+		"total_tokens":    stats.TotalTokens,
+		"avg_duration_ms": stats.AverageDurationMs,
 	}, nil
+}
+
+func resolveAdminUsagePeriodRange(period string) (time.Time, time.Time) {
+	endTime := time.Now().UTC()
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case "day", "today", "1d":
+		return endTime.Add(-24 * time.Hour), endTime
+	case "week", "7d":
+		return endTime.AddDate(0, 0, -7), endTime
+	case "year", "1y", "365d":
+		return endTime.AddDate(-1, 0, 0), endTime
+	case "all":
+		return time.Unix(0, 0).UTC(), endTime
+	case "month", "30d", "":
+		fallthrough
+	default:
+		return endTime.AddDate(0, 0, -30), endTime
+	}
+}
+
+func (s *adminServiceImpl) GetProxyUsageStats(ctx context.Context, proxyID int64) (*usagestats.UsageStats, error) {
+	if s.usageLogRepo == nil {
+		return &usagestats.UsageStats{}, nil
+	}
+	accounts, err := s.proxyRepo.ListAccountSummariesByProxyID(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	out := &usagestats.UsageStats{}
+	for _, account := range accounts {
+		stats, statsErr := s.usageLogRepo.GetStatsWithFilters(ctx, usagestats.UsageLogFilters{
+			AccountID: account.ID,
+		})
+		if statsErr != nil {
+			return nil, statsErr
+		}
+		out.TotalRequests += stats.TotalRequests
+		out.TotalInputTokens += stats.TotalInputTokens
+		out.TotalOutputTokens += stats.TotalOutputTokens
+		out.TotalCacheTokens += stats.TotalCacheTokens
+		out.TotalTokens += stats.TotalTokens
+		out.TotalCost += stats.TotalCost
+		out.TotalActualCost += stats.TotalActualCost
+		if stats.TotalRequests > 0 {
+			weightedDuration := out.AverageDurationMs*float64(out.TotalRequests-stats.TotalRequests) + stats.AverageDurationMs*float64(stats.TotalRequests)
+			out.AverageDurationMs = weightedDuration / float64(out.TotalRequests)
+		}
+	}
+	return out, nil
 }
 
 // GetUserBalanceHistory returns paginated balance/concurrency change records for a user.

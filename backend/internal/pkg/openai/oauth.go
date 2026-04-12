@@ -273,6 +273,23 @@ type OpenAIAuthClaims struct {
 	Organizations    []OrganizationClaim `json:"organizations"`
 }
 
+// OpenAIProfileClaims represents profile claims embedded in access tokens.
+type OpenAIProfileClaims struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+// AccessTokenClaims represents decoded ChatGPT Web access token claims.
+type AccessTokenClaims struct {
+	Sub        string               `json:"sub"`
+	Email      string               `json:"email"`
+	ClientID   string               `json:"client_id"`
+	Exp        int64                `json:"exp"`
+	Iat        int64                `json:"iat"`
+	OpenAIAuth *OpenAIAuthClaims    `json:"https://api.openai.com/auth,omitempty"`
+	Profile    *OpenAIProfileClaims `json:"https://api.openai.com/profile,omitempty"`
+}
+
 // OrganizationClaim represents an organization in the ID Token
 type OrganizationClaim struct {
 	ID        string `json:"id"`
@@ -326,12 +343,10 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	return params.Encode()
 }
 
-// DecodeIDToken decodes the ID Token JWT payload without validating expiration.
-// Use this for best-effort extraction (e.g., during data import) where the token may be expired.
-func DecodeIDToken(idToken string) (*IDTokenClaims, error) {
-	parts := strings.Split(idToken, ".")
+func decodeJWTClaimsNoVerify[T any](token string, out *T) error {
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
 	// Decode payload (second part)
@@ -349,15 +364,33 @@ func DecodeIDToken(idToken string) (*IDTokenClaims, error) {
 		// Try standard encoding
 		decoded, err = base64.StdEncoding.DecodeString(payload)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+			return fmt.Errorf("failed to decode JWT payload: %w", err)
 		}
 	}
-
-	var claims IDTokenClaims
-	if err := json.Unmarshal(decoded, &claims); err != nil {
-		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	if err := json.Unmarshal(decoded, out); err != nil {
+		return fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
+	return nil
+}
 
+// DecodeIDToken decodes the ID Token JWT payload without validating expiration.
+// Use this for best-effort extraction (e.g., during data import) where the token may be expired.
+func DecodeIDToken(idToken string) (*IDTokenClaims, error) {
+	var claims IDTokenClaims
+	if err := decodeJWTClaimsNoVerify(idToken, &claims); err != nil {
+		return nil, err
+	}
+	return &claims, nil
+}
+
+// DecodeAccessToken decodes an OpenAI/ChatGPT web access token payload without
+// validating its signature. This is used for best-effort extraction of
+// chatgpt_account_id/profile info from manually imported AT credentials.
+func DecodeAccessToken(accessToken string) (*AccessTokenClaims, error) {
+	var claims AccessTokenClaims
+	if err := decodeJWTClaimsNoVerify(accessToken, &claims); err != nil {
+		return nil, err
+	}
 	return &claims, nil
 }
 
@@ -419,5 +452,34 @@ func (c *IDTokenClaims) GetUserInfo() *UserInfo {
 		}
 	}
 
+	return info
+}
+
+// GetUserInfo extracts user info from access token claims.
+func (c *AccessTokenClaims) GetUserInfo() *UserInfo {
+	info := &UserInfo{
+		Email: c.Email,
+	}
+	if c.Profile != nil {
+		if strings.TrimSpace(info.Email) == "" {
+			info.Email = c.Profile.Email
+		}
+	}
+	if c.OpenAIAuth != nil {
+		info.ChatGPTAccountID = c.OpenAIAuth.ChatGPTAccountID
+		info.ChatGPTUserID = c.OpenAIAuth.ChatGPTUserID
+		info.PlanType = c.OpenAIAuth.ChatGPTPlanType
+		info.UserID = c.OpenAIAuth.UserID
+		info.Organizations = c.OpenAIAuth.Organizations
+		for _, org := range c.OpenAIAuth.Organizations {
+			if org.IsDefault {
+				info.OrganizationID = org.ID
+				break
+			}
+		}
+		if info.OrganizationID == "" && len(c.OpenAIAuth.Organizations) > 0 {
+			info.OrganizationID = c.OpenAIAuth.Organizations[0].ID
+		}
+	}
 	return info
 }

@@ -306,6 +306,7 @@ type ProxyAccountSummary struct {
 	Name     string  `json:"name"`
 	Platform string  `json:"platform"`
 	Type     string  `json:"type"`
+	Status   string  `json:"status,omitempty"`
 	Notes    *string `json:"notes,omitempty"`
 }
 

@@ -377,6 +377,64 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsRejectedB
 	require.True(t, logSink.ContainsFieldValue("reject_reason", "instructions_missing"))
 }
 
+func TestOpenAIGatewayService_ChatWebPassthrough_DoesNotRejectMissingInstructions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prevFactory := newOpenAIChatWebSentinelHelperRunner
+	newOpenAIChatWebSentinelHelperRunner = func() openAIChatWebSentinelHelperRunner {
+		return chatwebSentinelHelperStub{}
+	}
+	defer func() {
+		newOpenAIChatWebSentinelHelperRunner = prevFactory
+	}()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "Mozilla/5.0")
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"x-request-id": []string{"rid"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"id":"resp_chatweb","object":"response","model":"gpt-5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:          123,
+		Name:        "chatweb",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Extra: map[string]any{
+			"openai_auth_mode": OpenAIAuthModeChatWeb,
+		},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":false,"input":[{"type":"text","text":"hi"}]}`))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Empty(t, upstream.lastReq.Header.Get("Version"))
+	require.Empty(t, upstream.lastReq.Header.Get("Originator"))
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

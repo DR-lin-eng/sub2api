@@ -171,3 +171,47 @@ func TestOpenAIOAuthService_ExchangeSoraSessionToken_UsesLatestCompleteChunkGrou
 	require.NoError(t, err)
 	require.Equal(t, "at-token", info.AccessToken)
 }
+
+func TestOpenAIOAuthService_ExchangeChatGPTSessionToken_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Contains(t, r.Header.Get("Cookie"), "__Secure-next-auth.session-token=chatweb-st")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjX2NoYXR3ZWIiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyX2NoYXR3ZWIifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoiY2hhdHdlYkBleGFtcGxlLmNvbSJ9LCJleHAiOjQxMDI0NDQ4MDB9.","expires":"2099-01-01T00:00:00Z","user":{"email":"chatweb@example.com"}}`))
+	}))
+	defer server.Close()
+
+	origin := openAIChatGPTSessionAuthURL
+	openAIChatGPTSessionAuthURL = server.URL
+	defer func() { openAIChatGPTSessionAuthURL = origin }()
+
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer svc.Stop()
+
+	info, err := svc.ExchangeChatGPTSessionToken(context.Background(), "chatweb-st", nil)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, "chatweb@example.com", info.Email)
+	require.Equal(t, "acc_chatweb", info.ChatGPTAccountID)
+	require.Equal(t, "user_chatweb", info.ChatGPTUserID)
+}
+
+func TestOpenAIOAuthService_InspectAccessToken_Success(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer svc.Stop()
+
+	accessToken := "eyJhbGciOiJub25lIn0." +
+		"eyJjbGllbnRfaWQiOiJhcHBfY2hhdHdlYiIsImV4cCI6NDEwMjQ0NDgwMCwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY19jaGF0d2ViIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9jaGF0d2ViIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIiwib3JnYW5pemF0aW9ucyI6W3siaWQiOiJvcmdfMSIsImlzX2RlZmF1bHQiOnRydWV9XX0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6ImNoYXR3ZWJAZXhhbXBsZS5jb20ifX0."
+
+	info, err := svc.InspectAccessToken(accessToken)
+	require.NoError(t, err)
+	require.Equal(t, accessToken, info.AccessToken)
+	require.Equal(t, "app_chatweb", info.ClientID)
+	require.Equal(t, "chatweb@example.com", info.Email)
+	require.Equal(t, "acc_chatweb", info.ChatGPTAccountID)
+	require.Equal(t, "user_chatweb", info.ChatGPTUserID)
+	require.Equal(t, "org_1", info.OrganizationID)
+	require.Equal(t, "plus", info.PlanType)
+	require.Greater(t, info.ExpiresAt, int64(0))
+	require.GreaterOrEqual(t, info.ExpiresIn, int64(0))
+}

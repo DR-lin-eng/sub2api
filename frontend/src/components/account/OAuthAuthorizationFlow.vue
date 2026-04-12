@@ -205,7 +205,7 @@
                 </button>
               </div>
               <p class="mt-1 break-all text-xs text-blue-600 dark:text-blue-400">
-                {{ soraSessionUrl }}
+                {{ openAISessionUrl }}
               </p>
               <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
                 {{ t(getOAuthKey('sessionUrlHint')) }}
@@ -764,6 +764,7 @@ interface Props {
   showAccessTokenOption?: boolean // Whether to show access token input option (Sora only)
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
+  initialInputMethod?: AuthInputMethod
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -780,7 +781,8 @@ const props = withDefaults(defineProps<Props>(), {
   showSessionTokenOption: false,
   showAccessTokenOption: false,
   platform: 'anthropic',
-  showProjectId: true
+  showProjectId: true,
+  initialInputMethod: 'manual'
 })
 
 const emit = defineEmits<{
@@ -824,7 +826,7 @@ const oauthImportantNotice = computed(() => {
 })
 
 // Local state
-const inputMethod = ref<AuthInputMethod>(props.showCookieOption ? 'manual' : 'manual')
+const inputMethod = ref<AuthInputMethod>(props.initialInputMethod)
 const authCodeInput = ref('')
 const sessionKeyInput = ref('')
 const refreshTokenInput = ref('')
@@ -871,7 +873,11 @@ const parsedAccessTokensText = computed(() => {
   return parsedSoraRawTokens.value.accessTokens.join('\n')
 })
 
-const soraSessionUrl = 'https://sora.chatgpt.com/api/auth/session'
+const openAISessionUrl = computed(() => (
+  props.platform === 'openai'
+    ? 'https://chatgpt.com/api/auth/session'
+    : 'https://sora.chatgpt.com/api/auth/session'
+))
 
 const parsedAccessTokenCount = computed(() => {
   return accessTokenInput.value
@@ -884,6 +890,15 @@ const parsedAccessTokenCount = computed(() => {
 watch(inputMethod, (newVal) => {
   emit('update:inputMethod', newVal)
 })
+
+watch(
+  () => props.initialInputMethod,
+  (newVal) => {
+    if (newVal && inputMethod.value !== newVal) {
+      inputMethod.value = newVal
+    }
+  }
+)
 
 // Auto-extract code from callback URL (OpenAI/Gemini/Antigravity)
 // e.g., http://localhost:8085/callback?code=xxx...&state=...
@@ -954,11 +969,11 @@ const handleValidateSessionToken = () => {
 }
 
 const handleOpenSoraSessionUrl = () => {
-  window.open(soraSessionUrl, '_blank', 'noopener,noreferrer')
+  window.open(openAISessionUrl.value, '_blank', 'noopener,noreferrer')
 }
 
 const handleCopySoraSessionUrl = () => {
-  copyToClipboard(soraSessionUrl, 'URL copied to clipboard')
+  copyToClipboard(openAISessionUrl.value, 'URL copied to clipboard')
 }
 
 const handleImportAccessToken = () => {
@@ -975,6 +990,7 @@ defineExpose({
   sessionKey: sessionKeyInput,
   refreshToken: refreshTokenInput,
   sessionToken: sessionTokenInput,
+  accessToken: accessTokenInput,
   inputMethod,
   reset: () => {
     authCodeInput.value = ''
@@ -983,7 +999,8 @@ defineExpose({
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''
     sessionTokenInput.value = ''
-    inputMethod.value = 'manual'
+    accessTokenInput.value = ''
+    inputMethod.value = props.initialInputMethod
     showHelpDialog.value = false
   }
 })

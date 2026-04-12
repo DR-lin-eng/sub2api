@@ -315,18 +315,54 @@ func (h *RedeemHandler) GetStats(c *gin.Context) {
 }
 
 func (h *RedeemHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
-	// Return mock data for now
+	const pageSize = 1000
+	page := 1
+	totalCodes := int64(0)
+	activeCodes := int64(0)
+	usedCodes := int64(0)
+	expiredCodes := int64(0)
+	totalValueDistributed := 0.0
+	byType := map[string]int64{
+		service.RedeemTypeBalance:      0,
+		service.RedeemTypeConcurrency:  0,
+		service.RedeemTypeSubscription: 0,
+		service.RedeemTypeInvitation:   0,
+	}
+
+	for {
+		codes, total, err := h.adminService.ListRedeemCodes(c.Request().Context(), page, pageSize, "", "", "")
+		if err != nil {
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+			return
+		}
+		if page == 1 {
+			totalCodes = total
+		}
+		for _, code := range codes {
+			byType[code.Type]++
+			switch code.Status {
+			case service.StatusUnused:
+				activeCodes++
+			case service.StatusUsed:
+				usedCodes++
+				totalValueDistributed += code.Value
+			case service.StatusExpired:
+				expiredCodes++
+			}
+		}
+		if len(codes) < pageSize || int64(page*pageSize) >= total {
+			break
+		}
+		page++
+	}
+
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
-		"total_codes":             0,
-		"active_codes":            0,
-		"used_codes":              0,
-		"expired_codes":           0,
-		"total_value_distributed": 0.0,
-		"by_type": map[string]any{
-			"balance":     0,
-			"concurrency": 0,
-			"trial":       0,
-		},
+		"total_codes":             totalCodes,
+		"active_codes":            activeCodes,
+		"used_codes":              usedCodes,
+		"expired_codes":           expiredCodes,
+		"total_value_distributed": totalValueDistributed,
+		"by_type":                 byType,
 	})
 }
 

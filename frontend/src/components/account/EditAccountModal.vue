@@ -1143,7 +1143,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'apikey' || (account?.type === 'oauth' && !isOpenAIChatWebMode))"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1173,7 +1173,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'apikey' || (account?.type === 'oauth' && !isOpenAIChatWebMode))"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1254,7 +1254,7 @@
 
       <!-- OpenAI OAuth Codex 官方客户端限制开关 -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        v-if="account?.platform === 'openai' && account?.type === 'oauth' && !isOpenAIChatWebMode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1998,8 +1998,13 @@ const openaiResponsesWebSocketV2Mode = computed({
 const openAIWSModeConcurrencyHintKey = computed(() =>
   resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
 )
+const isOpenAIChatWebMode = computed(() => (
+  props.account?.platform === 'openai' &&
+  props.account?.type === 'oauth' &&
+  (((props.account?.extra as Record<string, unknown> | undefined)?.openai_auth_mode) === 'chatweb')
+))
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  props.account?.platform === 'openai' && openaiPassthroughEnabled.value
+  props.account?.platform === 'openai' && openaiPassthroughEnabled.value && !isOpenAIChatWebMode.value
 )
 
 // Computed: current preset mappings based on platform
@@ -2135,7 +2140,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   codexCLIOnlyEnabled.value = false
   anthropicPassthroughEnabled.value = false
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'apikey')) {
-    openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
+    const isChatWeb = newAccount.type === 'oauth' && extra?.openai_auth_mode === 'chatweb'
+    openaiPassthroughEnabled.value = isChatWeb || extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
     openaiOAuthResponsesWebSocketV2Mode.value = resolveOpenAIWSModeFromExtra(extra, {
       modeKey: 'openai_oauth_responses_websockets_v2_mode',
       enabledKey: 'openai_oauth_responses_websockets_v2_enabled',
@@ -2149,7 +2155,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       defaultMode: OPENAI_WS_MODE_OFF
     })
     if (newAccount.type === 'oauth') {
-      codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
+      codexCLIOnlyEnabled.value = !isChatWeb && extra?.codex_cli_only === true
     }
   }
   if (newAccount.platform === 'anthropic' && newAccount.type === 'apikey') {
@@ -3162,15 +3168,21 @@ const handleSubmit = async () => {
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth') {
-        newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-        newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+        newExtra.openai_auth_mode = isOpenAIChatWebMode.value ? 'chatweb' : 'oauth_codex'
+        if (isOpenAIChatWebMode.value) {
+          newExtra.openai_oauth_responses_websockets_v2_mode = OPENAI_WS_MODE_OFF
+          newExtra.openai_oauth_responses_websockets_v2_enabled = false
+        } else {
+          newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
+          newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+        }
       } else if (props.account.type === 'apikey') {
         newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
         newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
       }
       delete newExtra.responses_websockets_v2_enabled
       delete newExtra.openai_ws_enabled
-      if (openaiPassthroughEnabled.value) {
+      if (isOpenAIChatWebMode.value || openaiPassthroughEnabled.value) {
         newExtra.openai_passthrough = true
       } else {
         delete newExtra.openai_passthrough
@@ -3178,7 +3190,9 @@ const handleSubmit = async () => {
       }
 
       if (props.account.type === 'oauth') {
-        if (codexCLIOnlyEnabled.value) {
+        if (isOpenAIChatWebMode.value) {
+          delete newExtra.codex_cli_only
+        } else if (codexCLIOnlyEnabled.value) {
           newExtra.codex_cli_only = true
         } else if (hadCodexCLIOnlyEnabled) {
           // 关闭时显式写 false，避免 extra 为空被后端忽略导致旧值无法清除

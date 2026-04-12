@@ -34,6 +34,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const openAISchedulerDirectFallbackTimeout = 3 * time.Second
+
 const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
@@ -41,6 +43,7 @@ const (
 	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
 	openaiStickySessionTTL = time.Hour // 粘性会话TTL
 	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	chatGPTWebUserAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -58,6 +61,10 @@ const (
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 )
+
+func shouldApplyOpenAICodexOAuthTransform(account *Account) bool {
+	return account != nil && account.IsOpenAIOAuth() && !account.IsOpenAIChatWebMode()
+}
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
@@ -1305,6 +1312,14 @@ func (s *OpenAIGatewayService) resolveOpenAIUpstreamUserAgent(ctx context.Contex
 		if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
 			return customUA
 		}
+		if account.IsOpenAIChatWebMode() {
+			if c != nil {
+				if userAgent := strings.TrimSpace(c.HeaderValue("User-Agent")); userAgent != "" {
+					return userAgent
+				}
+			}
+			return chatGPTWebUserAgent
+		}
 	}
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		return codexCLIUserAgent
@@ -1331,6 +1346,12 @@ func (s *OpenAIGatewayService) resolveOpenAIUpstreamUserAgent(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIUpstreamOriginatorWithSample(ctx context.Context, c gatewayctx.GatewayContext, account *Account, isOfficialClient bool) string {
+	if account != nil && account.IsOpenAIChatWebMode() {
+		if c != nil {
+			return strings.TrimSpace(c.HeaderValue("originator"))
+		}
+		return ""
+	}
 	if c != nil {
 		if originator := strings.TrimSpace(c.HeaderValue("originator")); originator != "" {
 			return originator
@@ -1901,21 +1922,44 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwarenessSingleGroup(ctx con
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
-		return accounts, err
+		if err == nil {
+			return accounts, nil
+		}
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] scheduler snapshot list failed, fallback to repo: group=%v err=%v", groupID, err)
 	}
+	return s.listSchedulableAccountsDirect(ctx, groupID)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsDirect(ctx context.Context, groupID *int64) ([]Account, error) {
+	queryCtx, cancel := s.openAISchedulerDirectFallbackContext(ctx)
+	defer cancel()
 	var accounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByPlatform(queryCtx, PlatformOpenAI)
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(queryCtx, *groupID, PlatformOpenAI)
 	} else {
-		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(queryCtx, PlatformOpenAI)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
 	return accounts, nil
+}
+
+func (s *OpenAIGatewayService) openAISchedulerDirectFallbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx != nil && ctx.Err() != nil {
+		return context.WithCancel(ctx)
+	}
+	timeout := openAISchedulerDirectFallbackTimeout
+	if s != nil && s.cfg != nil && s.cfg.Gateway.Scheduling.DbFallbackTimeoutSeconds > 0 {
+		cfgTimeout := time.Duration(s.cfg.Gateway.Scheduling.DbFallbackTimeoutSeconds) * time.Second
+		if cfgTimeout > 0 {
+			timeout = cfgTimeout
+		}
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
@@ -1958,8 +2002,14 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	)
 	if s.schedulerSnapshot != nil {
 		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
-	} else {
-		account, err = s.accountRepo.GetByID(ctx, accountID)
+		if err != nil {
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] scheduler snapshot get account failed, fallback to repo: account=%d err=%v", accountID, err)
+		}
+	}
+	if account == nil && (s.schedulerSnapshot == nil || err != nil) {
+		queryCtx, cancel := s.openAISchedulerDirectFallbackContext(ctx)
+		defer cancel()
+		account, err = s.accountRepo.GetByID(queryCtx, accountID)
 	}
 	if err != nil || account == nil {
 		return account, err
@@ -2193,7 +2243,7 @@ func (s *OpenAIGatewayService) ForwardContext(ctx context.Context, c gatewayctx.
 		})
 		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
 	}
-	if account.IsOpenAIPassthroughEnabled() {
+	if account.IsOpenAIChatWebMode() || account.IsOpenAIPassthroughEnabled() {
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
 		if requestForwardModel != "" && requestForwardModel != reqModel {
 			patchedBody, patchErr := sjson.SetBytes(body, "model", requestForwardModel)
@@ -2267,7 +2317,7 @@ func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gateway
 		}
 		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
 	}
-	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
+	passthroughEnabled := account.IsOpenAIChatWebMode() || account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
@@ -2391,7 +2441,7 @@ func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gateway
 		}
 	}
 
-	if account.Type == AccountTypeOAuth {
+	if shouldApplyOpenAICodexOAuthTransform(account) {
 		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPathContext(c))
 		if codexResult.Modified {
 			bodyModified = true
@@ -2827,7 +2877,7 @@ func (s *OpenAIGatewayService) forwardWithContext(ctx context.Context, c gateway
 		}
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
-		if account.Type == AccountTypeOAuth {
+		if shouldApplyOpenAICodexOAuthTransform(account) {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 			}
@@ -2877,7 +2927,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthroughContext(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
-	if account != nil && account.Type == AccountTypeOAuth {
+	if account != nil && account.IsOpenAIChatWebMode() {
+		return s.forwardOpenAIChatWebConversationContext(ctx, c, account, body, reqModel, reasoningEffort, reqStream, startTime)
+	}
+
+	if shouldApplyOpenAICodexOAuthTransform(account) {
 		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
 			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
 			setOpsUpstreamErrorContext(c, http.StatusForbidden, rejectMsg, "")
@@ -3208,52 +3262,138 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthroughContext(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		apiKeyID := getAPIKeyIDFromGatewayContext(c)
-		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
-		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
-		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		if isOpenAIResponsesCompactPathContext(c) {
-			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
+		if account.IsOpenAIChatWebMode() {
+			chatwebSession := s.buildOpenAIChatWebSentinelSession(ctx, c, account)
+			sessionID := strings.TrimSpace(req.Header.Get("oai-session-id"))
+			if sessionID == "" {
+				sessionID = uuid.NewString()
+				req.Header.Set("oai-session-id", sessionID)
 			}
+			if req.Header.Get("oai-language") == "" {
+				req.Header.Set("oai-language", openAIChatWebLanguageDefault)
+			}
+			if req.Header.Get("oai-client-build-number") == "" {
+				req.Header.Set("oai-client-build-number", openAIChatWebClientBuildNumberDefault)
+			}
+			if req.Header.Get("oai-client-version") == "" {
+				req.Header.Set("oai-client-version", openAIChatWebClientVersionDefault)
+			}
+			if req.Header.Get("oai-device-id") == "" {
+				req.Header.Set("oai-device-id", chatwebSession.DeviceID)
+			}
+			if req.Header.Get("origin") == "" {
+				req.Header.Set("origin", openAIChatWebBaseURL)
+			}
+			if req.Header.Get("referer") == "" {
+				req.Header.Set("referer", openAIChatWebBaseURL+"/")
+			}
+			if req.Header.Get("priority") == "" {
+				req.Header.Set("priority", "u=1, i")
+			}
+			if req.Header.Get("sec-fetch-site") == "" {
+				req.Header.Set("sec-fetch-site", "same-origin")
+			}
+			if req.Header.Get("sec-fetch-mode") == "" {
+				req.Header.Set("sec-fetch-mode", "cors")
+			}
+			if req.Header.Get("sec-fetch-dest") == "" {
+				req.Header.Set("sec-fetch-dest", "empty")
+			}
+			if req.Header.Get("sec-ch-ua") == "" {
+				req.Header.Set("sec-ch-ua", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
+			}
+			if req.Header.Get("sec-ch-ua-mobile") == "" {
+				req.Header.Set("sec-ch-ua-mobile", "?0")
+			}
+			if req.Header.Get("sec-ch-ua-platform") == "" {
+				req.Header.Set("sec-ch-ua-platform", `"macOS"`)
+			}
+			if req.Header.Get("x-openai-target-path") == "" {
+				req.Header.Set("x-openai-target-path", req.URL.Path)
+			}
+			if req.Header.Get("x-openai-target-route") == "" {
+				req.Header.Set("x-openai-target-route", req.URL.Path)
+			}
+			if isOpenAIResponsesCompactPathContext(c) {
+				req.Header.Set("accept", "application/json")
+			} else if req.Header.Get("accept") == "" {
+				if gjson.GetBytes(body, "stream").Bool() {
+					req.Header.Set("accept", "text/event-stream")
+				} else {
+					req.Header.Set("accept", "application/json")
+				}
+			}
+			sentinelBundle, err := s.prepareOpenAIChatWebSentinel(ctx, c, account, token, chatwebSession, sessionID, req.Header.Get("referer"))
+			if err != nil {
+				return nil, fmt.Errorf("prepare chatweb sentinel: %w", err)
+			}
+			if sentinelBundle != nil {
+				if sentinelBundle.ProofToken != "" {
+					req.Header.Set("openai-sentinel-proof-token", sentinelBundle.ProofToken)
+				}
+				if sentinelBundle.ChatRequirementsToken != "" {
+					req.Header.Set("openai-sentinel-chat-requirements-token", sentinelBundle.ChatRequirementsToken)
+				}
+				if sentinelBundle.TurnstileToken != "" {
+					req.Header.Set("openai-sentinel-turnstile-token", sentinelBundle.TurnstileToken)
+				}
+				if sentinelBundle.SOToken != "" {
+					req.Header.Set("openai-sentinel-so-token", sentinelBundle.SOToken)
+				}
+				if sentinelBundle.PrepareToken != "" {
+					req.Header.Set("openai-sentinel-chat-requirements-prepare-token", sentinelBundle.PrepareToken)
+				}
+				if sentinelBundle.ExtraData != "" {
+					req.Header.Set("openai-sentinel-extra-data", sentinelBundle.ExtraData)
+				}
+				if sentinelBundle.EchoLogs != "" {
+					req.Header.Set("oai-echo-logs", sentinelBundle.EchoLogs)
+				}
+			}
+		} else {
+			apiKeyID := getAPIKeyIDFromGatewayContext(c)
+			// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
+			clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
+			clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
+			if isOpenAIResponsesCompactPathContext(c) {
+				req.Header.Set("accept", "application/json")
+				if req.Header.Get("version") == "" {
+					req.Header.Set("version", codexCLIVersion)
+				}
+				if clientSessionID == "" {
+					clientSessionID = resolveOpenAICompactSessionIDContext(c)
+				}
+			} else if req.Header.Get("accept") == "" {
+				req.Header.Set("accept", "text/event-stream")
+			}
+			if req.Header.Get("OpenAI-Beta") == "" {
+				req.Header.Set("OpenAI-Beta", "responses=experimental")
+			}
+			if req.Header.Get("originator") == "" {
+				if originator := s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI); originator != "" {
+					req.Header.Set("originator", originator)
+				}
+			}
+			// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
 			if clientSessionID == "" {
-				clientSessionID = resolveOpenAICompactSessionIDContext(c)
+				clientSessionID = promptCacheKey
 			}
-		} else if req.Header.Get("accept") == "" {
-			req.Header.Set("accept", "text/event-stream")
-		}
-		if req.Header.Get("OpenAI-Beta") == "" {
-			req.Header.Set("OpenAI-Beta", "responses=experimental")
-		}
-		if req.Header.Get("originator") == "" {
-			req.Header.Set("originator", s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI))
-		}
-		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
-		if clientSessionID == "" {
-			clientSessionID = promptCacheKey
-		}
-		if clientConversationID == "" {
-			clientConversationID = promptCacheKey
-		}
-		if clientSessionID != "" {
-			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, clientSessionID))
-		}
-		if clientConversationID != "" {
-			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
+			if clientConversationID == "" {
+				clientConversationID = promptCacheKey
+			}
+			if clientSessionID != "" {
+				req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, clientSessionID))
+			}
+			if clientConversationID != "" {
+				req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
+			}
+			if sampledFingerprint != nil && !isCodexCLI {
+				s.identityService.ApplyOpenAIFingerprint(req, sampledFingerprint)
+			}
 		}
 	}
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(req.Header.Get("user-agent"), req.Header.Get("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
-	if account.Type == AccountTypeOAuth {
-		sampledFingerprint := s.observeOpenAIOfficialClientSample(ctx, c, account, isCodexCLI)
-		if sampledFingerprint == nil {
-			sampledFingerprint = s.getOpenAISampledFingerprint(ctx, account)
-		}
-		if sampledFingerprint != nil && !isCodexCLI {
-			s.identityService.ApplyOpenAIFingerprint(req, sampledFingerprint)
-		}
-	}
 	if upstreamUA := s.resolveOpenAIUpstreamUserAgent(ctx, c, account, isCodexCLI); upstreamUA != "" {
 		req.Header.Set("user-agent", upstreamUA)
 	}
@@ -3954,13 +4094,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, 
 			}
 		}
 	}
-	if account.Type == AccountTypeOAuth {
+	if shouldApplyOpenAICodexOAuthTransform(account) {
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
 		req.Header.Del("conversation_id")
 		req.Header.Del("session_id")
 
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
-		req.Header.Set("originator", s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI))
+		if originator := s.resolveOpenAIUpstreamOriginatorWithSample(ctx, c, account, isCodexCLI); originator != "" {
+			req.Header.Set("originator", originator)
+		} else {
+			req.Header.Del("originator")
+		}
 		apiKeyID := getAPIKeyIDFromGatewayContext(c)
 		if isOpenAIResponsesCompactPathContext(c) {
 			req.Header.Set("accept", "application/json")
@@ -3979,7 +4123,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestContext(ctx context.Context, 
 		}
 	}
 
-	if sampledFingerprint != nil && account.Type == AccountTypeOAuth && !isCodexCLI {
+	if sampledFingerprint != nil && shouldApplyOpenAICodexOAuthTransform(account) && !isCodexCLI {
 		s.identityService.ApplyOpenAIFingerprint(req, sampledFingerprint)
 	}
 	if upstreamUA := s.resolveOpenAIUpstreamUserAgent(ctx, c, account, isCodexCLI); upstreamUA != "" {
@@ -4843,7 +4987,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponseContext(ctx context.Context, resp *http.Response, c gatewayctx.GatewayContext, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {
-	if account != nil && account.Type == AccountTypeOAuth && isOpenAIResponsesCompactPathContext(c) {
+	if account != nil && shouldApplyOpenAICodexOAuthTransform(account) && isOpenAIResponsesCompactPathContext(c) {
 		keepalive := getOpenAICompactKeepaliveContext(c)
 		if keepalive == nil || !keepalive.emittedAny() {
 			responseheaders.WriteFilteredHeaders(c.Header(), resp.Header, s.responseHeaderFilter)

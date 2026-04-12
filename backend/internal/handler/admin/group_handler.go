@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -388,14 +389,60 @@ func (h *GroupHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
 		return
 	}
 
-	// Return mock data for now
+	totalAPIKeys := int64(0)
+	activeAPIKeys := int64(0)
+	if h.adminService != nil {
+		const pageSize = 500
+		page := 1
+		for {
+			keys, total, loadErr := h.adminService.GetGroupAPIKeys(c.Request().Context(), groupID, page, pageSize)
+			if loadErr != nil {
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, loadErr)
+				return
+			}
+			if page == 1 {
+				totalAPIKeys = total
+			}
+			for _, key := range keys {
+				if key.Status == service.StatusActive {
+					activeAPIKeys++
+				}
+			}
+			if len(keys) < pageSize || int64(page*pageSize) >= total {
+				break
+			}
+			page++
+		}
+	}
+
+	totalRequests := int64(0)
+	totalCost := 0.0
+	if h.dashboardService != nil {
+		startTime := time.Unix(0, 0).UTC()
+		endTime := time.Now().UTC().Add(time.Second)
+		stats, loadErr := h.dashboardService.GetGroupStatsWithFilters(
+			c.Request().Context(),
+			startTime,
+			endTime,
+			0, 0, 0, groupID,
+			nil, nil, nil,
+		)
+		if loadErr != nil {
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, loadErr)
+			return
+		}
+		for _, item := range stats {
+			totalRequests += item.Requests
+			totalCost += item.Cost
+		}
+	}
+
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
-		"total_api_keys":  0,
-		"active_api_keys": 0,
-		"total_requests":  0,
-		"total_cost":      0.0,
+		"total_api_keys":  totalAPIKeys,
+		"active_api_keys": activeAPIKeys,
+		"total_requests":  totalRequests,
+		"total_cost":      totalCost,
 	})
-	_ = groupID // TODO: implement actual stats
 }
 
 // GetUsageSummary returns today's and cumulative cost for all groups.

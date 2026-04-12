@@ -307,14 +307,62 @@ func (h *ProxyHandler) GetStatsGateway(c gatewayctx.GatewayContext) {
 		return
 	}
 
-	// Return mock data for now
-	_ = proxyID
+	proxy, err := h.adminService.GetProxy(c.Request().Context(), proxyID)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	accounts, err := h.adminService.GetProxyAccounts(c.Request().Context(), proxyID)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	totalAccounts := len(accounts)
+	activeAccounts := 0
+	for _, account := range accounts {
+		if account.Status == service.StatusActive {
+			activeAccounts++
+		}
+	}
+	totalRequests := int64(0)
+	if stats, statsErr := h.adminService.GetProxyUsageStats(c.Request().Context(), proxyID); statsErr == nil && stats != nil {
+		totalRequests = stats.TotalRequests
+	}
+	averageLatency := int64(0)
+	successRate := 0.0
+	if proxies, listErr := h.adminService.GetAllProxiesWithAccountCount(c.Request().Context()); listErr == nil {
+		for i := range proxies {
+			if proxies[i].ID != proxyID {
+				continue
+			}
+			if proxies[i].LatencyMs != nil {
+				averageLatency = *proxies[i].LatencyMs
+			}
+			if proxies[i].QualityScore != nil {
+				successRate = float64(*proxies[i].QualityScore)
+			} else {
+				switch proxies[i].QualityStatus {
+				case "healthy", "pass", "success":
+					successRate = 100
+				case "warn", "challenge":
+					successRate = 50
+				default:
+					successRate = 0
+				}
+			}
+			break
+		}
+	}
+	if averageLatency == 0 && proxy != nil {
+		averageLatency = 0
+	}
+
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, map[string]any{
-		"total_accounts":  0,
-		"active_accounts": 0,
-		"total_requests":  0,
-		"success_rate":    100.0,
-		"average_latency": 0,
+		"total_accounts":  totalAccounts,
+		"active_accounts": activeAccounts,
+		"total_requests":  totalRequests,
+		"success_rate":    successRate,
+		"average_latency": averageLatency,
 	})
 }
 

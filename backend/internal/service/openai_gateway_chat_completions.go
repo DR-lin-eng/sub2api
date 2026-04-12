@@ -62,7 +62,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
-	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(mappedModel) {
+	if promptCacheKey == "" && shouldApplyOpenAICodexOAuthTransform(account) && shouldAutoInjectPromptCacheKeyForCompat(mappedModel) {
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, mappedModel)
 		compatPromptCacheInjected = promptCacheKey != ""
 	}
@@ -95,7 +95,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	if account.Type == AccountTypeOAuth {
+	if shouldApplyOpenAICodexOAuthTransform(account) {
 		var reqBody map[string]any
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
@@ -112,6 +112,38 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
 		}
 	}
 
+	if account.IsOpenAIChatWebMode() {
+		resp, prepared, token, err := s.beginOpenAIChatWebConversationRequest(ctx, c, account, responsesBody)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		defer s.pingOpenAIChatWebSentinel(context.Background(), account, token, prepared)
+
+		if resp.StatusCode >= 400 {
+			return s.handleChatCompletionsErrorResponseContext(resp, c, account)
+		}
+
+		var result *OpenAIForwardResult
+		var handleErr error
+		if clientStream {
+			result, handleErr = s.handleChatStreamingResponseContext(resp, c, originalModel, mappedModel, includeUsage, startTime)
+		} else {
+			result, handleErr = s.handleChatBufferedStreamingResponseContext(resp, c, originalModel, mappedModel, startTime)
+		}
+		if handleErr == nil && result != nil {
+			if responsesReq.ServiceTier != "" {
+				st := responsesReq.ServiceTier
+				result.ServiceTier = &st
+			}
+			if responsesReq.Reasoning != nil && responsesReq.Reasoning.Effort != "" {
+				re := responsesReq.Reasoning.Effort
+				result.ReasoningEffort = &re
+			}
+		}
+		return result, handleErr
+	}
+
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -120,6 +152,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
 
 	// 6. Build upstream request
 	upstreamReq, err := s.buildUpstreamRequestContext(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
+	if account.IsOpenAIChatWebMode() {
+		upstreamReq, err = s.buildUpstreamRequestOpenAIPassthroughContext(ctx, c, account, responsesBody, token)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
@@ -219,7 +254,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletionsContext(
 	}
 
 	// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
-	if handleErr == nil && account.Type == AccountTypeOAuth {
+	if handleErr == nil && shouldApplyOpenAICodexOAuthTransform(account) {
 		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 		}
