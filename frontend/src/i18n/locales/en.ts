@@ -1947,6 +1947,7 @@ export default {
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',
+        chatgptWebApi: 'ChatGPT WebAPI / ChatWeb',
         responsesApi: 'Responses API',
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
@@ -2223,7 +2224,8 @@ export default {
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
         enableSora: 'Enable Sora simultaneously',
-        enableSoraHint: 'Sora uses the same OpenAI account. Enable to create Sora account simultaneously.'
+        enableSoraHint: 'Sora uses the same OpenAI account. Enable to create Sora account simultaneously.',
+        chatWebModeDesc: 'WebAPI / ChatWeb mode uses an independent ChatGPT Web session chain. This path only needs ST or AT and no longer mixes with OAuth auth-code input.'
       },
       anthropic: {
         apiKeyPassthrough: 'Auto passthrough (auth only)',

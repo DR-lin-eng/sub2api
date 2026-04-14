@@ -415,7 +415,7 @@
       <!-- Account Type Selection (OpenAI) -->
       <div v-if="form.platform === 'openai'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-2 gap-3" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-3 gap-3" data-tour="account-form-type">
           <button
             type="button"
             @click="accountCategory = 'oauth-based'"
@@ -439,6 +439,32 @@
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.chatgptOauth') }}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            @click="accountCategory = 'webapi'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'webapi'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'webapi'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="link" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">WebAPI</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.chatgptWebApi') }}</span>
             </div>
           </button>
 
@@ -2368,7 +2394,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="form.platform === 'openai'"
+        v-if="form.platform === 'openai' && accountCategory !== 'webapi'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2474,6 +2500,16 @@
               ]"
             />
           </button>
+        </div>
+      </div>
+
+      <!-- OpenAI WebAPI / ChatWeb 模式说明 -->
+      <div
+        v-if="form.platform === 'openai' && accountCategory === 'webapi'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-3 text-sm text-cyan-800 dark:border-cyan-800/40 dark:bg-cyan-900/20 dark:text-cyan-200">
+          {{ t('admin.accounts.openai.chatWebModeDesc') }}
         </div>
       </div>
 
@@ -2617,11 +2653,13 @@
         :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'sora' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
-        :show-refresh-token-option="form.platform === 'openai' || form.platform === 'sora' || form.platform === 'antigravity'"
-        :show-session-token-option="form.platform === 'sora' || form.platform === 'openai'"
-        :show-access-token-option="form.platform === 'sora' || form.platform === 'openai'"
+        :show-manual-option="!(form.platform === 'openai' && accountCategory === 'webapi')"
+        :show-refresh-token-option="form.platform === 'sora' || form.platform === 'antigravity' || (form.platform === 'openai' && accountCategory === 'oauth-based')"
+        :show-session-token-option="form.platform === 'sora' || (form.platform === 'openai' && accountCategory === 'webapi')"
+        :show-access-token-option="form.platform === 'sora' || (form.platform === 'openai' && accountCategory === 'webapi')"
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
+        :initial-input-method="form.platform === 'openai' && accountCategory === 'webapi' ? 'session_token' : 'manual'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
@@ -3105,7 +3143,7 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'webapi' | 'apikey' | 'bedrock'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -3261,7 +3299,7 @@ const openAIWSModeConcurrencyHintKey = computed(() =>
 )
 
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  form.platform === 'openai' && openaiPassthroughEnabled.value
+  form.platform === 'openai' && openaiPassthroughEnabled.value && accountCategory.value !== 'webapi'
 )
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -3346,7 +3384,7 @@ const isOAuthFlow = computed(() => {
   if (form.platform === 'anthropic' && accountCategory.value === 'bedrock') {
     return false
   }
-  return accountCategory.value === 'oauth-based'
+  return accountCategory.value === 'oauth-based' || accountCategory.value === 'webapi'
 })
 
 const isManualInputMethod = computed(() => {
@@ -3418,7 +3456,7 @@ watch(
       form.type = 'bedrock' as AccountType
       return
     }
-    if (category === 'oauth-based') {
+    if (category === 'oauth-based' || category === 'webapi') {
       form.type = method as AccountType // 'oauth' or 'setup-token'
     } else {
       form.type = 'apikey'
@@ -3949,7 +3987,7 @@ const buildOpenAIExtra = (
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
-  if (accountCategory.value === 'oauth-based') {
+  if (accountCategory.value === 'oauth-based' || accountCategory.value === 'webapi') {
     extra.openai_auth_mode = authMode
     if (authMode === OPENAI_AUTH_MODE_CHATWEB) {
       extra.openai_oauth_responses_websockets_v2_mode = OPENAI_WS_MODE_OFF

@@ -2132,6 +2132,7 @@ export default {
       types: {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',
+        chatgptWebApi: 'ChatGPT WebAPI / ChatWeb',
         responsesApi: 'Responses API',
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
@@ -2371,7 +2372,8 @@ export default {
         codexCLIOnlyDesc: '仅对 OpenAI OAuth 生效。开启后仅允许 Codex 官方客户端家族访问；关闭后完全绕过并保持原逻辑。',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
         enableSora: '同时启用 Sora',
-        enableSoraHint: 'Sora 使用相同的 OpenAI 账号，开启后将同时创建 Sora 平台账号'
+        enableSoraHint: 'Sora 使用相同的 OpenAI 账号，开启后将同时创建 Sora 平台账号',
+        chatWebModeDesc: 'WebAPI / ChatWeb 模式会走独立的 ChatGPT Web 会话链路。这里仅需要 ST 或 AT，不再混用 OAuth 授权码输入。'
       },
       anthropic: {
         apiKeyPassthrough: '自动透传（仅替换认证）',

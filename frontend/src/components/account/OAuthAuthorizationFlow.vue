@@ -15,7 +15,7 @@
             {{ methodLabel }}
           </label>
           <div class="flex flex-wrap gap-4">
-            <label class="flex cursor-pointer items-center gap-2">
+            <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
                 type="radio"
@@ -759,6 +759,7 @@ interface Props {
   allowMultiple?: boolean
   methodLabel?: string
   showCookieOption?: boolean // Whether to show cookie auto-auth option
+  showManualOption?: boolean // Whether to show manual auth code option
   showRefreshTokenOption?: boolean // Whether to show refresh token input option (OpenAI only)
   showSessionTokenOption?: boolean // Whether to show session token input option (Sora only)
   showAccessTokenOption?: boolean // Whether to show access token input option (Sora only)
@@ -777,6 +778,7 @@ const props = withDefaults(defineProps<Props>(), {
   allowMultiple: false,
   methodLabel: 'Authorization Method',
   showCookieOption: true,
+  showManualOption: true,
   showRefreshTokenOption: false,
   showSessionTokenOption: false,
   showAccessTokenOption: false,
@@ -837,7 +839,9 @@ const oauthState = ref('')
 const projectId = ref('')
 
 // Computed: show method selection when either cookie or refresh token option is enabled
-const showMethodSelection = computed(() => props.showCookieOption || props.showRefreshTokenOption || props.showSessionTokenOption || props.showAccessTokenOption)
+const showMethodSelection = computed(() =>
+  props.showManualOption || props.showCookieOption || props.showRefreshTokenOption || props.showSessionTokenOption || props.showAccessTokenOption
+)
 
 // Clipboard
 const { copied, copyToClipboard } = useClipboard()
