@@ -85,6 +85,7 @@ type Config struct {
 	Process                 ProcessConfig                 `mapstructure:"process"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	Sora                    SoraConfig                    `mapstructure:"sora"`
+	OpenAI                  OpenAIConfig                  `mapstructure:"openai"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
 	Timezone                string                        `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
@@ -336,6 +337,26 @@ type ProcessConfig struct {
 	LogReopenSignalEnabled         bool   `mapstructure:"log_reopen_signal_enabled"`
 	ConfigReloadSignalEnabled      bool   `mapstructure:"config_reload_signal_enabled"`
 	EnableCPUAffinity              bool   `mapstructure:"enable_cpu_affinity"`
+}
+
+// OpenAIConfig OpenAI 相关配置
+type OpenAIConfig struct {
+	ChatWeb OpenAIChatWebConfig `mapstructure:"chatweb"`
+}
+
+// OpenAIChatWebConfig ChatGPT Web 相关配置
+type OpenAIChatWebConfig struct {
+	CurlCFFISidecar OpenAIChatWebCurlCFFISidecarConfig `mapstructure:"curl_cffi_sidecar"`
+}
+
+// OpenAIChatWebCurlCFFISidecarConfig ChatGPT Web 专用 curl_cffi sidecar 配置
+type OpenAIChatWebCurlCFFISidecarConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	BaseURL             string `mapstructure:"base_url"`
+	Impersonate         string `mapstructure:"impersonate"`
+	TimeoutSeconds      int    `mapstructure:"timeout_seconds"`
+	SessionReuseEnabled bool   `mapstructure:"session_reuse_enabled"`
+	SessionTTLSeconds   int    `mapstructure:"session_ttl_seconds"`
 }
 
 // SoraConfig 直连 Sora 配置
@@ -1684,6 +1705,14 @@ func setDefaults() {
 	viper.SetDefault("sora.storage.cleanup.retention_days", 7)
 	viper.SetDefault("sora.storage.cleanup.schedule", "0 3 * * *")
 
+	// OpenAI ChatWeb curl_cffi sidecar 配置（优先走 sidecar，失败回退 Go client）
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.enabled", true)
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.base_url", "http://openai-chatweb-curl-cffi-sidecar:8080")
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.impersonate", "chrome131")
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.timeout_seconds", 60)
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.session_reuse_enabled", true)
+	viper.SetDefault("openai.chatweb.curl_cffi_sidecar.session_ttl_seconds", 3600)
+
 	// TokenRefresh
 	viper.SetDefault("token_refresh.enabled", true)
 	viper.SetDefault("token_refresh.check_interval_minutes", 5)        // 每5分钟检查一次
@@ -2194,6 +2223,16 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Sora.Client.CurlCFFISidecar.BaseURL) == "" {
 		return fmt.Errorf("sora.client.curl_cffi_sidecar.base_url is required")
+	}
+	if c.OpenAI.ChatWeb.CurlCFFISidecar.TimeoutSeconds < 0 {
+		return fmt.Errorf("openai.chatweb.curl_cffi_sidecar.timeout_seconds must be non-negative")
+	}
+	if c.OpenAI.ChatWeb.CurlCFFISidecar.SessionTTLSeconds < 0 {
+		return fmt.Errorf("openai.chatweb.curl_cffi_sidecar.session_ttl_seconds must be non-negative")
+	}
+	if c.OpenAI.ChatWeb.CurlCFFISidecar.Enabled &&
+		strings.TrimSpace(c.OpenAI.ChatWeb.CurlCFFISidecar.BaseURL) == "" {
+		return fmt.Errorf("openai.chatweb.curl_cffi_sidecar.base_url is required when enabled")
 	}
 	if c.Sora.Storage.MaxConcurrentDownloads < 0 {
 		return fmt.Errorf("sora.storage.max_concurrent_downloads must be non-negative")

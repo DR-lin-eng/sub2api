@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/curlcffi"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -39,9 +42,10 @@ type openAIChatWebSessionInput struct {
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore *openai.SessionStore
-	proxyRepo    ProxyRepository
-	oauthClient  OpenAIOAuthClient
+	sessionStore           *openai.SessionStore
+	proxyRepo              ProxyRepository
+	oauthClient            OpenAIOAuthClient
+	chatWebCurlCFFISidecar *curlcffi.Client
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
@@ -51,6 +55,13 @@ func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthCli
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
+}
+
+func (s *OpenAIOAuthService) SetOpenAIChatWebCurlCFFISidecarClient(client *curlcffi.Client) {
+	if s == nil {
+		return
+	}
+	s.chatWebCurlCFFISidecar = client
 }
 
 // OpenAIAuthURLResult contains the authorization URL and session info
@@ -351,52 +362,122 @@ func (s *OpenAIOAuthService) ExchangeChatGPTSessionToken(ctx context.Context, se
 		return nil, err
 	}
 
+	requestHeaders := buildOpenAIChatWebSessionHeaders(parsedSession)
+	if s.chatWebCurlCFFISidecar != nil {
+		statusCode, responseHeaders, body, sidecarErr := s.exchangeChatGPTSessionTokenViaCurlCFFISidecar(ctx, parsedSession, requestHeaders, proxyURL)
+		if sidecarErr == nil {
+			return buildOpenAIChatWebTokenInfoFromSessionResponse(statusCode, responseHeaders, body)
+		}
+		slog.Warn(
+			"openai_chatweb_session_exchange_sidecar_fallback",
+			"reason", "sidecar_unavailable",
+			"error", sidecarErr,
+		)
+	}
+
+	statusCode, responseHeaders, body, err := exchangeChatGPTSessionTokenViaHTTP(ctx, requestHeaders, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return buildOpenAIChatWebTokenInfoFromSessionResponse(statusCode, responseHeaders, body)
+}
+
+func buildOpenAIChatWebSessionHeaders(parsedSession openAIChatWebSessionInput) map[string]string {
+	return map[string]string{
+		"Cookie":                  parsedSession.CookieHeader,
+		"Accept":                  "application/json",
+		"Origin":                  "https://chatgpt.com",
+		"Referer":                 "https://chatgpt.com/",
+		"User-Agent":              chatGPTWebUserAgent,
+		"Sec-CH-UA":               `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`,
+		"Sec-CH-UA-Mobile":        "?0",
+		"Sec-CH-UA-Platform":      `"macOS"`,
+		"Sec-Fetch-Dest":          "empty",
+		"Sec-Fetch-Mode":          "cors",
+		"Sec-Fetch-Site":          "same-origin",
+		"OAI-Language":            openAIChatWebLanguageDefault,
+		"OAI-Device-Id":           parsedSession.DeviceID,
+		"OAI-Client-Build-Number": openAIChatWebClientBuildNumberDefault,
+		"OAI-Client-Version":      openAIChatWebClientVersionDefault,
+		"X-OpenAI-Target-Path":    "/api/auth/session",
+		"X-OpenAI-Target-Route":   "/api/auth/session",
+	}
+}
+
+func exchangeChatGPTSessionTokenViaHTTP(ctx context.Context, requestHeaders map[string]string, proxyURL string) (int, http.Header, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIChatGPTSessionAuthURL, nil)
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CHATWEB_SESSION_REQUEST_BUILD_FAILED", "failed to build request: %v", err)
+		return 0, nil, nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CHATWEB_SESSION_REQUEST_BUILD_FAILED", "failed to build request: %v", err)
 	}
-	req.Header.Set("Cookie", parsedSession.CookieHeader)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/")
-	req.Header.Set("User-Agent", chatGPTWebUserAgent)
-	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
-	req.Header.Set("Sec-CH-UA-Mobile", "?0")
-	req.Header.Set("Sec-CH-UA-Platform", `"macOS"`)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("OAI-Language", openAIChatWebLanguageDefault)
-	req.Header.Set("OAI-Device-Id", parsedSession.DeviceID)
-	req.Header.Set("OAI-Client-Build-Number", openAIChatWebClientBuildNumberDefault)
-	req.Header.Set("OAI-Client-Version", openAIChatWebClientVersionDefault)
-	req.Header.Set("X-OpenAI-Target-Path", "/api/auth/session")
-	req.Header.Set("X-OpenAI-Target-Route", "/api/auth/session")
+	for key, value := range requestHeaders {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
 
 	client, err := httpclient.GetClient(httpclient.Options{
 		ProxyURL: proxyURL,
 		Timeout:  120 * time.Second,
 	})
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_CLIENT_FAILED", "create http client failed: %v", err)
+		return 0, nil, nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_CLIENT_FAILED", "create http client failed: %v", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_REQUEST_FAILED", "request failed: %v", err)
+		return 0, nil, nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_REQUEST_FAILED", "request failed: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if resp.StatusCode != http.StatusOK {
-		if soraerror.IsCloudflareChallengeResponse(resp.StatusCode, resp.Header, body) {
+	return resp.StatusCode, resp.Header.Clone(), body, nil
+}
+
+func (s *OpenAIOAuthService) exchangeChatGPTSessionTokenViaCurlCFFISidecar(
+	ctx context.Context,
+	parsedSession openAIChatWebSessionInput,
+	requestHeaders map[string]string,
+	proxyURL string,
+) (int, http.Header, []byte, error) {
+	if s == nil || s.chatWebCurlCFFISidecar == nil {
+		return 0, nil, nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_CHATWEB_SESSION_CURL_CFFI_UNAVAILABLE", "curl_cffi sidecar client is not configured")
+	}
+
+	sessionKey := ""
+	if s.chatWebCurlCFFISidecar.EnabledForSessionReuse() {
+		sessionKey = buildOpenAIChatWebCurlCFFISessionKey(parsedSession.SessionToken, proxyURL)
+	}
+	resp, err := s.chatWebCurlCFFISidecar.Do(ctx, curlcffi.Request{
+		Method:            http.MethodGet,
+		URL:               openAIChatGPTSessionAuthURL,
+		Headers:           requestHeaders,
+		ProxyURL:          proxyURL,
+		SessionKey:        sessionKey,
+		SessionTTLSeconds: s.chatWebCurlCFFISidecar.DefaultSessionTTLSeconds(),
+	})
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	return resp.StatusCode, resp.Headers, resp.Body, nil
+}
+
+func buildOpenAIChatWebCurlCFFISessionKey(sessionToken, proxyURL string) string {
+	tokenHash := sha256.Sum256([]byte(strings.TrimSpace(sessionToken)))
+	proxyHash := sha256.Sum256([]byte(strings.TrimSpace(proxyURL)))
+	return "openai-chatweb-st2at:" + hex.EncodeToString(tokenHash[:]) + ":" + hex.EncodeToString(proxyHash[:8])
+}
+
+func buildOpenAIChatWebTokenInfoFromSessionResponse(statusCode int, responseHeaders http.Header, body []byte) (*OpenAITokenInfo, error) {
+	if statusCode != http.StatusOK {
+		if soraerror.IsCloudflareChallengeResponse(statusCode, responseHeaders, body) {
 			message := soraerror.FormatCloudflareChallengeMessage(
 				"ChatGPT session exchange blocked by Cloudflare challenge. Please use a clean residential/browser-like proxy or provide a fuller browser cookie set.",
-				resp.Header,
+				responseHeaders,
 				body,
 			)
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_CLOUDFLARE_CHALLENGE", "%s", message)
 		}
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_EXCHANGE_FAILED", "status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_EXCHANGE_FAILED", "status %d: %s", statusCode, strings.TrimSpace(string(body)))
 	}
 
 	var sessionResp struct {

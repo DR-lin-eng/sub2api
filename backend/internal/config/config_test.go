@@ -1859,6 +1859,77 @@ func TestValidateSoraCloudflareChallengeCooldownNonNegative(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatWebCurlCFFISidecarDefaults(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.OpenAI.ChatWeb.CurlCFFISidecar.Enabled {
+		t.Fatalf("OpenAI ChatWeb curl_cffi sidecar should be enabled by default")
+	}
+	if cfg.OpenAI.ChatWeb.CurlCFFISidecar.BaseURL == "" {
+		t.Fatalf("OpenAI ChatWeb curl_cffi sidecar base_url should not be empty by default")
+	}
+	if cfg.OpenAI.ChatWeb.CurlCFFISidecar.Impersonate == "" {
+		t.Fatalf("OpenAI ChatWeb curl_cffi sidecar impersonate should not be empty by default")
+	}
+	if !cfg.OpenAI.ChatWeb.CurlCFFISidecar.SessionReuseEnabled {
+		t.Fatalf("OpenAI ChatWeb curl_cffi sidecar session reuse should be enabled by default")
+	}
+	if cfg.OpenAI.ChatWeb.CurlCFFISidecar.SessionTTLSeconds <= 0 {
+		t.Fatalf("OpenAI ChatWeb curl_cffi sidecar session ttl should be positive by default")
+	}
+}
+
+func TestValidateOpenAIChatWebCurlCFFISidecarBaseURLRequiredWhenEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.OpenAI.ChatWeb.CurlCFFISidecar.Enabled = true
+	cfg.OpenAI.ChatWeb.CurlCFFISidecar.BaseURL = "  "
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "openai.chatweb.curl_cffi_sidecar.base_url is required when enabled") {
+		t.Fatalf("Validate() error = %v, want openai sidecar base_url required error", err)
+	}
+}
+
+func TestValidateOpenAIChatWebCurlCFFISidecarCanDisable(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.OpenAI.ChatWeb.CurlCFFISidecar.Enabled = false
+	cfg.OpenAI.ChatWeb.CurlCFFISidecar.BaseURL = "  "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil when openai sidecar disabled", err)
+	}
+}
+
+func TestValidateOpenAIChatWebCurlCFFISidecarSessionTTLNonNegative(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	cfg.OpenAI.ChatWeb.CurlCFFISidecar.SessionTTLSeconds = -1
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "openai.chatweb.curl_cffi_sidecar.session_ttl_seconds must be non-negative") {
+		t.Fatalf("Validate() error = %v, want openai sidecar session ttl error", err)
+	}
+}
+
 func TestLoad_DefaultGatewayUsageRecordConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

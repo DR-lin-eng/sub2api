@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/curlcffi"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
@@ -252,4 +255,87 @@ func TestOpenAIOAuthService_ExchangeChatGPTSessionToken_CloudflareChallenge(t *t
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "OPENAI_CHATWEB_SESSION_CLOUDFLARE_CHALLENGE")
 	require.Contains(t, err.Error(), "Cloudflare")
+}
+
+func TestOpenAIOAuthService_ExchangeChatGPTSessionToken_PrefersCurlCFFISidecar(t *testing.T) {
+	var sidecarCalls int32
+	sidecarServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&sidecarCalls, 1)
+
+		var payload struct {
+			Method  string            `json:"method"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, http.MethodGet, payload.Method)
+		require.Equal(t, openAIChatGPTSessionAuthURL, payload.URL)
+		require.Contains(t, payload.Headers["Cookie"], "__Secure-next-auth.session-token=chatweb-st")
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status_code":200,"headers":{"content-type":"application/json"},"body":"{\"accessToken\":\"eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjX3NpZGVjYXIiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyX3NpZGVjYXIifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoic2lkZWNhckBleGFtcGxlLmNvbSJ9LCJleHAiOjQxMDI0NDQ4MDB9.\",\"expires\":\"2099-01-01T00:00:00Z\",\"user\":{\"email\":\"sidecar@example.com\"}}"}`))
+	}))
+	defer sidecarServer.Close()
+
+	client, err := curlcffi.NewClient(curlcffi.Config{
+		BaseURL:             sidecarServer.URL,
+		Impersonate:         "chrome131",
+		TimeoutSeconds:      30,
+		SessionReuseEnabled: true,
+		SessionTTLSeconds:   3600,
+	})
+	require.NoError(t, err)
+
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer svc.Stop()
+	svc.SetOpenAIChatWebCurlCFFISidecarClient(client)
+
+	info, err := svc.ExchangeChatGPTSessionToken(context.Background(), "chatweb-st", nil)
+	require.NoError(t, err)
+	require.Equal(t, "sidecar@example.com", info.Email)
+	require.Equal(t, "acc_sidecar", info.ChatGPTAccountID)
+	require.Equal(t, "user_sidecar", info.ChatGPTUserID)
+	require.EqualValues(t, 1, atomic.LoadInt32(&sidecarCalls))
+}
+
+func TestOpenAIOAuthService_ExchangeChatGPTSessionToken_SidecarFailureFallbackToHTTP(t *testing.T) {
+	var sidecarCalls int32
+	sidecarServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&sidecarCalls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"sidecar unavailable"}`))
+	}))
+	defer sidecarServer.Close()
+
+	client, err := curlcffi.NewClient(curlcffi.Config{
+		BaseURL:             sidecarServer.URL,
+		Impersonate:         "chrome131",
+		TimeoutSeconds:      30,
+		SessionReuseEnabled: true,
+		SessionTTLSeconds:   3600,
+	})
+	require.NoError(t, err)
+
+	var upstreamCalls int32
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjX2ZhbGxiYWNrIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9mYWxsYmFjayJ9LCJodHRwczovL2FwaS5vcGVuYWkuY29tL3Byb2ZpbGUiOnsiZW1haWwiOiJmYWxsYmFja0BleGFtcGxlLmNvbSJ9LCJleHAiOjQxMDI0NDQ4MDB9.","expires":"2099-01-01T00:00:00Z","user":{"email":"fallback@example.com"}}`))
+	}))
+	defer upstreamServer.Close()
+
+	origin := openAIChatGPTSessionAuthURL
+	openAIChatGPTSessionAuthURL = upstreamServer.URL
+	defer func() { openAIChatGPTSessionAuthURL = origin }()
+
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer svc.Stop()
+	svc.SetOpenAIChatWebCurlCFFISidecarClient(client)
+
+	info, err := svc.ExchangeChatGPTSessionToken(context.Background(), "chatweb-st", nil)
+	require.NoError(t, err)
+	require.Equal(t, "fallback@example.com", info.Email)
+	require.Equal(t, "acc_fallback", info.ChatGPTAccountID)
+	require.EqualValues(t, 1, atomic.LoadInt32(&sidecarCalls))
+	require.EqualValues(t, 1, atomic.LoadInt32(&upstreamCalls))
 }

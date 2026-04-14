@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/curlcffi"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -633,6 +634,32 @@ func ProvideGatewayService(
 	return svc
 }
 
+// ProvideOpenAIOAuthService wires optional ChatWeb curl_cffi sidecar dependencies onto OpenAIOAuthService.
+func ProvideOpenAIOAuthService(
+	cfg *config.Config,
+	proxyRepo ProxyRepository,
+	oauthClient OpenAIOAuthClient,
+) *OpenAIOAuthService {
+	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
+	if cfg == nil || !cfg.OpenAI.ChatWeb.CurlCFFISidecar.Enabled {
+		return svc
+	}
+
+	sidecarClient, err := curlcffi.NewClient(curlcffi.Config{
+		BaseURL:             cfg.OpenAI.ChatWeb.CurlCFFISidecar.BaseURL,
+		Impersonate:         cfg.OpenAI.ChatWeb.CurlCFFISidecar.Impersonate,
+		TimeoutSeconds:      cfg.OpenAI.ChatWeb.CurlCFFISidecar.TimeoutSeconds,
+		SessionReuseEnabled: cfg.OpenAI.ChatWeb.CurlCFFISidecar.SessionReuseEnabled,
+		SessionTTLSeconds:   cfg.OpenAI.ChatWeb.CurlCFFISidecar.SessionTTLSeconds,
+	})
+	if err != nil {
+		logger.LegacyPrintf("wire.openai_oauth", "openai chatweb curl_cffi sidecar disabled: %v", err)
+		return svc
+	}
+	svc.SetOpenAIChatWebCurlCFFISidecarClient(sidecarClient)
+	return svc
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -660,7 +687,7 @@ var ProviderSet = wire.NewSet(
 	NewSoraGatewayService,
 	NewOpenAIGatewayService,
 	NewOAuthService,
-	NewOpenAIOAuthService,
+	ProvideOpenAIOAuthService,
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,

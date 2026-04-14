@@ -653,6 +653,30 @@ sora:
       # Cron 调度表达式
       schedule: "0 3 * * *"
 
+# OpenAI ChatWeb curl_cffi sidecar
+# OpenAI ChatWeb curl_cffi sidecar 配置
+openai:
+  chatweb:
+    curl_cffi_sidecar:
+      # Enable sidecar-first path for ChatWeb session exchange (st2at)
+      # 开启 ChatWeb st2at 的 sidecar 优先路径（失败自动回退 Go client）
+      enabled: true
+      # Sidecar base URL (default endpoint: /request)
+      # sidecar 基础地址（默认请求端点：/request）
+      base_url: "http://openai-chatweb-curl-cffi-sidecar:8080"
+      # curl_cffi impersonate profile, e.g. chrome131/chrome124/safari18_0
+      # curl_cffi 指纹伪装 profile，例如 chrome131/chrome124/safari18_0
+      impersonate: "chrome131"
+      # Sidecar request timeout (seconds)
+      # sidecar 请求超时（秒）
+      timeout_seconds: 60
+      # Reuse session key per account+proxy to let sidecar persist cookies/session
+      # 按账号+代理复用 session key，让 sidecar 持久化 cookies/session
+      session_reuse_enabled: true
+      # Session TTL in sidecar (seconds)
+      # sidecar 会话 TTL（秒）
+      session_ttl_seconds: 3600
+
 # Token refresh behavior
 # token 刷新行为控制
 token_refresh:
