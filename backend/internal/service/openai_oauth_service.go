@@ -16,16 +16,25 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/util/soraerror"
+	"github.com/google/uuid"
 )
 
 var openAISoraSessionAuthURL = "https://sora.chatgpt.com/api/auth/session"
 var openAIChatGPTSessionAuthURL = "https://chatgpt.com/api/auth/session"
 
 var soraSessionCookiePattern = regexp.MustCompile(`(?i)(?:^|[\n\r;])\s*(?:(?:set-cookie|cookie)\s*:\s*)?__Secure-(?:next-auth|authjs)\.session-token(?:\.(\d+))?=([^;\r\n]+)`)
+var openAIChatWebCookiePattern = regexp.MustCompile(`(?i)(?:^|[\n\r;])\s*(?:(?:set-cookie|cookie)\s*:\s*)?([_A-Za-z0-9.\-]+)=([^;\r\n]+)`)
 
 type soraSessionChunk struct {
 	index int
 	value string
+}
+
+type openAIChatWebSessionInput struct {
+	SessionToken string
+	CookieHeader string
+	DeviceID     string
 }
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
@@ -332,8 +341,8 @@ func (s *OpenAIOAuthService) ExchangeSoraSessionToken(ctx context.Context, sessi
 
 // ExchangeChatGPTSessionToken exchanges ChatGPT Web session_token to access_token.
 func (s *OpenAIOAuthService) ExchangeChatGPTSessionToken(ctx context.Context, sessionToken string, proxyID *int64) (*OpenAITokenInfo, error) {
-	sessionToken = normalizeSoraSessionTokenInput(sessionToken)
-	if strings.TrimSpace(sessionToken) == "" {
+	parsedSession := parseOpenAIChatWebSessionInput(sessionToken)
+	if strings.TrimSpace(parsedSession.SessionToken) == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_CHATWEB_SESSION_TOKEN_REQUIRED", "session_token is required")
 	}
 
@@ -346,11 +355,23 @@ func (s *OpenAIOAuthService) ExchangeChatGPTSessionToken(ctx context.Context, se
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CHATWEB_SESSION_REQUEST_BUILD_FAILED", "failed to build request: %v", err)
 	}
-	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+strings.TrimSpace(sessionToken))
+	req.Header.Set("Cookie", parsedSession.CookieHeader)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Origin", "https://chatgpt.com")
 	req.Header.Set("Referer", "https://chatgpt.com/")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", chatGPTWebUserAgent)
+	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
+	req.Header.Set("Sec-CH-UA-Mobile", "?0")
+	req.Header.Set("Sec-CH-UA-Platform", `"macOS"`)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("OAI-Language", openAIChatWebLanguageDefault)
+	req.Header.Set("OAI-Device-Id", parsedSession.DeviceID)
+	req.Header.Set("OAI-Client-Build-Number", openAIChatWebClientBuildNumberDefault)
+	req.Header.Set("OAI-Client-Version", openAIChatWebClientVersionDefault)
+	req.Header.Set("X-OpenAI-Target-Path", "/api/auth/session")
+	req.Header.Set("X-OpenAI-Target-Route", "/api/auth/session")
 
 	client, err := httpclient.GetClient(httpclient.Options{
 		ProxyURL: proxyURL,
@@ -367,6 +388,14 @@ func (s *OpenAIOAuthService) ExchangeChatGPTSessionToken(ctx context.Context, se
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode != http.StatusOK {
+		if soraerror.IsCloudflareChallengeResponse(resp.StatusCode, resp.Header, body) {
+			message := soraerror.FormatCloudflareChallengeMessage(
+				"ChatGPT session exchange blocked by Cloudflare challenge. Please use a clean residential/browser-like proxy or provide a fuller browser cookie set.",
+				resp.Header,
+				body,
+			)
+			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_CLOUDFLARE_CHALLENGE", "%s", message)
+		}
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CHATWEB_SESSION_EXCHANGE_FAILED", "status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
@@ -583,6 +612,68 @@ func sanitizeSessionToken(raw string) string {
 	token = strings.Trim(token, "\"'`")
 	token = strings.TrimSuffix(token, ";")
 	return strings.TrimSpace(token)
+}
+
+func parseOpenAIChatWebSessionInput(raw string) openAIChatWebSessionInput {
+	raw = strings.TrimSpace(raw)
+	sessionToken := normalizeSoraSessionTokenInput(raw)
+
+	cookieValues := map[string]string{}
+	matches := openAIChatWebCookiePattern.FindAllStringSubmatch(raw, -1)
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		value := sanitizeSessionToken(match[2])
+		if name == "" || value == "" {
+			continue
+		}
+		switch strings.ToLower(name) {
+		case "__secure-next-auth.session-token", "__secure-authjs.session-token", "cf_clearance", "_cfuvid", "__cf_bm", "__cflb", "oai-did", "__secure-next-auth.callback-url", "_account", "_account_is_fedramp", "oai-hlib":
+			cookieValues[name] = value
+		}
+	}
+
+	deviceID := strings.TrimSpace(cookieValues["oai-did"])
+	if deviceID == "" {
+		deviceID = uuid.NewString()
+		cookieValues["oai-did"] = deviceID
+	}
+
+	if sessionToken != "" {
+		cookieValues["__Secure-next-auth.session-token"] = sessionToken
+	}
+
+	orderedNames := []string{
+		"cf_clearance",
+		"_cfuvid",
+		"__cf_bm",
+		"__cflb",
+		"oai-did",
+		"__Secure-next-auth.callback-url",
+		"_account",
+		"_account_is_fedramp",
+		"oai-hlib",
+		"__Secure-next-auth.session-token",
+	}
+	parts := make([]string, 0, len(orderedNames))
+	for _, name := range orderedNames {
+		if value := strings.TrimSpace(cookieValues[name]); value != "" {
+			parts = append(parts, name+"="+value)
+		}
+	}
+
+	cookieHeader := strings.Join(parts, "; ")
+	if cookieHeader == "" && sessionToken != "" {
+		cookieHeader = "__Secure-next-auth.session-token=" + sessionToken + "; oai-did=" + deviceID
+	}
+
+	return openAIChatWebSessionInput{
+		SessionToken: sessionToken,
+		CookieHeader: cookieHeader,
+		DeviceID:     deviceID,
+	}
 }
 
 // RefreshAccountToken refreshes token for an OpenAI/Sora OAuth account

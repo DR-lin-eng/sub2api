@@ -132,6 +132,35 @@ func TestOpenAIGatewayService_ListSchedulableAccounts_FallsBackToRepoWhenSnapsho
 	require.Len(t, got, 2)
 }
 
+func TestOpenAIGatewayService_ListSchedulableAccounts_DoesNotFallbackToRepoWhenContextCanceled(t *testing.T) {
+	repoCalled := false
+	repo := stubOpenAIAccountRepo{
+		listByGroupPlatformFunc: func(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+			repoCalled = true
+			return nil, errors.New("repo should not be called after context cancellation")
+		},
+	}
+	snapshot := &SchedulerSnapshotService{
+		cache:       &failingSchedulerCacheStub{snapshotErr: context.Canceled},
+		accountRepo: repo,
+		cfg:         &config.Config{},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cfg:                &config.Config{},
+		schedulerSnapshot:  snapshot,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := svc.listSchedulableAccounts(ctx, nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, got)
+	require.False(t, repoCalled)
+}
+
 func TestOpenAIGatewayService_GetSchedulableAccount_FallsBackToRepoWhenSnapshotGetFails(t *testing.T) {
 	account := Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1}
 	repo := stubOpenAIAccountRepo{accounts: []Account{account}}

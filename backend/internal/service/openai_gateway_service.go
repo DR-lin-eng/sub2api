@@ -1925,6 +1925,9 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err == nil {
 			return accounts, nil
 		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] scheduler snapshot list failed, fallback to repo: group=%v err=%v", groupID, err)
 	}
 	return s.listSchedulableAccountsDirect(ctx, groupID)

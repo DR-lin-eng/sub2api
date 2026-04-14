@@ -215,3 +215,41 @@ func TestOpenAIOAuthService_InspectAccessToken_Success(t *testing.T) {
 	require.Greater(t, info.ExpiresAt, int64(0))
 	require.GreaterOrEqual(t, info.ExpiresIn, int64(0))
 }
+
+func TestParseOpenAIChatWebSessionInput_PreservesBrowserCookies(t *testing.T) {
+	raw := strings.Join([]string{
+		"Cookie: cf_clearance=cf-token-1; Path=/",
+		"Cookie: _cfuvid=cfuvid-1; Path=/",
+		"Cookie: oai-did=device-123; Path=/",
+		"Cookie: __Secure-next-auth.session-token=session-abc; Path=/; HttpOnly",
+	}, "\n")
+
+	parsed := parseOpenAIChatWebSessionInput(raw)
+	require.Equal(t, "session-abc", parsed.SessionToken)
+	require.Equal(t, "device-123", parsed.DeviceID)
+	require.Contains(t, parsed.CookieHeader, "cf_clearance=cf-token-1")
+	require.Contains(t, parsed.CookieHeader, "_cfuvid=cfuvid-1")
+	require.Contains(t, parsed.CookieHeader, "oai-did=device-123")
+	require.Contains(t, parsed.CookieHeader, "__Secure-next-auth.session-token=session-abc")
+}
+
+func TestOpenAIOAuthService_ExchangeChatGPTSessionToken_CloudflareChallenge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<html><script>window._cf_chl_opt={cRay:'abc-123'};</script>Enable JavaScript and cookies to continue</html>`))
+	}))
+	defer server.Close()
+
+	origin := openAIChatGPTSessionAuthURL
+	openAIChatGPTSessionAuthURL = server.URL
+	defer func() { openAIChatGPTSessionAuthURL = origin }()
+
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer svc.Stop()
+
+	_, err := svc.ExchangeChatGPTSessionToken(context.Background(), "chatweb-st", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "OPENAI_CHATWEB_SESSION_CLOUDFLARE_CHALLENGE")
+	require.Contains(t, err.Error(), "Cloudflare")
+}

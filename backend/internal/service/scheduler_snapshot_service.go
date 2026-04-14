@@ -113,9 +113,16 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
+	if ctx != nil && ctx.Err() != nil {
+		return nil, useMixed, ctx.Err()
+	}
+
 	if s.cache != nil {
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
+			if shouldAbortSchedulerFallback(ctx, err) {
+				return nil, useMixed, err
+			}
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
 			return derefAccounts(cached), useMixed, nil
@@ -147,9 +154,15 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	if accountID <= 0 {
 		return nil, nil
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if s.cache != nil {
 		account, err := s.cache.GetAccount(ctx, accountID)
 		if err != nil {
+			if shouldAbortSchedulerFallback(ctx, err) {
+				return nil, err
+			}
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] account cache read failed: id=%d err=%v", accountID, err)
 		} else if account != nil {
 			return account, nil
@@ -492,7 +505,7 @@ func (s *SchedulerSnapshotService) handleGroupEvent(ctx context.Context, groupID
 		return nil
 	}
 	groupIDs := []int64{*groupID}
-	return s.rebuildByGroupIDs(ctx, groupIDs, "group_change")
+	return s.rebuildByGroupIDsForPlatforms(ctx, groupIDs, s.platformsForGroupEvent(ctx, *groupID), "group_change")
 }
 
 func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account *Account, groupIDs []int64, reason string) error {
@@ -525,6 +538,18 @@ func (s *SchedulerSnapshotService) rebuildByGroupIDs(ctx context.Context, groupI
 		return nil
 	}
 	platforms := []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
+	return s.rebuildByGroupIDsForPlatforms(ctx, groupIDs, platforms, reason)
+}
+
+func (s *SchedulerSnapshotService) rebuildByGroupIDsForPlatforms(ctx context.Context, groupIDs []int64, platforms []string, reason string) error {
+	groupIDs = s.normalizeGroupIDs(groupIDs)
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	platforms = normalizeSchedulerPlatforms(platforms)
+	if len(platforms) == 0 {
+		return nil
+	}
 	var firstErr error
 	for _, platform := range platforms {
 		if err := s.rebuildBucketsForPlatform(ctx, platform, groupIDs, reason); err != nil && firstErr == nil {
@@ -782,6 +807,44 @@ func (s *SchedulerSnapshotService) withFallbackTimeout(ctx context.Context) (con
 		}
 	}
 	return context.WithTimeout(ctx, timeout)
+}
+
+func (s *SchedulerSnapshotService) platformsForGroupEvent(ctx context.Context, groupID int64) []string {
+	if groupID <= 0 || s == nil || s.groupRepo == nil {
+		return []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
+	}
+	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+	if err != nil || group == nil || strings.TrimSpace(group.Platform) == "" {
+		return []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
+	}
+	return []string{group.Platform}
+}
+
+func normalizeSchedulerPlatforms(platforms []string) []string {
+	if len(platforms) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(platforms))
+	out := make([]string, 0, len(platforms))
+	for _, platform := range platforms {
+		platform = strings.TrimSpace(platform)
+		if platform == "" {
+			continue
+		}
+		if _, ok := seen[platform]; ok {
+			continue
+		}
+		seen[platform] = struct{}{}
+		out = append(out, platform)
+	}
+	return out
+}
+
+func shouldAbortSchedulerFallback(ctx context.Context, err error) bool {
+	if err == nil || ctx == nil || ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (s *SchedulerSnapshotService) isRunModeSimple() bool {
