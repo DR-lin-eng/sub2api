@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -217,6 +219,43 @@ func TestOpenAITokenProvider_TokenRefresh(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "refreshed-token", token)
 	require.Equal(t, int32(1), atomic.LoadInt32(&oauthService.refreshCalled))
+}
+
+func TestOpenAITokenProvider_ForceRefreshChatWebAccessToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjX2NoYXR3ZWIiLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyX2NoYXR3ZWIifSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9wcm9maWxlIjp7ImVtYWlsIjoiY2hhdHdlYkBleGFtcGxlLmNvbSJ9LCJleHAiOjQxMDI0NDQ4MDB9.","expires":"2099-01-01T00:00:00Z","user":{"email":"chatweb@example.com"}}`))
+	}))
+	defer server.Close()
+
+	origin := openAIChatGPTSessionAuthURL
+	openAIChatGPTSessionAuthURL = server.URL
+	defer func() { openAIChatGPTSessionAuthURL = origin }()
+
+	cache := newOpenAITokenCacheStub()
+	oauthService := NewOpenAIOAuthService(nil, &openaiOAuthClientNoopStub{})
+	defer oauthService.Stop()
+
+	provider := NewOpenAITokenProvider(nil, cache, oauthService)
+	account := &Account{
+		ID:       1201,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"session_token": "st-chatweb",
+		},
+		Extra: map[string]any{
+			"openai_auth_mode": OpenAIAuthModeChatWeb,
+		},
+	}
+
+	token, err := provider.forceRefreshChatWebAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, account.GetOpenAIAccessToken(), token)
+	require.Equal(t, "acc_chatweb", account.GetChatGPTAccountID())
+	require.Equal(t, "user_chatweb", account.GetChatGPTUserID())
+	require.Equal(t, "chatweb@example.com", account.GetCredential("email"))
+	require.NotEmpty(t, cache.tokens[OpenAITokenCacheKey(account)])
 }
 
 // testOpenAITokenProvider is a test version that uses the stub OAuth service

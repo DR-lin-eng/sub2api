@@ -141,30 +141,8 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		if token := strings.TrimSpace(account.GetOpenAIAccessToken()); token != "" && !account.IsOpenAITokenExpired() {
 			return token, nil
 		}
-		sessionToken := strings.TrimSpace(account.GetOpenAISessionToken())
-		if sessionToken != "" && p.openAIOAuthService != nil {
-			tokenInfo, err := p.openAIOAuthService.ExchangeChatGPTSessionToken(ctx, sessionToken, account.ProxyID)
-			if err == nil && tokenInfo != nil && strings.TrimSpace(tokenInfo.AccessToken) != "" {
-				if account.Credentials == nil {
-					account.Credentials = map[string]any{}
-				}
-				account.Credentials["access_token"] = tokenInfo.AccessToken
-				if tokenInfo.ExpiresAt > 0 {
-					account.Credentials["expires_at"] = time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
-				}
-				if tokenInfo.ChatGPTAccountID != "" {
-					account.Credentials["chatgpt_account_id"] = tokenInfo.ChatGPTAccountID
-				}
-				if tokenInfo.ChatGPTUserID != "" {
-					account.Credentials["chatgpt_user_id"] = tokenInfo.ChatGPTUserID
-				}
-				if tokenInfo.OrganizationID != "" {
-					account.Credentials["organization_id"] = tokenInfo.OrganizationID
-				}
-				if tokenInfo.Email != "" {
-					account.Credentials["email"] = tokenInfo.Email
-				}
-			}
+		if token, err := p.forceRefreshChatWebAccessToken(ctx, account); err == nil && strings.TrimSpace(token) != "" {
+			return token, nil
 		}
 	}
 
@@ -290,6 +268,105 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	}
 
 	return accessToken, nil
+}
+
+func (p *OpenAITokenProvider) forceRefreshChatWebAccessToken(ctx context.Context, account *Account) (string, error) {
+	if p == nil {
+		return "", errors.New("openai token provider is nil")
+	}
+	if account == nil {
+		return "", errors.New("account is nil")
+	}
+	if !account.IsOpenAIChatWebMode() {
+		return "", errors.New("account is not in chatweb mode")
+	}
+	sessionToken := strings.TrimSpace(account.GetOpenAISessionToken())
+	if sessionToken == "" {
+		return "", errors.New("session_token not found in credentials")
+	}
+	if p.openAIOAuthService == nil {
+		return "", errors.New("openai oauth service is not configured")
+	}
+
+	p.invalidateCachedAccessToken(ctx, account)
+
+	tokenInfo, err := p.openAIOAuthService.ExchangeChatGPTSessionToken(ctx, sessionToken, account.ProxyID)
+	if err != nil {
+		return "", err
+	}
+	accessToken := p.applyChatWebTokenInfo(account, tokenInfo)
+	p.cacheAccessToken(ctx, account, accessToken, account.GetCredentialAsTime("expires_at"), false)
+	return accessToken, nil
+}
+
+func (p *OpenAITokenProvider) invalidateCachedAccessToken(ctx context.Context, account *Account) {
+	if p == nil || p.tokenCache == nil || account == nil {
+		return
+	}
+	cacheKey := OpenAITokenCacheKey(account)
+	if err := p.tokenCache.DeleteAccessToken(ctx, cacheKey); err != nil {
+		slog.Warn("openai_token_cache_delete_failed", "account_id", account.ID, "error", err)
+	}
+}
+
+func (p *OpenAITokenProvider) applyChatWebTokenInfo(account *Account, tokenInfo *OpenAITokenInfo) string {
+	if account == nil || tokenInfo == nil {
+		return ""
+	}
+	accessToken := strings.TrimSpace(tokenInfo.AccessToken)
+	if accessToken == "" {
+		return ""
+	}
+	if account.Credentials == nil {
+		account.Credentials = map[string]any{}
+	}
+	account.Credentials["access_token"] = accessToken
+	if tokenInfo.ExpiresAt > 0 {
+		account.Credentials["expires_at"] = time.Unix(tokenInfo.ExpiresAt, 0).UTC().Format(time.RFC3339)
+	}
+	if tokenInfo.ChatGPTAccountID != "" {
+		account.Credentials["chatgpt_account_id"] = tokenInfo.ChatGPTAccountID
+	}
+	if tokenInfo.ChatGPTUserID != "" {
+		account.Credentials["chatgpt_user_id"] = tokenInfo.ChatGPTUserID
+	}
+	if tokenInfo.OrganizationID != "" {
+		account.Credentials["organization_id"] = tokenInfo.OrganizationID
+	}
+	if tokenInfo.Email != "" {
+		account.Credentials["email"] = tokenInfo.Email
+	}
+	if tokenInfo.PlanType != "" {
+		account.Credentials["plan_type"] = tokenInfo.PlanType
+	}
+	return accessToken
+}
+
+func (p *OpenAITokenProvider) cacheAccessToken(ctx context.Context, account *Account, accessToken string, expiresAt *time.Time, refreshFailed bool) {
+	if p == nil || p.tokenCache == nil || account == nil || strings.TrimSpace(accessToken) == "" {
+		return
+	}
+	ttl := 30 * time.Minute
+	if refreshFailed {
+		if p.refreshPolicy.FailureTTL > 0 {
+			ttl = p.refreshPolicy.FailureTTL
+		} else {
+			ttl = time.Minute
+		}
+	} else if expiresAt != nil {
+		until := time.Until(*expiresAt)
+		switch {
+		case until > openAITokenCacheSkew:
+			ttl = until - openAITokenCacheSkew
+		case until > 0:
+			ttl = until
+		default:
+			ttl = time.Minute
+		}
+	}
+	if err := p.tokenCache.SetAccessToken(ctx, OpenAITokenCacheKey(account), accessToken, ttl); err != nil {
+		slog.Warn("openai_token_cache_set_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 func (p *OpenAITokenProvider) waitForTokenAfterLockRace(ctx context.Context, cacheKey string) (string, error) {

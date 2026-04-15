@@ -39,6 +39,9 @@ func (c *identityCache) GetFingerprint(ctx context.Context, accountID int64) (*s
 	key := fingerprintKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var fp service.Fingerprint

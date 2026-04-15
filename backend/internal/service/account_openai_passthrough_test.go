@@ -59,6 +59,18 @@ func TestAccount_IsOpenAIPassthroughEnabled(t *testing.T) {
 		require.True(t, account.IsOpenAIChatWebMode())
 		require.True(t, account.IsOpenAIPassthroughEnabled())
 	})
+
+	t.Run("session_token 自动识别为 chatweb 模式", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"session_token": "st-live",
+			},
+		}
+		require.True(t, account.IsOpenAIChatWebMode())
+		require.True(t, account.IsOpenAIPassthroughEnabled())
+	})
 }
 
 func TestAccount_IsOpenAIOAuthPassthroughEnabled(t *testing.T) {

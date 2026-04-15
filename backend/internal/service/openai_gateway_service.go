@@ -2099,6 +2099,11 @@ func buildOpenAIUpstreamFailoverError(account *Account, statusCode int, upstream
 	return failoverErr
 }
 
+func isOpenAITokenInvalidatedResponse(statusCode int, respBody []byte) bool {
+	return statusCode == http.StatusUnauthorized &&
+		strings.EqualFold(strings.TrimSpace(extractUpstreamErrorCode(respBody)), "token_invalidated")
+}
+
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
@@ -3001,6 +3006,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthroughContext(
 		priorityRequested = true
 	}
 	priorityFallbackAttempted := false
+	chatWebTokenRecoveryAttempted := false
 
 	for {
 		// Get access token
@@ -3057,6 +3063,19 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthroughContext(
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+			if !chatWebTokenRecoveryAttempted &&
+				account.IsOpenAIChatWebMode() &&
+				isOpenAITokenInvalidatedResponse(resp.StatusCode, respBody) &&
+				s.openAITokenProvider != nil {
+				chatWebTokenRecoveryAttempted = true
+				if _, refreshErr := s.openAITokenProvider.forceRefreshChatWebAccessToken(ctx, account); refreshErr == nil {
+					logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] chatweb token invalidated, refreshed from session and retrying: account=%d", account.ID)
+					continue
+				} else {
+					logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] chatweb token recovery failed: account=%d err=%v", account.ID, refreshErr)
+				}
+			}
 
 			if priorityRequested && resp.StatusCode == http.StatusTooManyRequests {
 				if !priorityFallbackAttempted {

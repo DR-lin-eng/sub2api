@@ -264,6 +264,54 @@ func TestOpenAIGatewayService_ChatWebForwardAsChatCompletions_UsesConversationCh
 	require.Contains(t, rec.Body.String(), `"object":"chat.completion"`)
 }
 
+func TestOpenAIGatewayService_ChatWebForwardAsChatCompletions_InferredModeUsesConversationChain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	prevFactory := newOpenAIChatWebSentinelHelperRunner
+	newOpenAIChatWebSentinelHelperRunner = func() openAIChatWebSentinelHelperRunner {
+		return chatwebSentinelHelperStub{}
+	}
+	defer func() {
+		newOpenAIChatWebSentinelHelperRunner = prevFactory
+	}()
+
+	upstream := newChatwebHTTPUpstreamRecorder()
+	upstream.bodies["/backend-api/f/conversation"] = nil
+	svc := &OpenAIGatewayService{
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:          1002,
+		Name:        "chatweb-chat-inferred",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"session_token":      "st-live",
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	body := []byte(`{"model":"gpt-5","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("User-Agent", "Mozilla/5.0")
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsChatCompletionsContext(context.Background(), gatewayctx.FromGin(c), account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, account.IsOpenAIChatWebMode())
+	require.Equal(t, "/backend-api/f/conversation", upstream.paths[4])
+	require.Contains(t, rec.Body.String(), `"object":"chat.completion"`)
+}
+
 func TestOpenAIGatewayService_ChatWebForwardAsAnthropic_UsesConversationChain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
