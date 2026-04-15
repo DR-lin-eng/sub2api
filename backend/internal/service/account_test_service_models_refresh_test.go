@@ -127,3 +127,43 @@ func TestAccountTestService_FetchAndCacheAvailableModels_PreservesOldModelsOnFai
 	require.Equal(t, truncateModelsRefreshError(err), repo.updateExtra[AccountExtraModelsRefreshErrorKey])
 	require.Equal(t, []any{"gpt-5"}, repo.account.Extra[AccountExtraFetchedModelsKey])
 }
+
+func TestAccountTestService_FetchAndCacheAvailableModels_OpenAIChatWebUsesTokenProvider(t *testing.T) {
+	repo := &modelsRefreshAccountRepoStub{
+		account: &Account{
+			ID:       9,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"session_token":      "st-live",
+				"chatgpt_account_id": "acc-live",
+			},
+			Extra: map[string]any{
+				"openai_auth_mode": OpenAIAuthModeChatWeb,
+			},
+		},
+	}
+	upstream := &modelFetchHTTPUpstreamStub{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"gpt-5"},{"id":"gpt-5-mini"}]}`)),
+		},
+	}
+	tokenProvider := &openAIAccountTokenProviderStub{token: "fresh-chatweb-token"}
+	svc := &AccountTestService{
+		accountRepo:         repo,
+		httpUpstream:        upstream,
+		openAITokenProvider: tokenProvider,
+	}
+
+	result, err := svc.FetchAndCacheAvailableModels(context.Background(), 9)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []string{"gpt-5", "gpt-5-mini"}, result.Models)
+	require.Equal(t, 1, tokenProvider.calls)
+	require.NotNil(t, upstream.req)
+	require.Equal(t, "Bearer fresh-chatweb-token", upstream.req.Header.Get("Authorization"))
+	require.Equal(t, "acc-live", upstream.req.Header.Get("chatgpt-account-id"))
+	require.Equal(t, "fresh-chatweb-token", repo.account.GetOpenAIAccessToken())
+}

@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -31,6 +32,20 @@ func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, rese
 	r.rateLimitedID = id
 	r.rateLimitedAt = &resetAt
 	return nil
+}
+
+type openAIAccountTokenProviderStub struct {
+	token string
+	err   error
+	calls int
+}
+
+func (s *openAIAccountTokenProviderStub) GetAccessToken(_ context.Context, _ *Account) (string, error) {
+	s.calls++
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.token, nil
 }
 
 func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.T) {
@@ -100,4 +115,67 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 	if account.RateLimitResetAt != nil && repo.rateLimitedAt != nil {
 		require.WithinDuration(t, *repo.rateLimitedAt, *account.RateLimitResetAt, time.Second)
 	}
+}
+
+func TestAccountTestService_OpenAIChatWebUsesTokenProviderForConnectionTest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newSoraTestContext()
+
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.completed"}
+
+`))
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	tokenProvider := &openAIAccountTokenProviderStub{token: "fresh-chatweb-token"}
+	svc := &AccountTestService{
+		httpUpstream:        upstream,
+		openAITokenProvider: tokenProvider,
+	}
+	account := &Account{
+		ID:          90,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"session_token":      "st-live",
+			"chatgpt_account_id": "acc-live",
+		},
+		Extra: map[string]any{
+			"openai_auth_mode": OpenAIAuthModeChatWeb,
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	require.NoError(t, err)
+	require.Equal(t, 1, tokenProvider.calls)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "Bearer fresh-chatweb-token", upstream.requests[0].Header.Get("Authorization"))
+	require.Equal(t, "acc-live", upstream.requests[0].Header.Get("chatgpt-account-id"))
+	require.Equal(t, "fresh-chatweb-token", account.GetOpenAIAccessToken())
+	require.Contains(t, recorder.Body.String(), "test_complete")
+}
+
+func TestAccountTestService_OpenAIChatWebTokenProviderErrorWithoutFallbackToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newSoraTestContext()
+
+	svc := &AccountTestService{
+		openAITokenProvider: &openAIAccountTokenProviderStub{err: fmt.Errorf("exchange failed")},
+	}
+	account := &Account{
+		ID:       91,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_auth_mode": OpenAIAuthModeChatWeb,
+		},
+		Credentials: map[string]any{
+			"session_token": "st-live",
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Failed to resolve OpenAI access token")
+	require.Contains(t, err.Error(), "exchange failed")
 }

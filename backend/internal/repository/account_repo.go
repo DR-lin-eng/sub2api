@@ -59,6 +59,11 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 	"passive_usage_",
 }
 
+const (
+	schedulerSnapshotSyncTimeout    = 1 * time.Second
+	schedulerSnapshotSyncSkipWindow = 250 * time.Millisecond
+)
+
 var schedulerNeutralExtraKeys = map[string]struct{}{
 	"codex_usage_updated_at":          {},
 	"fetched_models":                  {},
@@ -639,12 +644,24 @@ func (r *accountRepository) syncSchedulerAccountSnapshot(ctx context.Context, ac
 	if r == nil || r.schedulerCache == nil || accountID <= 0 {
 		return
 	}
-	account, err := r.GetByID(ctx, accountID)
+	syncCtx, cancel, ok := schedulerSnapshotSyncContext(ctx)
+	if !ok {
+		return
+	}
+	defer cancel()
+
+	account, err := r.GetByID(syncCtx, accountID)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return
+		}
 		logger.LegacyPrintf("repository.account", "[Scheduler] sync account snapshot read failed: id=%d err=%v", accountID, err)
 		return
 	}
-	if err := r.schedulerCache.SetAccount(ctx, account); err != nil {
+	if err := r.schedulerCache.SetAccount(syncCtx, account); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return
+		}
 		logger.LegacyPrintf("repository.account", "[Scheduler] sync account snapshot write failed: id=%d err=%v", accountID, err)
 	}
 }
@@ -653,6 +670,11 @@ func (r *accountRepository) syncSchedulerAccountSnapshots(ctx context.Context, a
 	if r == nil || r.schedulerCache == nil || len(accountIDs) == 0 {
 		return
 	}
+	syncCtx, cancel, ok := schedulerSnapshotSyncContext(ctx)
+	if !ok {
+		return
+	}
+	defer cancel()
 
 	uniqueIDs := make([]int64, 0, len(accountIDs))
 	seen := make(map[int64]struct{}, len(accountIDs))
@@ -670,8 +692,11 @@ func (r *accountRepository) syncSchedulerAccountSnapshots(ctx context.Context, a
 		return
 	}
 
-	accounts, err := r.GetByIDs(ctx, uniqueIDs)
+	accounts, err := r.GetByIDs(syncCtx, uniqueIDs)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return
+		}
 		logger.LegacyPrintf("repository.account", "[Scheduler] batch sync account snapshot read failed: count=%d err=%v", len(uniqueIDs), err)
 		return
 	}
@@ -680,10 +705,28 @@ func (r *accountRepository) syncSchedulerAccountSnapshots(ctx context.Context, a
 		if account == nil {
 			continue
 		}
-		if err := r.schedulerCache.SetAccount(ctx, account); err != nil {
+		if err := r.schedulerCache.SetAccount(syncCtx, account); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return
+			}
 			logger.LegacyPrintf("repository.account", "[Scheduler] batch sync account snapshot write failed: id=%d err=%v", account.ID, err)
 		}
 	}
+}
+
+func schedulerSnapshotSyncContext(parent context.Context) (context.Context, context.CancelFunc, bool) {
+	if parent != nil {
+		if err := parent.Err(); err != nil {
+			return nil, nil, false
+		}
+		if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= schedulerSnapshotSyncSkipWindow {
+			return nil, nil, false
+		}
+		ctx, cancel := context.WithTimeout(parent, schedulerSnapshotSyncTimeout)
+		return ctx, cancel, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerSnapshotSyncTimeout)
+	return ctx, cancel, true
 }
 
 func (r *accountRepository) ClearError(ctx context.Context, id int64) error {

@@ -122,10 +122,11 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	antigravityTokenProvider := service.ProvideAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService, oauthRefreshAPI, tempUnschedCache)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, schedulerSnapshotService, antigravityTokenProvider, rateLimitService, httpUpstream, settingService)
 	geminiTokenProvider := service.ProvideGeminiTokenProvider(accountRepository, geminiTokenCache, geminiOAuthService, oauthRefreshAPI)
+	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oauthRefreshAPI)
 	kiroUsageService := service.NewKiroUsageService()
 	kiroTokenProvider := service.ProvideKiroTokenProvider(accountRepository, geminiTokenCache, kiroUsageService, oauthRefreshAPI)
 	kiroGatewayService := service.NewKiroGatewayService(httpUpstream, kiroTokenProvider, kiroUsageService)
-	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, antigravityGatewayService, httpUpstream, cfg)
+	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, openAITokenProvider, antigravityGatewayService, httpUpstream, cfg)
 
 	pricingService, err := service.ProvidePricingService(cfg, repository.ProvidePricingRemoteClient(cfg))
 	if err != nil {
@@ -189,7 +190,6 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		kiroGatewayService,
 	)
 
-	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oauthRefreshAPI)
 	openAIGatewayService := service.NewOpenAIGatewayService(
 		accountRepository,
 		groupRepository,

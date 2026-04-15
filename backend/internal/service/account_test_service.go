@@ -73,10 +73,15 @@ const (
 	accountModelsRefreshTimeout  = 20 * time.Second
 )
 
+type openAIAccountTokenProvider interface {
+	GetAccessToken(ctx context.Context, account *Account) (string, error)
+}
+
 // AccountTestService handles account testing operations
 type AccountTestService struct {
 	accountRepo               AccountRepository
 	geminiTokenProvider       *GeminiTokenProvider
+	openAITokenProvider       openAIAccountTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
@@ -91,6 +96,7 @@ const defaultSoraTestCooldown = 10 * time.Second
 func NewAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
+	openAITokenProvider *OpenAITokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
@@ -98,6 +104,7 @@ func NewAccountTestService(
 	return &AccountTestService{
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
+		openAITokenProvider:       openAITokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
@@ -167,6 +174,71 @@ func (s *AccountTestService) executeAccountRequest(req *http.Request, account *A
 	return s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, enableTLSFingerprint)
 }
 
+func (s *AccountTestService) resolveOpenAIOAuthAccessToken(ctx context.Context, account *Account) (string, error) {
+	if account == nil {
+		return "", errors.New("account is nil")
+	}
+	if !account.IsOpenAIOAuth() {
+		token := strings.TrimSpace(account.GetOpenAIAccessToken())
+		if token == "" {
+			return "", errors.New("openai access token is not configured")
+		}
+		return token, nil
+	}
+
+	if s.openAITokenProvider != nil {
+		token, err := s.openAITokenProvider.GetAccessToken(ctx, account)
+		if strings.TrimSpace(token) != "" {
+			applyOpenAITokenMetadata(account, token)
+			return token, nil
+		}
+		if err != nil && strings.TrimSpace(account.GetOpenAIAccessToken()) == "" {
+			return "", err
+		}
+	}
+
+	token := strings.TrimSpace(account.GetOpenAIAccessToken())
+	if token == "" {
+		return "", errors.New("openai access token is not configured")
+	}
+	return token, nil
+}
+
+func applyOpenAITokenMetadata(account *Account, token string) {
+	if account == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	if account.Credentials == nil {
+		account.Credentials = map[string]any{}
+	}
+	account.Credentials["access_token"] = strings.TrimSpace(token)
+
+	claims, err := openai.DecodeAccessToken(token)
+	if err != nil || claims == nil {
+		return
+	}
+	if claims.Exp > 0 {
+		account.Credentials["expires_at"] = time.Unix(claims.Exp, 0).UTC().Format(time.RFC3339)
+	}
+	if info := claims.GetUserInfo(); info != nil {
+		if strings.TrimSpace(info.ChatGPTAccountID) != "" {
+			account.Credentials["chatgpt_account_id"] = strings.TrimSpace(info.ChatGPTAccountID)
+		}
+		if strings.TrimSpace(info.ChatGPTUserID) != "" {
+			account.Credentials["chatgpt_user_id"] = strings.TrimSpace(info.ChatGPTUserID)
+		}
+		if strings.TrimSpace(info.OrganizationID) != "" {
+			account.Credentials["organization_id"] = strings.TrimSpace(info.OrganizationID)
+		}
+		if strings.TrimSpace(info.Email) != "" {
+			account.Credentials["email"] = strings.TrimSpace(info.Email)
+		}
+		if strings.TrimSpace(info.PlanType) != "" {
+			account.Credentials["plan_type"] = strings.TrimSpace(info.PlanType)
+		}
+	}
+}
+
 func (s *AccountTestService) fetchOpenAIAvailableModels(ctx context.Context, account *Account) ([]string, string, error) {
 	baseURL := account.GetOpenAIBaseURL()
 	if strings.TrimSpace(baseURL) == "" {
@@ -186,9 +258,9 @@ func (s *AccountTestService) fetchOpenAIAvailableModels(ctx context.Context, acc
 
 	switch {
 	case account.IsOpenAIOAuth():
-		token := strings.TrimSpace(account.GetOpenAIAccessToken())
-		if token == "" {
-			return nil, "", errors.New("openai access token is not configured")
+		token, err := s.resolveOpenAIOAuthAccessToken(ctx, account)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve openai access token: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
@@ -773,13 +845,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c gatewayctx.GatewayCon
 	var apiURL string
 	var isOAuth bool
 	var chatgptAccountID string
+	var err error
 
 	if account.IsOAuth() {
 		isOAuth = true
 		// OAuth - use Bearer token with ChatGPT internal API
-		authToken = account.GetOpenAIAccessToken()
-		if authToken == "" {
-			return s.sendErrorAndEnd(c, "No access token available")
+		authToken, err = s.resolveOpenAIOAuthAccessToken(ctx, account)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to resolve OpenAI access token: %s", err.Error()))
 		}
 
 		// OAuth uses ChatGPT internal API
