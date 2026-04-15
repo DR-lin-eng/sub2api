@@ -71,6 +71,21 @@ func TestAccount_IsOpenAIPassthroughEnabled(t *testing.T) {
 		require.True(t, account.IsOpenAIChatWebMode())
 		require.True(t, account.IsOpenAIPassthroughEnabled())
 	})
+
+	t.Run("显式 oauth_codex 优先于 session_token 启发式", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"session_token": "st-live",
+			},
+			Extra: map[string]any{
+				"openai_auth_mode": OpenAIAuthModeOAuthCodex,
+			},
+		}
+		require.False(t, account.IsOpenAIChatWebMode())
+		require.False(t, account.IsOpenAIPassthroughEnabled())
+	})
 }
 
 func TestAccount_IsOpenAIOAuthPassthroughEnabled(t *testing.T) {

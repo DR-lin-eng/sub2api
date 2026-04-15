@@ -1040,22 +1040,23 @@ const (
 )
 
 func (a *Account) ResolveOpenAIAuthMode() string {
-	if !a.IsOpenAIOAuth() || a.Extra == nil {
-		if strings.TrimSpace(a.GetOpenAISessionToken()) != "" && strings.TrimSpace(a.GetOpenAIRefreshToken()) == "" {
-			return OpenAIAuthModeChatWeb
-		}
+	if !a.IsOpenAIOAuth() {
 		return OpenAIAuthModeOAuthCodex
 	}
-	if mode, ok := a.Extra["openai_auth_mode"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(mode)) {
-		case OpenAIAuthModeChatWeb:
-			return OpenAIAuthModeChatWeb
-		case "", OpenAIAuthModeOAuthCodex:
-			return OpenAIAuthModeOAuthCodex
+	if a.Extra != nil {
+		if mode, ok := a.Extra["openai_auth_mode"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(mode)) {
+			case OpenAIAuthModeChatWeb:
+				return OpenAIAuthModeChatWeb
+			case "", OpenAIAuthModeOAuthCodex:
+				return OpenAIAuthModeOAuthCodex
+			default:
+				return OpenAIAuthModeOAuthCodex
+			}
 		}
-	}
-	if enabled, ok := a.Extra["openai_chatweb_mode"].(bool); ok && enabled {
-		return OpenAIAuthModeChatWeb
+		if enabled, ok := a.Extra["openai_chatweb_mode"].(bool); ok && enabled {
+			return OpenAIAuthModeChatWeb
+		}
 	}
 	if strings.TrimSpace(a.GetOpenAISessionToken()) != "" && strings.TrimSpace(a.GetOpenAIRefreshToken()) == "" {
 		return OpenAIAuthModeChatWeb
