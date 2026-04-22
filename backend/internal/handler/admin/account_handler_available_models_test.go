@@ -102,6 +102,13 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotEmpty(t, resp.Data)
 	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
+	ids := make([]string, 0, len(resp.Data))
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+	}
+	require.Contains(t, ids, "gpt-image-1")
+	require.Contains(t, ids, "gpt-image-1.5")
+	require.Contains(t, ids, "gpt-image-2")
 }
 
 func TestAccountHandlerGetAvailableModels_PrefersFetchedModelsOverMapping(t *testing.T) {
@@ -138,6 +145,6 @@ func TestAccountHandlerGetAvailableModels_PrefersFetchedModelsOverMapping(t *tes
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 2)
-	require.Equal(t, "gpt-5-mini", resp.Data[0].ID)
-	require.Equal(t, "gpt-5", resp.Data[1].ID)
+	require.Equal(t, "gpt-5", resp.Data[0].ID)
+	require.Equal(t, "gpt-5-mini", resp.Data[1].ID)
 }

@@ -830,6 +830,12 @@ func (s *OpenAIGatewayService) forwardOpenAIChatWebConversationContext(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	if !reqStream {
+		if handled, result, err := s.tryForwardOpenAIChatWebImageResponsesContext(ctx, c, account, body, reqModel, startTime); handled {
+			return result, err
+		}
+	}
+
 	resp, prepared, token, err := s.beginOpenAIChatWebConversationRequest(ctx, c, account, body)
 	if err != nil {
 		return nil, err

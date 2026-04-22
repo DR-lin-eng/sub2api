@@ -126,8 +126,6 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 	kiroUsageService := service.NewKiroUsageService()
 	kiroTokenProvider := service.ProvideKiroTokenProvider(accountRepository, geminiTokenCache, kiroUsageService, oauthRefreshAPI)
 	kiroGatewayService := service.NewKiroGatewayService(httpUpstream, kiroTokenProvider, kiroUsageService)
-	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, openAITokenProvider, antigravityGatewayService, httpUpstream, cfg)
-
 	pricingService, err := service.ProvidePricingService(cfg, repository.ProvidePricingRemoteClient(cfg))
 	if err != nil {
 		return nil, err
@@ -210,6 +208,7 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		openAITokenProvider,
 	)
 	openAIGatewayService.SetIdentityService(identityService)
+	accountTestService := service.NewAccountTestService(accountRepository, geminiTokenProvider, openAITokenProvider, antigravityGatewayService, openAIGatewayService, httpUpstream, cfg)
 
 	geminiMessagesCompatService := service.NewGeminiMessagesCompatService(
 		accountRepository,

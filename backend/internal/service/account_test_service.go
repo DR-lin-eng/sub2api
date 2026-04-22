@@ -70,11 +70,16 @@ type AccountModelsRefreshResult struct {
 const (
 	defaultGeminiTextTestPrompt  = "hi"
 	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
 	accountModelsRefreshTimeout  = 20 * time.Second
 )
 
 type openAIAccountTokenProvider interface {
 	GetAccessToken(ctx context.Context, account *Account) (string, error)
+}
+
+func isOpenAIImageModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
 }
 
 // AccountTestService handles account testing operations
@@ -83,6 +88,7 @@ type AccountTestService struct {
 	geminiTokenProvider       *GeminiTokenProvider
 	openAITokenProvider       openAIAccountTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	openAIGatewayService      *OpenAIGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	soraTestGuardMu           sync.Mutex
@@ -98,6 +104,7 @@ func NewAccountTestService(
 	geminiTokenProvider *GeminiTokenProvider,
 	openAITokenProvider *OpenAITokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
+	openAIGatewayService *OpenAIGatewayService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 ) *AccountTestService {
@@ -106,6 +113,7 @@ func NewAccountTestService(
 		geminiTokenProvider:       geminiTokenProvider,
 		openAITokenProvider:       openAITokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
+		openAIGatewayService:      openAIGatewayService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		soraTestLastRun:           make(map[int64]time.Time),
@@ -577,7 +585,7 @@ func (s *AccountTestService) TestAccountConnection(c gatewayctx.GatewayContext, 
 
 	// Route to platform-specific test method
 	if account.IsOpenAI() {
-		return s.testOpenAIAccountConnection(c, account, modelID)
+		return s.testOpenAIAccountConnection(c, account, modelID, prompt)
 	}
 
 	if account.IsGemini() {
@@ -821,7 +829,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c gatewayctx.GatewayCo
 }
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
-func (s *AccountTestService) testOpenAIAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string) error {
+func (s *AccountTestService) testOpenAIAccountConnection(c gatewayctx.GatewayContext, account *Account, modelID string, prompt string) error {
 	ctx := c.Request().Context()
 
 	// Default to openai.DefaultTestModel for OpenAI testing
@@ -838,6 +846,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c gatewayctx.GatewayCon
 				testModelID = mappedModel
 			}
 		}
+	}
+
+	if isOpenAIImageModel(testModelID) {
+		imagePrompt := strings.TrimSpace(prompt)
+		if imagePrompt == "" {
+			imagePrompt = defaultOpenAIImageTestPrompt
+		}
+		return s.testOpenAIImageConnection(c, ctx, account, testModelID, imagePrompt)
 	}
 
 	// Determine authentication method and API URL
@@ -1072,6 +1088,92 @@ func (r *soraProbeRecorder) finalize() soraProbeSummary {
 		Status: status,
 		Steps:  append([]soraProbeStep(nil), r.steps...),
 	}
+}
+
+func (s *AccountTestService) testOpenAIImageConnection(
+	c gatewayctx.GatewayContext,
+	ctx context.Context,
+	account *Account,
+	modelID string,
+	prompt string,
+) error {
+	if s.openAIGatewayService == nil {
+		return s.sendErrorAndEnd(c, "OpenAI image test service is not configured")
+	}
+
+	c.SetHeader("Content-Type", "text/event-stream")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no")
+	_ = c.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
+
+	payload := map[string]any{
+		"model":           modelID,
+		"prompt":          prompt,
+		"n":               1,
+		"response_format": "b64_json",
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build image request: %s", err.Error()))
+	}
+
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(payloadBytes))
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	ginCtx.Request = req
+	innerCtx := gatewayctx.FromGin(ginCtx)
+
+	parsed, err := s.openAIGatewayService.ParseOpenAIImagesRequestContext(innerCtx, payloadBytes)
+	if err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+
+	if _, err := s.openAIGatewayService.ForwardImagesContext(ctx, innerCtx, account, payloadBytes, parsed, ""); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+
+	var resp struct {
+		Data []struct {
+			B64JSON       string `json:"b64_json"`
+			URL           string `json:"url"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse image response: %s", err.Error()))
+	}
+	if len(resp.Data) == 0 {
+		return s.sendErrorAndEnd(c, "No images returned from API")
+	}
+
+	for _, item := range resp.Data {
+		if revised := strings.TrimSpace(item.RevisedPrompt); revised != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: revised})
+		}
+
+		switch {
+		case strings.TrimSpace(item.B64JSON) != "":
+			s.sendEvent(c, TestEvent{
+				Type:     "image",
+				ImageURL: "data:image/png;base64," + item.B64JSON,
+				MimeType: "image/png",
+			})
+		case strings.TrimSpace(item.URL) != "":
+			s.sendEvent(c, TestEvent{
+				Type:     "image",
+				ImageURL: item.URL,
+				MimeType: "image/*",
+			})
+		}
+	}
+
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 func (s *AccountTestService) emitSoraProbeSummary(c gatewayctx.GatewayContext, rec *soraProbeRecorder) {

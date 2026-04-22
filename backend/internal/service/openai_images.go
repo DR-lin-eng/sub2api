@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"mime"
@@ -32,8 +33,9 @@ const (
 type OpenAIImagesCapability string
 
 const (
-	OpenAIImagesCapabilityBasic  OpenAIImagesCapability = "images-basic"
-	OpenAIImagesCapabilityNative OpenAIImagesCapability = "images-native"
+	OpenAIImagesCapabilityBasic       OpenAIImagesCapability = "images-basic"
+	OpenAIImagesCapabilityChatWebEdit OpenAIImagesCapability = "images-chatweb-edit"
+	OpenAIImagesCapabilityNative      OpenAIImagesCapability = "images-native"
 )
 
 type OpenAIImagesUpload struct {
@@ -213,7 +215,7 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 				req.HasMask = true
 			}
 			if name == "image" || strings.HasPrefix(name, "image[") {
-				width, height := parseOpenAIImageDimensions(part.Header)
+				width, height := parseOpenAIImageDimensions(data)
 				req.Uploads = append(req.Uploads, OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
@@ -263,7 +265,44 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 	return nil
 }
 
-func parseOpenAIImageDimensions(_ textproto.MIMEHeader) (int, int) {
+func parseOpenAIImageDimensions(data []byte) (int, int) {
+	if len(data) >= 24 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		width := int(binary.BigEndian.Uint32(data[16:20]))
+		height := int(binary.BigEndian.Uint32(data[20:24]))
+		if width > 0 && height > 0 {
+			return width, height
+		}
+	}
+	if len(data) >= 4 && data[0] == 0xff && data[1] == 0xd8 {
+		i := 2
+		for i+8 <= len(data) {
+			if data[i] != 0xff {
+				i++
+				continue
+			}
+			marker := data[i+1]
+			i += 2
+			if marker == 0xd8 || marker == 0xd9 {
+				continue
+			}
+			if i+2 > len(data) {
+				break
+			}
+			segmentLen := int(binary.BigEndian.Uint16(data[i : i+2]))
+			if segmentLen < 2 || i+segmentLen > len(data) {
+				break
+			}
+			if marker >= 0xc0 && marker <= 0xc3 && i+7 <= len(data) {
+				height := int(binary.BigEndian.Uint16(data[i+3 : i+5]))
+				width := int(binary.BigEndian.Uint16(data[i+5 : i+7]))
+				if width > 0 && height > 0 {
+					return width, height
+				}
+				break
+			}
+			i += segmentLen
+		}
+	}
 	return 0, 0
 }
 
@@ -296,18 +335,21 @@ func classifyOpenAIImagesCapability(req *OpenAIImagesRequest) OpenAIImagesCapabi
 	if req == nil {
 		return OpenAIImagesCapabilityNative
 	}
-	if req.ExplicitModel || req.ExplicitSize {
-		return OpenAIImagesCapabilityNative
-	}
-	model := strings.ToLower(strings.TrimSpace(req.Model))
-	if !strings.HasPrefix(model, "gpt-image-") {
-		return OpenAIImagesCapabilityNative
-	}
-	if req.Stream || req.N != 1 || req.HasMask || req.HasNativeOptions || req.Multipart {
+	if req.Stream || req.HasMask || req.HasNativeOptions || req.ExplicitSize {
 		return OpenAIImagesCapabilityNative
 	}
 	if req.ResponseFormat != "" && req.ResponseFormat != "b64_json" && req.ResponseFormat != "url" {
 		return OpenAIImagesCapabilityNative
+	}
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if model == "" {
+		model = "gpt-image-1"
+	}
+	if !strings.HasPrefix(model, "gpt-image-") {
+		return OpenAIImagesCapabilityNative
+	}
+	if req.Multipart {
+		return OpenAIImagesCapabilityChatWebEdit
 	}
 	return OpenAIImagesCapabilityBasic
 }
@@ -374,6 +416,9 @@ func (s *OpenAIGatewayService) ForwardImagesContext(
 	}
 	if account == nil || !account.SupportsOpenAIImageCapability(parsed.RequiredCapability) {
 		return nil, fmt.Errorf("account does not support OpenAI Images API")
+	}
+	if account.IsOpenAIChatWebMode() {
+		return s.forwardOpenAIImagesChatWebContext(ctx, c, account, parsed, channelMappedModel)
 	}
 	return s.forwardOpenAIImagesAPIKeyContext(ctx, c, account, body, parsed, channelMappedModel)
 }

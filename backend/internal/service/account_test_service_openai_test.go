@@ -74,7 +74,7 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
-	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, repo.updatedExtra)
 	require.Equal(t, 42.0, repo.updatedExtra["codex_5h_used_percent"])
@@ -105,7 +105,7 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
-	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4", "")
 	require.Error(t, err)
 	require.NotEmpty(t, repo.updatedExtra)
 	require.Equal(t, 100.0, repo.updatedExtra["codex_5h_used_percent"])
@@ -145,7 +145,7 @@ func TestAccountTestService_OpenAIChatWebUsesTokenProviderForConnectionTest(t *t
 		},
 	}
 
-	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4", "")
 	require.NoError(t, err)
 	require.Equal(t, 1, tokenProvider.calls)
 	require.Len(t, upstream.requests, 1)
@@ -174,8 +174,42 @@ func TestAccountTestService_OpenAIChatWebTokenProviderErrorWithoutFallbackToken(
 		},
 	}
 
-	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4")
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-5.4", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Failed to resolve OpenAI access token")
 	require.Contains(t, err.Error(), "exchange failed")
+}
+
+func TestAccountTestService_OpenAIImageModelUsesImagesAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newSoraTestContext()
+
+	upstream := &queuedHTTPUpstreamStub{
+		responses: []*http.Response{
+			newJSONResponse(http.StatusOK, `{"created":1740000000,"data":[{"b64_json":"QUJD","revised_prompt":"drawn cat"}]}`),
+		},
+	}
+	imageGateway := &OpenAIGatewayService{
+		httpUpstream: upstream,
+	}
+	svc := &AccountTestService{
+		openAIGatewayService: imageGateway,
+	}
+	account := &Account{
+		ID:          92,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+
+	err := svc.testOpenAIAccountConnection(gatewayctx.FromGin(ctx), account, "gpt-image-1", "")
+	require.NoError(t, err)
+	require.Equal(t, 1, upstream.callCount)
+	require.Contains(t, upstream.requestBodies[0], []byte(`"model":"gpt-image-1"`))
+	require.Contains(t, upstream.requestBodies[0], []byte(defaultOpenAIImageTestPrompt))
+	require.Len(t, upstream.responses, 0)
+	require.Contains(t, recorder.Body.String(), `"type":"image"`)
+	require.Contains(t, recorder.Body.String(), `data:image/png;base64,QUJD`)
+	require.Contains(t, recorder.Body.String(), `"type":"test_complete"`)
 }

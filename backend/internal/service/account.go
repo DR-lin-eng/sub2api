@@ -1161,7 +1161,9 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 		return false
 	}
 	switch capability {
-	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
+	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityChatWebEdit:
+		return a.Type == AccountTypeAPIKey || a.IsOpenAIChatWebMode()
+	case OpenAIImagesCapabilityNative:
 		return a.Type == AccountTypeAPIKey
 	default:
 		return a.Type == AccountTypeAPIKey
