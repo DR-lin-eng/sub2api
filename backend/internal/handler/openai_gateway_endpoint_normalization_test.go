@@ -27,6 +27,16 @@ func TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint(t *testing.T) {
 			want: EndpointResponses,
 		},
 		{
+			name: "images generations keep native upstream endpoint",
+			path: "/v1/images/generations",
+			want: EndpointImagesGenerations,
+		},
+		{
+			name: "images edits keep native upstream endpoint",
+			path: "/images/edits",
+			want: EndpointImagesEdits,
+		},
+		{
 			name: "responses compact keeps compact suffix",
 			path: "/openai/v1/responses/compact",
 			want: "/v1/responses/compact",

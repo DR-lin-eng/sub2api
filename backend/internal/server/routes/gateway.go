@@ -76,6 +76,30 @@ func RegisterGatewayRoutes(
 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		// OpenAI Chat Completions API
 		gateway.POST("/chat/completions", h.OpenAIGateway.ChatCompletions)
+		gateway.POST("/images/generations", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Images API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Images(c)
+		})
+		gateway.POST("/images/edits", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Images API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Images(c)
+		})
 	}
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
@@ -99,6 +123,30 @@ func RegisterGatewayRoutes(
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
 	// OpenAI Chat Completions API（不带v1前缀的别名）
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ChatCompletions)
+	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Images API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Images(c)
+	})
+	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Images API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Images(c)
+	})
 	// Claude Code bootstrap / telemetry compatibility endpoints.
 	r.GET("/api/claude_cli/bootstrap", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeBootstrap)
 	r.GET("/api/claude_code/organizations/metrics_enabled", clientRequestID, opsErrorLogger, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.ClaudeMetricsEnabled)
@@ -307,6 +355,36 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			},
 		},
 		{
+			Method:  http.MethodPost,
+			Path:    "/v1/images/generations",
+			Handler: openAIImagesDispatchGateway(h),
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/v1/images/edits",
+			Handler: openAIImagesDispatchGateway(h),
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
 			Method:  http.MethodGet,
 			Path:    "/v1/responses",
 			Handler: h.OpenAIGateway.ResponsesWebSocketGateway,
@@ -355,6 +433,36 @@ func ExecutableGatewayRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			Method:  http.MethodPost,
 			Path:    "/chat/completions",
 			Handler: h.OpenAIGateway.ChatCompletionsGateway,
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/images/generations",
+			Handler: openAIImagesDispatchGateway(h),
+			Middleware: []string{
+				"request_logger",
+				"cors",
+				"security_headers",
+				"gateway_body_limit",
+				"client_request_id",
+				"inbound_endpoint",
+				"standard_api_key_auth",
+				"require_group_anthropic",
+			},
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/images/edits",
+			Handler: openAIImagesDispatchGateway(h),
 			Middleware: []string{
 				"request_logger",
 				"cors",
@@ -569,6 +677,38 @@ func openAICountTokensDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFun
 		}
 		if h.Gateway != nil {
 			h.Gateway.CountTokensGateway(c)
+			return
+		}
+		writeGatewayDispatchUnavailable(c)
+	}
+}
+
+func openAIImagesDispatchGateway(h *handler.Handlers) gatewayctx.HandlerFunc {
+	return func(c gatewayctx.GatewayContext) {
+		if c == nil || h == nil {
+			writeGatewayDispatchUnavailable(c)
+			return
+		}
+		apiKey, ok := middleware.GetAPIKeyFromGatewayContext(c)
+		if !ok || apiKey == nil {
+			if h.OpenAIGateway != nil {
+				h.OpenAIGateway.ImagesGateway(c)
+				return
+			}
+			writeGatewayDispatchUnavailable(c)
+			return
+		}
+		if apiKey.Group != nil && apiKey.Group.Platform != service.PlatformOpenAI {
+			c.WriteJSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Images API is not supported for this platform",
+				},
+			})
+			return
+		}
+		if h.OpenAIGateway != nil {
+			h.OpenAIGateway.ImagesGateway(c)
 			return
 		}
 		writeGatewayDispatchUnavailable(c)
