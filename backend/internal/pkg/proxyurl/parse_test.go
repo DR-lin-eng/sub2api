@@ -173,7 +173,7 @@ func TestParse_Scheme大小写不敏感(t *testing.T) {
 	}
 
 	// 大写 SOCKS5 应被接受并升级为 socks5h
-	trimmed, parsed, err := Parse("SOCKS5://proxy.example.com:1080")
+	trimmed, parsed, err = Parse("SOCKS5://proxy.example.com:1080")
 	if err != nil {
 		t.Fatalf("大写 SOCKS5 应被接受: %v", err)
 	}

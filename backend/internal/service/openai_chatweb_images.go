@@ -285,6 +285,14 @@ func (s *OpenAIGatewayService) executeSingleOpenAIChatWebImageTurnContext(
 	if err != nil {
 		return nil, fmt.Errorf("prepare chatweb sentinel: %w", err)
 	}
+	defer func() {
+		s.pingOpenAIChatWebSentinel(context.Background(), account, token, &openAIChatWebConversationPrepareResult{
+			Referer:   referer,
+			Session:   session,
+			SessionID: sessionID,
+			Sentinel:  sentinelBundle,
+		})
+	}()
 
 	uploadedImages := make([]openAIChatWebUploadedImage, 0, len(req.Uploads))
 	for _, upload := range req.Uploads {
@@ -362,6 +370,9 @@ func (s *OpenAIGatewayService) executeSingleOpenAIChatWebImageTurnContext(
 	}
 
 	summary := parseOpenAIChatWebImageStreamBody(respBody)
+	if strings.TrimSpace(summary.ConversationID) != "" {
+		referer = openAIChatWebBaseURL + "/c/" + strings.TrimSpace(summary.ConversationID)
+	}
 	outputIDs := filterOpenAIChatWebOutputFileIDs(summary.FileIDs, uploadedImages)
 	if summary.ConversationID != "" && len(outputIDs) == 0 {
 		polledIDs, pollErr := s.pollOpenAIChatWebImageOutputIDsContext(ctx, account, token, session, sessionID, referer, summary.ConversationID, uploadedImages)
@@ -903,11 +914,14 @@ func resolveOpenAIChatWebImageUpstreamModel(account *Account, requestedModel, de
 			return strings.TrimSpace(mapped)
 		}
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(requestedModel)), "gpt-image-") {
+	switch strings.ToLower(strings.TrimSpace(requestedModel)) {
+	case "", "gpt-image-1":
 		return openAIChatWebImagesUpstreamModelDefault
-	}
-	if strings.TrimSpace(requestedModel) == "" {
-		return openAIChatWebImagesUpstreamModelDefault
+	case "gpt-image-2":
+		if account != nil && account.OpenAIPlanType() == "free" {
+			return openAIChatWebImagesUpstreamModelDefault
+		}
+		return "gpt-5-3"
 	}
 	return strings.TrimSpace(requestedModel)
 }
