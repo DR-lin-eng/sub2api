@@ -24,13 +24,13 @@ vi.mock('@/composables/useClipboard', () => ({
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   const messages: Record<string, string> = {
-    'admin.accounts.geminiImagePromptDefault': 'Generate a cute orange cat astronaut sticker on a clean pastel background.'
+    'admin.accounts.imagePromptDefault': 'Generate a cute orange cat astronaut sticker on a clean pastel background.'
   }
   return {
     ...actual,
     useI18n: () => ({
       t: (key: string, params?: Record<string, string | number>) => {
-        if (key === 'admin.accounts.geminiImageReceived' && params?.count) {
+        if (key === 'admin.accounts.imageReceived' && params?.count) {
           return `received-${params.count}`
         }
         return messages[key] || key
@@ -59,7 +59,7 @@ function createStreamResponse(lines: string[]) {
   } as Response
 }
 
-function mountModal() {
+function mountModal(overrides?: { account?: Record<string, unknown> }) {
   return mount(AccountTestModal, {
     props: {
       show: false,
@@ -68,7 +68,8 @@ function mountModal() {
         name: 'Gemini Image Test',
         platform: 'gemini',
         type: 'apikey',
-        status: 'active'
+        status: 'active',
+        ...overrides?.account
       }
     } as any,
     global: {
@@ -140,8 +141,45 @@ describe('AccountTestModal', () => {
       prompt: 'draw a tiny orange cat astronaut'
     })
 
-    const preview = wrapper.find('img[alt="gemini-test-image-1"]')
+    const preview = wrapper.find('img[alt="test-image-1"]')
     expect(preview.exists()).toBe(true)
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
+  })
+
+  it('openai 生图模型测试会自动带上默认提示词', async () => {
+    getAvailableModels.mockResolvedValueOnce([
+      { id: 'gpt-image-1', display_name: 'GPT Image 1' },
+      { id: 'gpt-4.1', display_name: 'GPT 4.1' }
+    ])
+
+    const wrapper = mountModal({
+      account: {
+        id: 43,
+        name: 'OpenAI Image Test',
+        platform: 'openai'
+      }
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const promptInput = wrapper.find('textarea.textarea-stub')
+    expect(promptInput.exists()).toBe(true)
+    expect((promptInput.element as HTMLTextAreaElement).value).toBe(
+      'Generate a cute orange cat astronaut sticker on a clean pastel background.'
+    )
+
+    const buttons = wrapper.findAll('button')
+    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+
+    await startButton!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toEqual({
+      model_id: 'gpt-image-1',
+      prompt: 'Generate a cute orange cat astronaut sticker on a clean pastel background.'
+    })
   })
 })

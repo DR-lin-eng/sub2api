@@ -477,8 +477,8 @@
           </div>
         </div>
 
-        <!-- 图片生成计费配置（antigravity 和 gemini 平台） -->
-        <div v-if="createForm.platform === 'antigravity' || createForm.platform === 'gemini'" class="border-t pt-4">
+        <!-- 图片生成计费配置 -->
+        <div v-if="createForm.platform === 'antigravity' || createForm.platform === 'gemini' || createForm.platform === 'openai'" class="border-t pt-4">
           <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
             {{ t('admin.groups.imagePricing.title') }}
           </label>
@@ -1211,8 +1211,8 @@
           </div>
         </div>
 
-        <!-- 图片生成计费配置（antigravity 和 gemini 平台） -->
-        <div v-if="editForm.platform === 'antigravity' || editForm.platform === 'gemini'" class="border-t pt-4">
+        <!-- 图片生成计费配置 -->
+        <div v-if="editForm.platform === 'antigravity' || editForm.platform === 'gemini' || editForm.platform === 'openai'" class="border-t pt-4">
           <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
             {{ t('admin.groups.imagePricing.title') }}
           </label>
