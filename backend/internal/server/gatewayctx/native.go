@@ -95,18 +95,8 @@ func (c *nativeGatewayContext) ClientIP() string {
 	if c == nil {
 		return ""
 	}
-	if c.req != nil {
-		if ip := strings.TrimSpace(c.req.Header.Get("CF-Connecting-IP")); ip != "" {
-			return normalizeForwardedClientIP(ip)
-		}
-		if ip := strings.TrimSpace(c.req.Header.Get("X-Real-IP")); ip != "" {
-			return normalizeForwardedClientIP(ip)
-		}
-		if xff := strings.TrimSpace(c.req.Header.Get("X-Forwarded-For")); xff != "" {
-			if ip := pickForwardedClientIP(xff); ip != "" {
-				return ip
-			}
-		}
+	if ip := forwardedClientIPFromRequest(c.req); ip != "" {
+		return ip
 	}
 	if c.clientIP != "" {
 		return normalizeForwardedClientIP(c.clientIP)
@@ -115,6 +105,22 @@ func (c *nativeGatewayContext) ClientIP() string {
 		return ""
 	}
 	return normalizeForwardedClientIP(c.req.RemoteAddr)
+}
+
+func forwardedClientIPFromRequest(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if ip := strings.TrimSpace(req.Header.Get("CF-Connecting-IP")); ip != "" {
+		return normalizeForwardedClientIP(ip)
+	}
+	if ip := strings.TrimSpace(req.Header.Get("X-Real-IP")); ip != "" {
+		return normalizeForwardedClientIP(ip)
+	}
+	if xff := strings.TrimSpace(req.Header.Get("X-Forwarded-For")); xff != "" {
+		return pickForwardedClientIP(xff)
+	}
+	return ""
 }
 
 func pickForwardedClientIP(xff string) string {

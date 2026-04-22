@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -89,8 +90,8 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 	}
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		redisKey := r.prefix + key + ":" + ip
+		clientIP := ip.GetClientIP(c)
+		redisKey := r.prefix + key + ":" + clientIP
 
 		ctx := c.Request.Context()
 
@@ -131,8 +132,8 @@ func (r *RateLimiter) AllowContext(c gatewayctx.GatewayContext, key string, limi
 		return false
 	}
 
-	ip := c.ClientIP()
-	redisKey := r.prefix + key + ":" + ip
+	clientIP := ip.GetClientIPContext(c)
+	redisKey := r.prefix + key + ":" + clientIP
 	ctx := c.Request().Context()
 	windowMillis := windowTTLMillis(window)
 
