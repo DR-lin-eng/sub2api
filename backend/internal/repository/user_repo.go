@@ -569,6 +569,13 @@ func applyUserEntityToService(dst *service.User, src *dbent.User) {
 	dst.CreatedAt = src.CreatedAt
 	dst.UpdatedAt = src.UpdatedAt
 	dst.SignupSource = src.SignupSource
+	dst.LastLoginAt = src.LastLoginAt
+	dst.LastActiveAt = src.LastActiveAt
+	dst.BalanceNotifyEnabled = src.BalanceNotifyEnabled
+	dst.BalanceNotifyThresholdType = src.BalanceNotifyThresholdType
+	dst.BalanceNotifyThreshold = src.BalanceNotifyThreshold
+	dst.BalanceNotifyExtraEmails = service.ParseNotifyEmails(src.BalanceNotifyExtraEmails)
+	dst.TotalRecharged = src.TotalRecharged
 }
 
 // UpdateTotpSecret 更新用户的 TOTP 加密密钥

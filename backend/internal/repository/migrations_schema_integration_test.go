@@ -25,6 +25,13 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
 	requireColumn(t, tx, "users", "signup_source", "character varying", 32, false)
+	requireColumn(t, tx, "users", "last_login_at", "timestamp with time zone", 0, true)
+	requireColumn(t, tx, "users", "last_active_at", "timestamp with time zone", 0, true)
+	requireColumn(t, tx, "users", "balance_notify_enabled", "boolean", 0, false)
+	requireColumn(t, tx, "users", "balance_notify_threshold_type", "character varying", 0, false)
+	requireColumn(t, tx, "users", "balance_notify_threshold", "numeric", 0, true)
+	requireColumn(t, tx, "users", "balance_notify_extra_emails", "text", 0, false)
+	requireColumn(t, tx, "users", "total_recharged", "numeric", 0, false)
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)
