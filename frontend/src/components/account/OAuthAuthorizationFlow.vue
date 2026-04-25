@@ -67,7 +67,7 @@
                 class="text-blue-600 focus:ring-blue-500"
               />
               <span class="text-sm text-blue-900 dark:text-blue-200">{{
-                t('admin.accounts.oauth.openai.accessTokenAuth', '手动输入 AT')
+                t('admin.accounts.oauth.openai.accessTokenAuth')
               }}</span>
             </label>
           </div>
@@ -317,7 +317,7 @@
             class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
           >
             <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
-              {{ t('admin.accounts.oauth.openai.accessTokenDesc', '直接粘贴 Access Token 创建账号，无需 OAuth 授权流程。支持批量导入（每行一个）。') }}
+              {{ t('admin.accounts.oauth.openai.accessTokenDesc') }}
             </p>
 
             <div class="mb-4">
@@ -325,7 +325,7 @@
                 class="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300"
               >
                 <Icon name="key" size="sm" class="text-blue-500" />
-                Access Token
+                {{ t('admin.accounts.oauth.openai.accessTokenLabel') }}
                 <span
                   v-if="parsedAccessTokenCount > 1"
                   class="rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
@@ -337,7 +337,7 @@
                 v-model="accessTokenInput"
                 rows="3"
                 class="input w-full resize-y font-mono text-sm"
-                :placeholder="t('admin.accounts.oauth.openai.accessTokenPlaceholder', '粘贴 Access Token，每行一个')"
+                :placeholder="t('admin.accounts.oauth.openai.accessTokenPlaceholder')"
               ></textarea>
               <p
                 v-if="parsedAccessTokenCount > 1"
@@ -363,7 +363,7 @@
               @click="handleImportAccessToken"
             >
               <Icon name="sparkles" size="sm" class="mr-2" />
-              {{ t('admin.accounts.oauth.openai.importAccessToken', '导入 Access Token') }}
+              {{ t('admin.accounts.oauth.openai.importAccessToken') }}
             </button>
           </div>
         </div>

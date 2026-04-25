@@ -1988,7 +1988,7 @@ const copyAccountsGroupOptions = computed(() => {
   )
   return eligibleGroups.map((g) => ({
     value: g.id,
-    label: `${g.name} (${g.account_count || 0} 个账号)`
+    label: `${g.name} (${t('common.accountCount', { count: g.account_count || 0 })})`
   }))
 })
 
@@ -2000,7 +2000,7 @@ const copyAccountsGroupOptionsForEdit = computed(() => {
   )
   return eligibleGroups.map((g) => ({
     value: g.id,
-    label: `${g.name} (${g.account_count || 0} 个账号)`
+    label: `${g.name} (${t('common.accountCount', { count: g.account_count || 0 })})`
   }))
 })
 

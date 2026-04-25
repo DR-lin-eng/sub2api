@@ -69,13 +69,12 @@ const showNoStorageToast = ref(false)
 let pollTimers: Record<number, ReturnType<typeof setTimeout>> = {}
 const promptBarRef = ref<InstanceType<typeof SoraPromptBar> | null>(null)
 
-// 示例提示词
-const examplePrompts = [
-  '一只金色的柴犬在东京涩谷街头散步，镜头跟随，电影感画面，4K 高清',
-  '无人机航拍视角，冰岛极光下的冰川湖面反射绿色光芒，慢速推进',
-  '赛博朋克风格的未来城市，霓虹灯倒映在雨后积水中，夜景，电影级色彩',
-  '水墨画风格，一叶扁舟在山水间漂泊，薄雾缭绕，中国古典意境'
-]
+const examplePrompts = computed(() => [
+  t('sora.examplePrompt1'),
+  t('sora.examplePrompt2'),
+  t('sora.examplePrompt3'),
+  t('sora.examplePrompt4')
+])
 
 // 活跃任务统计
 const activeTaskCount = computed(() =>

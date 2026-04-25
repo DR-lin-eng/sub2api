@@ -167,13 +167,6 @@ import type { ApiKey, UserSubscription } from '@/types'
 
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024
 
-/** 方向显示配置 */
-const ASPECT_META: Record<string, { icon: string; label: string }> = {
-  landscape: { icon: '▬', label: '横屏' },
-  portrait:  { icon: '▮', label: '竖屏' },
-  square:    { icon: '◻', label: '方形' }
-}
-
 const props = defineProps<{
   generating: boolean
   activeTaskCount: number
@@ -186,6 +179,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const aspectMeta = computed<Record<string, { icon: string; label: string }>>(() => ({
+  landscape: { icon: '▬', label: t('sora.landscape') },
+  portrait: { icon: '▮', label: t('sora.portrait') },
+  square: { icon: '◻', label: t('sora.square') }
+}))
 
 const prompt = ref('')
 const families = ref<SoraModelFamily[]>([])
@@ -221,7 +220,7 @@ const availableAspects = computed(() => {
   const fam = currentFamily.value
   if (!fam?.orientations?.length) return []
   return fam.orientations
-    .map(o => ({ value: o, ...(ASPECT_META[o] || { icon: '?', label: o }) }))
+    .map(o => ({ value: o, ...(aspectMeta.value[o] || { icon: '?', label: o }) }))
 })
 
 // 当前家族支持的时长列表

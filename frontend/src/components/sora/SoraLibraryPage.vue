@@ -51,7 +51,7 @@
             class="sora-gallery-card-badge"
             :class="item.media_type === 'video' ? 'video' : 'image'"
           >
-            {{ item.media_type === 'video' ? 'VIDEO' : 'IMAGE' }}
+            {{ item.media_type === 'video' ? t('sora.mediaTypeVideo') : t('sora.mediaTypeImage') }}
           </span>
 
           <!-- Hover 操作层 -->
@@ -59,14 +59,14 @@
             <button
               v-if="item.media_url"
               class="sora-gallery-card-action"
-              title="下载"
+              :title="t('sora.download')"
               @click.stop="handleDownload(item)"
             >
               📥
             </button>
             <button
               class="sora-gallery-card-action"
-              title="删除"
+              :title="t('common.delete')"
               @click.stop="handleDelete(item.id)"
             >
               🗑

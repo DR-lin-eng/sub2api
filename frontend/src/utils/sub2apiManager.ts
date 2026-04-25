@@ -1,4 +1,5 @@
 import { accountsAPI, groupsAPI, opsAPI, proxiesAPI } from '@/api/admin'
+import { i18n } from '@/i18n'
 import type {
   Account,
   AccountListFilters,
@@ -13,6 +14,11 @@ const LOW_WRITE_CONCURRENCY = 2
 const LOW_REQUEST_CONCURRENCY = 3
 const DIRECT_ACCOUNT_LOOKUP_THRESHOLD = 20
 const PROXY_TEST_CONCURRENCY = 8
+const { t } = i18n.global
+
+function batchOpsT(key: string, params?: Record<string, unknown>) {
+  return t(`admin.dataManagement.batchOps.${key}`, params ?? {})
+}
 
 export const LOG_ENDPOINTS = [
   'request-errors',
@@ -231,10 +237,10 @@ export async function migrateAccountsAndDeleteProxies(
 ): Promise<BatchResult> {
   const preview = await previewProxyMigration(sourceProxyIds)
   if (targetProxyId != null && sourceProxyIds.includes(targetProxyId)) {
-    throw new Error('目标代理不能包含在待删除代理里。')
+    throw new Error(batchOpsT('proxyMigration.targetInsideSource'))
   }
   if (targetProxyId == null && preview.affectedAccounts.length > 0) {
-    throw new Error('当前只支持迁移到指定代理，请先选择目标代理。')
+    throw new Error(batchOpsT('proxyMigration.targetRequiredWithAffectedAccounts'))
   }
 
   let updateResponse: any[] = []
@@ -271,9 +277,9 @@ export async function inspectProxyHealth(proxy: Proxy): Promise<ProxyHealthCheck
   try {
     const payload = await proxiesAPI.testProxy(proxy.id)
     success = !!payload.success
-    message = String(payload.message || (success ? '测活成功' : '测活失败'))
+    message = String(payload.message || (success ? batchOpsT('proxyHealth.testSuccess') : batchOpsT('proxyHealth.testFailed')))
   } catch (error: any) {
-    message = error?.message || '代理测活失败'
+    message = error?.message || batchOpsT('proxyHealth.testFailedDefault')
   }
 
   let affectedAccounts: ProxyAccountSummary[] = []
@@ -281,7 +287,7 @@ export async function inspectProxyHealth(proxy: Proxy): Promise<ProxyHealthCheck
     try {
       affectedAccounts = await proxiesAPI.getProxyAccounts(proxy.id)
     } catch (error: any) {
-      message = `${message} | 读取占用账号失败: ${error?.message || error}`
+      message = `${message} | ${batchOpsT('proxyHealth.loadAffectedAccountsFailed')}: ${error?.message || error}`
     }
   }
 
@@ -304,7 +310,7 @@ export async function previewProxyHealthAutoMigration(sourceProxyIds?: number[])
     ? proxies.filter((proxy) => sourceProxyIds.includes(proxy.id))
     : proxies
   if (selected.length === 0) {
-    throw new Error('没有匹配到要测活的代理 ID。')
+    throw new Error(batchOpsT('proxyHealth.noMatchedProxyIds'))
   }
 
   const checkedProxies = await mapWithConcurrency(selected, inspectProxyHealth, PROXY_TEST_CONCURRENCY)
@@ -344,7 +350,9 @@ export async function autoMigrateAccountsFromUnhealthyProxies(
 ): Promise<ProxyHealthPreview> {
   const plan = preview ?? await previewProxyHealthAutoMigration(sourceProxyIds)
   if (plan.unassignedChecks.length > 0) {
-    throw new Error(`没有足够的可用代理可接收这些不可用代理上的账号: ${plan.unassignedChecks.map((item) => item.proxy.id).join(', ')}`)
+    throw new Error(batchOpsT('proxyHealth.noHealthyTargets', {
+      proxyIds: plan.unassignedChecks.map((item) => item.proxy.id).join(', '),
+    }))
   }
   const updateResponses: any[] = []
   for (const assignment of plan.assignments) {
@@ -538,7 +546,7 @@ export async function migrateAccountsFromOpsLogs(
 ): Promise<BatchResult> {
   const preview = await previewAccountsFromOpsLogs(params)
   if (targetProxyId == null && preview.affectedAccounts.length > 0) {
-    throw new Error('命中账号后，请先选择目标代理。')
+    throw new Error(batchOpsT('opsMigration.targetRequiredWithAffectedAccounts'))
   }
   let updateResponse: any[] = []
   if (targetProxyId != null) {

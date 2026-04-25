@@ -179,7 +179,12 @@ const buildTaskMessage = (task: AdminDataImportTask) => {
 
 const buildResultSummary = (summary: AdminDataImportResult) => {
   if ((summary.account_enqueued || 0) > 0 || (summary.placeholder_created || 0) > 0) {
-    return `快速导入完成：已入队 ${summary.account_enqueued || 0}，占位账号 ${summary.placeholder_created || 0}，账号失败 ${summary.account_failed || 0}，代理失败 ${summary.proxy_failed || 0}`
+    return t('admin.accounts.dataImportFastPathSummary', {
+      account_enqueued: summary.account_enqueued || 0,
+      placeholder_created: summary.placeholder_created || 0,
+      account_failed: summary.account_failed || 0,
+      proxy_failed: summary.proxy_failed || 0,
+    })
   }
   return t('admin.accounts.dataImportResultSummary', summary as unknown as Record<string, unknown>)
 }
@@ -262,7 +267,11 @@ const scheduleTaskPoll = (taskID: string, toastID: string) => {
           type: summary.account_failed > 0 || summary.proxy_failed > 0 ? 'warning' : 'success',
           subtitle: buildTaskSubtitle(task),
           message: fastPathCompleted
-            ? `快速导入完成：已入队 ${summary.account_enqueued || 0}，占位账号 ${summary.placeholder_created || 0}，失败 ${summary.account_failed || 0}`
+            ? t('admin.accounts.dataImportFastPathToast', {
+              account_enqueued: summary.account_enqueued || 0,
+              placeholder_created: summary.placeholder_created || 0,
+              account_failed: summary.account_failed || 0,
+            })
             : summary.account_failed > 0 || summary.proxy_failed > 0
               ? t('admin.accounts.dataImportCompletedWithErrors', msgParams)
               : t('admin.accounts.dataImportSuccess', msgParams),

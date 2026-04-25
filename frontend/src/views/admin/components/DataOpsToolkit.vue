@@ -4,9 +4,9 @@
       <div class="border-b border-gray-200 bg-gradient-to-r from-amber-50 via-white to-cyan-50 px-6 py-5 dark:border-dark-700 dark:from-dark-900 dark:via-dark-900 dark:to-dark-800">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 class="text-base font-semibold text-gray-900 dark:text-white">批量运营工具</h3>
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ batchOpsT('title') }}</h3>
             <p class="mt-1 max-w-3xl text-sm text-gray-600 dark:text-gray-400">
-              这组工具把本地 `sub2apitool` 的高频批量功能原生接进了管理台，全部复用现有官方管理接口，不再需要额外跑 Python 工具。
+              {{ batchOpsT('description') }}
             </p>
           </div>
           <button
@@ -15,7 +15,7 @@
             :disabled="referenceLoading"
             @click="loadReferenceData"
           >
-            {{ referenceLoading ? '加载中...' : '刷新分组/代理' }}
+            {{ referenceLoading ? t('common.loading') : batchOpsT('refreshReferenceData') }}
           </button>
         </div>
       </div>
@@ -24,51 +24,51 @@
         <section class="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-dark-700 dark:bg-dark-800/60">
           <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h4 class="text-sm font-semibold text-gray-900 dark:text-white">1. 未分组账号批量入组</h4>
+              <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ batchOpsT('ungrouped.title') }}</h4>
               <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-                预览当前未纳入任何分组的账号，再一键写入目标分组。
+                {{ batchOpsT('ungrouped.description') }}
               </p>
             </div>
             <div class="text-xs text-gray-500 dark:text-gray-400">
-              最近预览 {{ ungroupedPreview?.length ?? 0 }} 个账号
+              {{ batchOpsT('ungrouped.recentPreview', { count: ungroupedPreview?.length ?? 0 }) }}
             </div>
           </div>
 
           <div class="grid gap-3 md:grid-cols-4">
             <select v-model="ungroupedForm.groupId" class="input w-full">
-              <option value="">选择目标分组</option>
+              <option value="">{{ batchOpsT('ungrouped.selectTargetGroup') }}</option>
               <option v-for="group in groups" :key="group.id" :value="String(group.id)">
                 #{{ group.id }} {{ group.name }} ({{ group.platform }})
               </option>
             </select>
             <select v-model="ungroupedForm.platform" class="input w-full">
-              <option value="">全部平台</option>
+              <option value="">{{ batchOpsT('ungrouped.allPlatforms') }}</option>
               <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">
                 {{ platform.label }}
               </option>
             </select>
             <select v-model="ungroupedForm.status" class="input w-full">
-              <option value="">全部状态</option>
-              <option value="active">正常</option>
-              <option value="inactive">禁用</option>
-              <option value="error">错误</option>
+              <option value="">{{ batchOpsT('status.all') }}</option>
+              <option value="active">{{ batchOpsT('status.active') }}</option>
+              <option value="inactive">{{ batchOpsT('status.inactive') }}</option>
+              <option value="error">{{ batchOpsT('status.error') }}</option>
             </select>
-            <input v-model.trim="ungroupedForm.search" class="input w-full" placeholder="搜索账号名称 / 邮箱" />
+            <input v-model.trim="ungroupedForm.search" class="input w-full" :placeholder="batchOpsT('ungrouped.searchPlaceholder')" />
           </div>
 
           <div class="mt-4 flex flex-wrap gap-2">
             <button type="button" class="btn btn-secondary btn-sm" :disabled="loading.ungroupedPreview" @click="handleUngroupedPreview">
-              {{ loading.ungroupedPreview ? '预览中...' : '预览未分组账号' }}
+              {{ loading.ungroupedPreview ? batchOpsT('ungrouped.previewing') : batchOpsT('ungrouped.preview') }}
             </button>
             <button type="button" class="btn btn-primary btn-sm" :disabled="loading.ungroupedApply || !ungroupedForm.groupId" @click="handleUngroupedApply">
-              {{ loading.ungroupedApply ? '执行中...' : '批量写入分组' }}
+              {{ loading.ungroupedApply ? batchOpsT('ungrouped.applying') : batchOpsT('ungrouped.apply') }}
             </button>
           </div>
 
           <div v-if="ungroupedPreview" class="mt-4 rounded-xl border border-dashed border-gray-300 bg-white p-4 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span class="font-medium text-gray-900 dark:text-white">共 {{ ungroupedPreview.length }} 个未分组账号</span>
-              <span class="text-gray-500 dark:text-gray-400">只展示前 12 个</span>
+              <span class="font-medium text-gray-900 dark:text-white">{{ batchOpsT('ungrouped.total', { count: ungroupedPreview.length }) }}</span>
+              <span class="text-gray-500 dark:text-gray-400">{{ batchOpsT('showFirstN', { count: 12 }) }}</span>
             </div>
             <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               <div v-for="account in ungroupedPreview.slice(0, 12)" :key="account.id" class="rounded-lg border border-gray-200 px-3 py-2 text-xs dark:border-dark-700">
@@ -81,9 +81,9 @@
 
         <section class="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-dark-700 dark:bg-dark-800/60">
           <div class="mb-4">
-            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">2. 代理迁移后批量删除</h4>
+            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ batchOpsT('proxyMigration.title') }}</h4>
             <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-              读取旧代理占用账号，批量迁移到新代理后删除旧代理。
+              {{ batchOpsT('proxyMigration.description') }}
             </p>
           </div>
 
@@ -91,31 +91,31 @@
             <textarea
               v-model="proxyMigrationForm.sourceProxyIDs"
               class="input min-h-[92px] w-full"
-              placeholder="待删除代理 ID，支持逗号/换行，例如：12,13,18"
+              :placeholder="batchOpsT('proxyMigration.sourceProxyIdsPlaceholder')"
             ></textarea>
             <select v-model="proxyMigrationForm.targetProxyId" class="input w-full">
-              <option value="">选择目标代理</option>
+              <option value="">{{ batchOpsT('proxyMigration.selectTargetProxy') }}</option>
               <option v-for="proxy in proxies" :key="proxy.id" :value="String(proxy.id)">
-                #{{ proxy.id }} {{ proxy.host }}:{{ proxy.port }} | 占用 {{ proxy.account_count ?? 0 }}
+                #{{ proxy.id }} {{ proxy.host }}:{{ proxy.port }} | {{ batchOpsT('proxyOccupied', { count: proxy.account_count ?? 0 }) }}
               </option>
             </select>
           </div>
 
           <div class="mt-4 flex flex-wrap gap-2">
             <button type="button" class="btn btn-secondary btn-sm" :disabled="loading.proxyMigrationPreview" @click="handleProxyMigrationPreview">
-              {{ loading.proxyMigrationPreview ? '预览中...' : '预览占用账号' }}
+              {{ loading.proxyMigrationPreview ? batchOpsT('proxyMigration.previewing') : batchOpsT('proxyMigration.preview') }}
             </button>
             <button type="button" class="btn btn-danger btn-sm" :disabled="loading.proxyMigrationApply" @click="handleProxyMigrationApply">
-              {{ loading.proxyMigrationApply ? '执行中...' : '迁移账号并删除代理' }}
+              {{ loading.proxyMigrationApply ? batchOpsT('proxyMigration.applying') : batchOpsT('proxyMigration.apply') }}
             </button>
           </div>
 
           <div v-if="proxyMigrationPreview" class="mt-4 rounded-xl border border-dashed border-gray-300 bg-white p-4 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="text-sm font-medium text-gray-900 dark:text-white">
-              命中 {{ proxyMigrationPreview.affectedAccounts.length }} 个账号
+              {{ batchOpsT('proxyMigration.hitAccounts', { count: proxyMigrationPreview.affectedAccounts.length }) }}
             </div>
             <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              来源代理：{{ formatProxyList(proxyMigrationPreview.sourceProxies) }}
+              {{ batchOpsT('proxyMigration.sourceProxies', { proxies: formatProxyList(proxyMigrationPreview.sourceProxies) }) }}
             </div>
             <div class="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               <div
@@ -132,43 +132,43 @@
 
         <section class="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-dark-700 dark:bg-dark-800/60">
           <div class="mb-4">
-            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">3. 代理测活与自动迁移</h4>
+            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ batchOpsT('proxyHealth.title') }}</h4>
             <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-              对指定代理批量测活，自动把不可用代理上的账号迁移到当前更健康、占用更低的代理。
+              {{ batchOpsT('proxyHealth.description') }}
             </p>
           </div>
 
           <textarea
             v-model="proxyHealthForm.sourceProxyIDs"
             class="input min-h-[92px] w-full"
-            placeholder="可选：只测这些代理，留空则测全部代理"
+            :placeholder="batchOpsT('proxyHealth.sourceProxyIdsPlaceholder')"
           ></textarea>
 
           <div class="mt-4 flex flex-wrap gap-2">
             <button type="button" class="btn btn-secondary btn-sm" :disabled="loading.proxyHealthPreview" @click="handleProxyHealthPreview">
-              {{ loading.proxyHealthPreview ? '测活中...' : '预览测活与迁移计划' }}
+              {{ loading.proxyHealthPreview ? batchOpsT('proxyHealth.previewing') : batchOpsT('proxyHealth.preview') }}
             </button>
             <button type="button" class="btn btn-primary btn-sm" :disabled="loading.proxyHealthApply" @click="handleProxyHealthApply">
-              {{ loading.proxyHealthApply ? '执行中...' : '自动迁移不可用代理账号' }}
+              {{ loading.proxyHealthApply ? batchOpsT('proxyHealth.applying') : batchOpsT('proxyHealth.apply') }}
             </button>
           </div>
 
           <div v-if="proxyHealthPreview" class="mt-4 rounded-xl border border-dashed border-gray-300 bg-white p-4 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="grid gap-3 md:grid-cols-4">
               <div class="rounded-lg border border-gray-200 px-3 py-3 dark:border-dark-700">
-                <div class="text-xs text-gray-500 dark:text-gray-400">已测代理</div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">{{ batchOpsT('proxyHealth.checkedProxies') }}</div>
                 <div class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ proxyHealthPreview.checkedProxies.length }}</div>
               </div>
               <div class="rounded-lg border border-green-200 bg-green-50 px-3 py-3 dark:border-green-900/50 dark:bg-green-900/10">
-                <div class="text-xs text-green-700 dark:text-green-300">健康代理</div>
+                <div class="text-xs text-green-700 dark:text-green-300">{{ batchOpsT('proxyHealth.healthyProxies') }}</div>
                 <div class="mt-1 text-lg font-semibold text-green-800 dark:text-green-200">{{ proxyHealthPreview.healthyProxies.length }}</div>
               </div>
               <div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 dark:border-amber-900/50 dark:bg-amber-900/10">
-                <div class="text-xs text-amber-700 dark:text-amber-300">迁移计划</div>
+                <div class="text-xs text-amber-700 dark:text-amber-300">{{ batchOpsT('proxyHealth.assignments') }}</div>
                 <div class="mt-1 text-lg font-semibold text-amber-800 dark:text-amber-200">{{ proxyHealthPreview.assignments.length }}</div>
               </div>
               <div class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 dark:border-rose-900/50 dark:bg-rose-900/10">
-                <div class="text-xs text-rose-700 dark:text-rose-300">无法迁移</div>
+                <div class="text-xs text-rose-700 dark:text-rose-300">{{ batchOpsT('proxyHealth.unassigned') }}</div>
                 <div class="mt-1 text-lg font-semibold text-rose-800 dark:text-rose-200">{{ proxyHealthPreview.unassignedChecks.length }}</div>
               </div>
             </div>
@@ -183,7 +183,7 @@
                   #{{ assignment.sourceProxy.id }} → #{{ assignment.targetProxy.id }}
                 </div>
                 <div class="mt-1 text-gray-500 dark:text-gray-400">
-                  迁移 {{ assignment.affectedAccounts.length }} 个账号
+                  {{ batchOpsT('proxyHealth.moveAccounts', { count: assignment.affectedAccounts.length }) }}
                 </div>
               </div>
             </div>
@@ -192,43 +192,43 @@
 
         <section class="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-dark-700 dark:bg-dark-800/60">
           <div class="mb-4">
-            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">4. 502 / 错误日志批量换代理</h4>
+            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ batchOpsT('opsMigration.title') }}</h4>
             <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-              从请求错误、上游错误、请求明细或系统日志里找出报错账号，再批量更新代理。
+              {{ batchOpsT('opsMigration.description') }}
             </p>
           </div>
 
           <div class="grid gap-3 md:grid-cols-4">
             <select v-model="opsMigrationForm.targetProxyId" class="input w-full">
-              <option value="">选择目标代理</option>
+              <option value="">{{ batchOpsT('opsMigration.selectTargetProxy') }}</option>
               <option v-for="proxy in proxies" :key="proxy.id" :value="String(proxy.id)">
                 #{{ proxy.id }} {{ proxy.host }}:{{ proxy.port }}
               </option>
             </select>
             <select v-model="opsMigrationForm.endpoint" class="input w-full">
-              <option value="auto">自动选择</option>
-              <option value="request-errors">请求错误</option>
-              <option value="upstream-errors">上游错误</option>
-              <option value="requests">请求明细</option>
-              <option value="system-logs">系统日志</option>
+              <option value="auto">{{ batchOpsT('endpoints.auto') }}</option>
+              <option value="request-errors">{{ batchOpsT('endpoints.requestErrors') }}</option>
+              <option value="upstream-errors">{{ batchOpsT('endpoints.upstreamErrors') }}</option>
+              <option value="requests">{{ batchOpsT('endpoints.requests') }}</option>
+              <option value="system-logs">{{ batchOpsT('endpoints.systemLogs') }}</option>
             </select>
-            <input v-model.trim="opsMigrationForm.keyword" class="input w-full" placeholder="关键字，默认 502" />
-            <input v-model.number="opsMigrationForm.pages" type="number" min="1" max="10" class="input w-full" placeholder="扫描页数" />
+            <input v-model.trim="opsMigrationForm.keyword" class="input w-full" :placeholder="batchOpsT('opsMigration.keywordPlaceholder')" />
+            <input v-model.number="opsMigrationForm.pages" type="number" min="1" max="10" class="input w-full" :placeholder="batchOpsT('opsMigration.pagesPlaceholder')" />
           </div>
 
           <div class="mt-4 flex flex-wrap gap-2">
             <button type="button" class="btn btn-secondary btn-sm" :disabled="loading.opsPreview" @click="handleOpsPreview">
-              {{ loading.opsPreview ? '扫描中...' : '预览异常账号' }}
+              {{ loading.opsPreview ? batchOpsT('opsMigration.previewing') : batchOpsT('opsMigration.preview') }}
             </button>
             <button type="button" class="btn btn-primary btn-sm" :disabled="loading.opsApply" @click="handleOpsApply">
-              {{ loading.opsApply ? '执行中...' : '批量更新这些账号的代理' }}
+              {{ loading.opsApply ? batchOpsT('opsMigration.applying') : batchOpsT('opsMigration.apply') }}
             </button>
           </div>
 
           <div v-if="opsPreview" class="mt-4 rounded-xl border border-dashed border-gray-300 bg-white p-4 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span class="font-medium text-gray-900 dark:text-white">命中 {{ opsPreview.affectedAccounts.length }} 个账号</span>
-              <span class="text-gray-500 dark:text-gray-400">来源：{{ opsPreview.scannedSources?.join(', ') || '无' }}</span>
+              <span class="font-medium text-gray-900 dark:text-white">{{ batchOpsT('opsMigration.hitAccounts', { count: opsPreview.affectedAccounts.length }) }}</span>
+              <span class="text-gray-500 dark:text-gray-400">{{ batchOpsT('sourceLabel', { sources: formatSourceList(opsPreview.scannedSources) }) }}</span>
             </div>
             <div class="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               <div
@@ -241,7 +241,7 @@
               </div>
             </div>
             <details v-if="opsPreview.rawMatches?.length" class="mt-3 rounded-lg border border-gray-200 px-3 py-2 text-xs dark:border-dark-700">
-              <summary class="cursor-pointer font-medium text-gray-700 dark:text-gray-300">查看部分原始命中日志</summary>
+              <summary class="cursor-pointer font-medium text-gray-700 dark:text-gray-300">{{ batchOpsT('showRawMatches') }}</summary>
               <pre class="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all text-[11px] text-gray-600 dark:text-gray-400">{{ JSON.stringify(opsPreview.rawMatches.slice(0, 5), null, 2) }}</pre>
             </details>
           </div>
@@ -249,57 +249,57 @@
 
         <section class="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-dark-700 dark:bg-dark-800/60">
           <div class="mb-4">
-            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">5. 重复账号检查与删除</h4>
+            <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ batchOpsT('duplicates.title') }}</h4>
             <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-              先按字段预览重复组，默认勾选每组里除保留项之外的账号，再按你的选择删除。
+              {{ batchOpsT('duplicates.description') }}
             </p>
           </div>
 
           <div class="grid gap-3 md:grid-cols-4">
             <select v-model="duplicateForm.fieldMode" class="input w-full">
-              <option value="display">显示名优先</option>
-              <option value="email">邮箱</option>
-              <option value="name">名称</option>
-              <option value="username">用户名</option>
+              <option value="display">{{ batchOpsT('duplicateFields.display') }}</option>
+              <option value="email">{{ batchOpsT('duplicateFields.email') }}</option>
+              <option value="name">{{ batchOpsT('duplicateFields.name') }}</option>
+              <option value="username">{{ batchOpsT('duplicateFields.username') }}</option>
             </select>
             <select v-model="duplicateForm.platform" class="input w-full">
-              <option value="">全部平台</option>
+              <option value="">{{ batchOpsT('ungrouped.allPlatforms') }}</option>
               <option v-for="platform in platformOptions" :key="`dup-${platform.value}`" :value="platform.value">
                 {{ platform.label }}
               </option>
             </select>
             <select v-model="duplicateForm.status" class="input w-full">
-              <option value="">全部状态</option>
-              <option value="active">正常</option>
-              <option value="inactive">禁用</option>
-              <option value="error">错误</option>
+              <option value="">{{ batchOpsT('status.all') }}</option>
+              <option value="active">{{ batchOpsT('status.active') }}</option>
+              <option value="inactive">{{ batchOpsT('status.inactive') }}</option>
+              <option value="error">{{ batchOpsT('status.error') }}</option>
             </select>
-            <input v-model.trim="duplicateForm.search" class="input w-full" placeholder="可选：缩小范围搜索" />
+            <input v-model.trim="duplicateForm.search" class="input w-full" :placeholder="batchOpsT('duplicates.searchPlaceholder')" />
           </div>
 
           <div class="mt-4 flex flex-wrap gap-2">
             <button type="button" class="btn btn-secondary btn-sm" :disabled="loading.duplicatePreview" @click="handleDuplicatePreview">
-              {{ loading.duplicatePreview ? '扫描中...' : '预览重复账号' }}
+              {{ loading.duplicatePreview ? batchOpsT('duplicates.previewing') : batchOpsT('duplicates.preview') }}
             </button>
             <button type="button" class="btn btn-danger btn-sm" :disabled="loading.duplicateApply || selectedDuplicateIDs.length === 0" @click="handleDuplicateApply">
-              {{ loading.duplicateApply ? '删除中...' : `删除选中的重复账号 (${selectedDuplicateIDs.length})` }}
+              {{ loading.duplicateApply ? batchOpsT('duplicates.applying') : batchOpsT('duplicates.apply', { count: selectedDuplicateIDs.length }) }}
             </button>
           </div>
 
           <div v-if="duplicatePreview" class="mt-4 rounded-xl border border-dashed border-gray-300 bg-white p-4 dark:border-dark-600 dark:bg-dark-900/40">
             <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span class="font-medium text-gray-900 dark:text-white">共 {{ duplicatePreview.totalDuplicates }} 个重复账号，分成 {{ duplicatePreview.groups.length }} 组</span>
-              <span class="text-gray-500 dark:text-gray-400">默认保留每组 ID 最小的账号</span>
+              <span class="font-medium text-gray-900 dark:text-white">{{ batchOpsT('duplicates.total', { duplicates: duplicatePreview.totalDuplicates, groups: duplicatePreview.groups.length }) }}</span>
+              <span class="text-gray-500 dark:text-gray-400">{{ batchOpsT('duplicates.keepSmallestId') }}</span>
             </div>
 
             <div class="mt-4 space-y-3">
               <div v-for="group in duplicatePreview.groups.slice(0, 12)" :key="`${group.platform}-${group.identity}`" class="rounded-lg border border-gray-200 px-4 py-3 dark:border-dark-700">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ group.identity || '(空标识)' }}</div>
-                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ group.platform }} · 保留 #{{ group.keepId }}</div>
+                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ group.identity || batchOpsT('fieldEmptyIdentity') }}</div>
+                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ group.platform }} · {{ batchOpsT('duplicates.keepId', { id: group.keepId }) }}</div>
                   </div>
-                  <div class="text-xs text-gray-500 dark:text-gray-400">待删 {{ group.deleteIds.length }} 个</div>
+                  <div class="text-xs text-gray-500 dark:text-gray-400">{{ batchOpsT('duplicates.deleteCount', { count: group.deleteIds.length }) }}</div>
                 </div>
                 <div class="mt-3 space-y-2">
                   <label
@@ -332,6 +332,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { groupsAPI, proxiesAPI } from '@/api/admin'
 import { useAppStore } from '@/stores'
 import type { Account, AdminGroup, Proxy, ProxyAccountSummary } from '@/types'
@@ -351,7 +352,35 @@ import {
   type ProxyHealthPreview,
 } from '@/utils/sub2apiManager'
 
+const { t } = useI18n()
 const appStore = useAppStore()
+const batchOpsPrefix = 'admin.dataManagement.batchOps'
+
+function batchOpsT(key: string, params?: Record<string, unknown>) {
+  return t(`${batchOpsPrefix}.${key}`, params ?? {})
+}
+
+function formatSourceName(source: string): string {
+  switch (source) {
+    case 'request-errors':
+      return batchOpsT('endpoints.requestErrors')
+    case 'upstream-errors':
+      return batchOpsT('endpoints.upstreamErrors')
+    case 'requests':
+      return batchOpsT('endpoints.requests')
+    case 'system-logs':
+      return batchOpsT('endpoints.systemLogs')
+    case 'auto':
+      return batchOpsT('endpoints.auto')
+    default:
+      return source
+  }
+}
+
+function formatSourceList(sources?: string[] | null): string {
+  if (!sources || sources.length === 0) return t('common.none')
+  return sources.map((item) => formatSourceName(item)).join(', ')
+}
 
 const platformOptions = [
   { value: 'openai', label: 'OpenAI' },
@@ -425,7 +454,7 @@ async function loadReferenceData() {
     groups.value = groupList
     proxies.value = proxyList
   } catch (error: any) {
-    appStore.showError(error?.message || '读取分组和代理列表失败')
+    appStore.showError(error?.message || batchOpsT('loadReferenceDataFailed'))
   } finally {
     referenceLoading.value = false
   }
@@ -445,7 +474,7 @@ function parseIDList(raw: string): number[] {
 function getRequiredTargetProxyID(value: string): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error('请先选择目标代理')
+    throw new Error(batchOpsT('targetProxyRequired'))
   }
   return parsed
 }
@@ -453,7 +482,7 @@ function getRequiredTargetProxyID(value: string): number {
 function getRequiredGroupID(value: string): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error('请先选择目标分组')
+    throw new Error(batchOpsT('targetGroupRequired'))
   }
   return parsed
 }
@@ -475,7 +504,7 @@ function formatProxyAccountLabel(account: ProxyAccountSummary): string {
 }
 
 function formatProxyList(items?: Proxy[] | null): string {
-  if (!items || items.length === 0) return '无'
+  if (!items || items.length === 0) return t('common.none')
   return items.map((item) => `#${item.id}`).join(', ')
 }
 
@@ -504,9 +533,9 @@ async function handleUngroupedPreview() {
       search: ungroupedForm.search,
       status: ungroupedForm.status,
     })
-    appStore.showSuccess(`已找到 ${ungroupedPreview.value.length} 个未分组账号`)
+    appStore.showSuccess(batchOpsT('ungrouped.previewSuccess', { count: ungroupedPreview.value.length }))
   } catch (error: any) {
-    appStore.showError(error?.message || '预览未分组账号失败')
+    appStore.showError(error?.message || batchOpsT('ungrouped.previewFailed'))
   } finally {
     loading.ungroupedPreview = false
   }
@@ -522,7 +551,7 @@ async function handleUngroupedApply() {
   }
 
   loading.ungroupedApply = true
-  const toastID = beginToast('正在批量写入分组', '将未分组账号写入目标分组')
+  const toastID = beginToast(batchOpsT('ungrouped.applyingTitle'), batchOpsT('ungrouped.applyingSubtitle'))
   try {
     const result = await assignUngroupedAccounts(targetGroupID, {
       platform: ungroupedForm.platform,
@@ -532,12 +561,14 @@ async function handleUngroupedApply() {
     finishToast(
       toastID,
       'success',
-      `已写入 ${result.affectedAccounts.length} 个账号`,
-      result.targetGroup ? `目标分组：#${result.targetGroup.id} ${result.targetGroup.name}` : undefined,
+      batchOpsT('ungrouped.applied', { count: result.affectedAccounts.length }),
+      result.targetGroup
+        ? batchOpsT('ungrouped.targetGroup', { id: result.targetGroup.id, name: result.targetGroup.name })
+        : undefined,
     )
     ungroupedPreview.value = result.affectedAccounts as Account[]
   } catch (error: any) {
-    finishToast(toastID, 'error', error?.message || '批量写入分组失败')
+    finishToast(toastID, 'error', error?.message || batchOpsT('ungrouped.applyFailed'))
   } finally {
     loading.ungroupedApply = false
   }
@@ -546,16 +577,16 @@ async function handleUngroupedApply() {
 async function handleProxyMigrationPreview() {
   const sourceProxyIDs = parseIDList(proxyMigrationForm.sourceProxyIDs)
   if (sourceProxyIDs.length === 0) {
-    appStore.showError('请至少填写一个待删除代理 ID')
+    appStore.showError(batchOpsT('proxyMigration.sourceProxyIdsRequired'))
     return
   }
 
   loading.proxyMigrationPreview = true
   try {
     proxyMigrationPreview.value = await previewProxyMigration(sourceProxyIDs)
-    appStore.showSuccess(`命中 ${proxyMigrationPreview.value.affectedAccounts.length} 个账号`)
+    appStore.showSuccess(batchOpsT('proxyMigration.previewSuccess', { count: proxyMigrationPreview.value.affectedAccounts.length }))
   } catch (error: any) {
-    appStore.showError(error?.message || '预览代理迁移失败')
+    appStore.showError(error?.message || batchOpsT('proxyMigration.previewFailed'))
   } finally {
     loading.proxyMigrationPreview = false
   }
@@ -564,7 +595,7 @@ async function handleProxyMigrationPreview() {
 async function handleProxyMigrationApply() {
   const sourceProxyIDs = parseIDList(proxyMigrationForm.sourceProxyIDs)
   if (sourceProxyIDs.length === 0) {
-    appStore.showError('请至少填写一个待删除代理 ID')
+    appStore.showError(batchOpsT('proxyMigration.sourceProxyIdsRequired'))
     return
   }
 
@@ -576,23 +607,28 @@ async function handleProxyMigrationApply() {
     return
   }
 
-  if (!window.confirm(`确认把 ${sourceProxyIDs.join(', ')} 上的账号迁移后删除这些代理吗？`)) {
+  if (!window.confirm(batchOpsT('proxyMigration.confirm', { proxyIds: sourceProxyIDs.join(', ') }))) {
     return
   }
 
   loading.proxyMigrationApply = true
-  const toastID = beginToast('正在迁移账号并删除代理', `源代理：${sourceProxyIDs.join(', ')}`)
+  const toastID = beginToast(
+    batchOpsT('proxyMigration.applyingTitle'),
+    batchOpsT('proxyMigration.applyingSubtitle', { proxyIds: sourceProxyIDs.join(', ') }),
+  )
   try {
     proxyMigrationPreview.value = await migrateAccountsAndDeleteProxies(sourceProxyIDs, targetProxyID)
     finishToast(
       toastID,
       'success',
-      `已处理 ${proxyMigrationPreview.value.affectedAccounts.length} 个账号`,
-      proxyMigrationPreview.value.targetProxy ? `目标代理：#${proxyMigrationPreview.value.targetProxy.id}` : undefined,
+      batchOpsT('proxyMigration.applied', { count: proxyMigrationPreview.value.affectedAccounts.length }),
+      proxyMigrationPreview.value.targetProxy
+        ? batchOpsT('proxyMigration.targetProxy', { id: proxyMigrationPreview.value.targetProxy.id })
+        : undefined,
     )
     await loadReferenceData()
   } catch (error: any) {
-    finishToast(toastID, 'error', error?.message || '迁移账号并删除代理失败')
+    finishToast(toastID, 'error', error?.message || batchOpsT('proxyMigration.applyFailed'))
   } finally {
     loading.proxyMigrationApply = false
   }
@@ -603,9 +639,9 @@ async function handleProxyHealthPreview() {
   try {
     const sourceProxyIDs = parseIDList(proxyHealthForm.sourceProxyIDs)
     proxyHealthPreview.value = await previewProxyHealthAutoMigration(sourceProxyIDs.length > 0 ? sourceProxyIDs : undefined)
-    appStore.showSuccess(`已完成 ${proxyHealthPreview.value.checkedProxies.length} 个代理的测活预览`)
+    appStore.showSuccess(batchOpsT('proxyHealth.previewSuccess', { count: proxyHealthPreview.value.checkedProxies.length }))
   } catch (error: any) {
-    appStore.showError(error?.message || '代理测活预览失败')
+    appStore.showError(error?.message || batchOpsT('proxyHealth.previewFailed'))
   } finally {
     loading.proxyHealthPreview = false
   }
@@ -613,12 +649,12 @@ async function handleProxyHealthPreview() {
 
 async function handleProxyHealthApply() {
   const sourceProxyIDs = parseIDList(proxyHealthForm.sourceProxyIDs)
-  if (!window.confirm('确认自动迁移不可用代理上的账号吗？')) {
+  if (!window.confirm(batchOpsT('proxyHealth.confirm'))) {
     return
   }
 
   loading.proxyHealthApply = true
-  const toastID = beginToast('正在迁移不可用代理账号', '系统会优先选择更健康、占用更低的代理')
+  const toastID = beginToast(batchOpsT('proxyHealth.applyingTitle'), batchOpsT('proxyHealth.applyingSubtitle'))
   try {
     proxyHealthPreview.value = await autoMigrateAccountsFromUnhealthyProxies(
       sourceProxyIDs.length > 0 ? sourceProxyIDs : undefined,
@@ -627,12 +663,12 @@ async function handleProxyHealthApply() {
     finishToast(
       toastID,
       'success',
-      `已执行 ${proxyHealthPreview.value.assignments.length} 组代理迁移`,
-      `健康代理 ${proxyHealthPreview.value.healthyProxies.length} 个`,
+      batchOpsT('proxyHealth.applied', { count: proxyHealthPreview.value.assignments.length }),
+      batchOpsT('proxyHealth.healthySummary', { count: proxyHealthPreview.value.healthyProxies.length }),
     )
     await loadReferenceData()
   } catch (error: any) {
-    finishToast(toastID, 'error', error?.message || '自动迁移失败')
+    finishToast(toastID, 'error', error?.message || batchOpsT('proxyHealth.applyFailed'))
   } finally {
     loading.proxyHealthApply = false
   }
@@ -646,9 +682,9 @@ async function handleOpsPreview() {
       pages: opsMigrationForm.pages,
       keyword: opsMigrationForm.keyword || '502',
     })
-    appStore.showSuccess(`已命中 ${opsPreview.value.affectedAccounts.length} 个异常账号`)
+    appStore.showSuccess(batchOpsT('opsMigration.previewSuccess', { count: opsPreview.value.affectedAccounts.length }))
   } catch (error: any) {
-    appStore.showError(error?.message || '扫描异常日志失败')
+    appStore.showError(error?.message || batchOpsT('opsMigration.previewFailed'))
   } finally {
     loading.opsPreview = false
   }
@@ -664,7 +700,10 @@ async function handleOpsApply() {
   }
 
   loading.opsApply = true
-  const toastID = beginToast('正在批量切换异常账号代理', `关键字：${opsMigrationForm.keyword || '502'}`)
+  const toastID = beginToast(
+    batchOpsT('opsMigration.applyingTitle'),
+    batchOpsT('opsMigration.applyingSubtitle', { keyword: opsMigrationForm.keyword || '502' }),
+  )
   try {
     opsPreview.value = await migrateAccountsFromOpsLogs(targetProxyID, {
       endpoint: opsMigrationForm.endpoint,
@@ -674,12 +713,14 @@ async function handleOpsApply() {
     finishToast(
       toastID,
       'success',
-      `已批量更新 ${opsPreview.value.affectedAccounts.length} 个账号`,
-      opsPreview.value.scannedSources?.length ? `来源：${opsPreview.value.scannedSources.join(', ')}` : undefined,
+      batchOpsT('opsMigration.applied', { count: opsPreview.value.affectedAccounts.length }),
+      opsPreview.value.scannedSources?.length
+        ? batchOpsT('sourceLabel', { sources: formatSourceList(opsPreview.value.scannedSources) })
+        : undefined,
     )
     await loadReferenceData()
   } catch (error: any) {
-    finishToast(toastID, 'error', error?.message || '批量换代理失败')
+    finishToast(toastID, 'error', error?.message || batchOpsT('opsMigration.applyFailed'))
   } finally {
     loading.opsApply = false
   }
@@ -695,9 +736,9 @@ async function handleDuplicatePreview() {
       status: duplicateForm.status,
     })
     selectedDuplicateIDs.value = duplicatePreview.value.groups.flatMap((group) => group.deleteIds)
-    appStore.showSuccess(`找到 ${duplicatePreview.value.totalDuplicates} 个重复账号`)
+    appStore.showSuccess(batchOpsT('duplicates.previewSuccess', { count: duplicatePreview.value.totalDuplicates }))
   } catch (error: any) {
-    appStore.showError(error?.message || '扫描重复账号失败')
+    appStore.showError(error?.message || batchOpsT('duplicates.previewFailed'))
   } finally {
     loading.duplicatePreview = false
   }
@@ -715,21 +756,24 @@ function toggleDuplicateSelection(accountID: number, checked: boolean) {
 
 async function handleDuplicateApply() {
   if (selectedDuplicateIDs.value.length === 0) {
-    appStore.showError('当前没有勾选任何待删除账号')
+    appStore.showError(batchOpsT('duplicates.noSelection'))
     return
   }
-  if (!window.confirm(`确认删除这 ${selectedDuplicateIDs.value.length} 个重复账号吗？`)) {
+  if (!window.confirm(batchOpsT('duplicates.confirm', { count: selectedDuplicateIDs.value.length }))) {
     return
   }
 
   loading.duplicateApply = true
-  const toastID = beginToast('正在删除重复账号', `已选中 ${selectedDuplicateIDs.value.length} 个账号`)
+  const toastID = beginToast(
+    batchOpsT('duplicates.applyingTitle'),
+    batchOpsT('duplicates.applyingSubtitle', { count: selectedDuplicateIDs.value.length }),
+  )
   try {
     await deleteAccounts(selectedDuplicateIDs.value)
-    finishToast(toastID, 'success', `已删除 ${selectedDuplicateIDs.value.length} 个重复账号`)
+    finishToast(toastID, 'success', batchOpsT('duplicates.applied', { count: selectedDuplicateIDs.value.length }))
     await handleDuplicatePreview()
   } catch (error: any) {
-    finishToast(toastID, 'error', error?.message || '删除重复账号失败')
+    finishToast(toastID, 'error', error?.message || batchOpsT('duplicates.applyFailed'))
   } finally {
     loading.duplicateApply = false
   }

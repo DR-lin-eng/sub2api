@@ -31,7 +31,7 @@
       />
     </div>
     <p class="mt-1 text-xs text-gray-400">
-      {{ t('admin.channels.form.modelInputHint', 'Press Enter to add, supports paste for batch import.') }}
+      {{ t('admin.channels.form.modelInputHint') }}
     </p>
   </div>
 </template>

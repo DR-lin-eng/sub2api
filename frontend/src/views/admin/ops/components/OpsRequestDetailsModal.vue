@@ -48,6 +48,15 @@ const rangeLabel = computed(() => {
   return t('admin.ops.requestDetails.rangeMinutes', { n: minutes })
 })
 
+const isTTFTView = computed(() => props.preset.sort === 'first_token_desc')
+const metricColumnLabel = computed(() =>
+  isTTFTView.value ? t('admin.ops.requestDetails.table.ttft') : t('admin.ops.requestDetails.table.duration')
+)
+
+function formatMetricMs(value: number | null | undefined): string {
+  return typeof value === 'number' ? `${value} ms` : '-'
+}
+
 function buildTimeParams(): Pick<OpsRequestDetailsParams, 'start_time' | 'end_time'> {
   const minutes = parseTimeRangeMinutes(props.timeRange)
   const endTime = new Date()
@@ -205,7 +214,7 @@ const kindBadgeClass = (kind: string) => {
                     {{ t('admin.ops.requestDetails.table.model') }}
                   </th>
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    {{ t('admin.ops.requestDetails.table.duration') }}
+                    {{ metricColumnLabel }}
                   </th>
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     {{ t('admin.ops.requestDetails.table.status') }}
@@ -235,7 +244,7 @@ const kindBadgeClass = (kind: string) => {
                     {{ row.model || '-' }}
                   </td>
                   <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
-                    {{ typeof row.duration_ms === 'number' ? `${row.duration_ms} ms` : '-' }}
+                    {{ formatMetricMs(isTTFTView ? row.first_token_ms : row.duration_ms) }}
                   </td>
                   <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
                     {{ row.status_code ?? '-' }}
