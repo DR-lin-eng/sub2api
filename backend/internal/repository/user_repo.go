@@ -53,7 +53,7 @@ func (r *userRepository) Create(ctx context.Context, userIn *service.User) error
 		txClient = r.client
 	}
 
-	created, err := txClient.User.Create().
+	createBuilder := txClient.User.Create().
 		SetEmail(userIn.Email).
 		SetUsername(userIn.Username).
 		SetNotes(userIn.Notes).
@@ -62,8 +62,12 @@ func (r *userRepository) Create(ctx context.Context, userIn *service.User) error
 		SetBalance(userIn.Balance).
 		SetConcurrency(userIn.Concurrency).
 		SetStatus(userIn.Status).
-		SetSoraStorageQuotaBytes(userIn.SoraStorageQuotaBytes).
-		Save(ctx)
+		SetSoraStorageQuotaBytes(userIn.SoraStorageQuotaBytes)
+	if signupSource := strings.TrimSpace(userIn.SignupSource); signupSource != "" {
+		createBuilder.SetSignupSource(signupSource)
+	}
+
+	created, err := createBuilder.Save(ctx)
 	if err != nil {
 		return translatePersistenceError(err, nil, service.ErrEmailExists)
 	}
@@ -136,7 +140,7 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 		txClient = r.client
 	}
 
-	updated, err := txClient.User.UpdateOneID(userIn.ID).
+	updateBuilder := txClient.User.UpdateOneID(userIn.ID).
 		SetEmail(userIn.Email).
 		SetUsername(userIn.Username).
 		SetNotes(userIn.Notes).
@@ -146,8 +150,12 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 		SetConcurrency(userIn.Concurrency).
 		SetStatus(userIn.Status).
 		SetSoraStorageQuotaBytes(userIn.SoraStorageQuotaBytes).
-		SetSoraStorageUsedBytes(userIn.SoraStorageUsedBytes).
-		Save(ctx)
+		SetSoraStorageUsedBytes(userIn.SoraStorageUsedBytes)
+	if signupSource := strings.TrimSpace(userIn.SignupSource); signupSource != "" {
+		updateBuilder.SetSignupSource(signupSource)
+	}
+
+	updated, err := updateBuilder.Save(ctx)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrUserNotFound, service.ErrEmailExists)
 	}
@@ -560,6 +568,7 @@ func applyUserEntityToService(dst *service.User, src *dbent.User) {
 	dst.ID = src.ID
 	dst.CreatedAt = src.CreatedAt
 	dst.UpdatedAt = src.UpdatedAt
+	dst.SignupSource = src.SignupSource
 }
 
 // UpdateTotpSecret 更新用户的 TOTP 加密密钥

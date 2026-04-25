@@ -24,6 +24,7 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
+	requireColumn(t, tx, "users", "signup_source", "character varying", 32, false)
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)
@@ -69,6 +70,15 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	var securitySecretsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.security_secrets')").Scan(&securitySecretsRegclass))
 	require.True(t, securitySecretsRegclass.Valid, "expected security_secrets table to exist")
+
+	// tls_fingerprint_profiles table should exist
+	var tlsFPProfilesRegclass sql.NullString
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.tls_fingerprint_profiles')").Scan(&tlsFPProfilesRegclass))
+	require.True(t, tlsFPProfilesRegclass.Valid, "expected tls_fingerprint_profiles table to exist")
+	requireColumn(t, tx, "tls_fingerprint_profiles", "name", "character varying", 100, false)
+	requireColumn(t, tx, "tls_fingerprint_profiles", "enable_grease", "boolean", 0, false)
+	requireColumn(t, tx, "tls_fingerprint_profiles", "created_at", "timestamp with time zone", 0, false)
+	requireColumn(t, tx, "tls_fingerprint_profiles", "updated_at", "timestamp with time zone", 0, false)
 
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString

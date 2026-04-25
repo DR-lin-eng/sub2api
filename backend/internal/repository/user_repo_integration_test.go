@@ -109,6 +109,18 @@ func (s *UserRepoSuite) TestCreate() {
 	s.Require().Equal("create@test.com", got.Email)
 }
 
+func (s *UserRepoSuite) TestCreate_PersistsSignupSource() {
+	user := s.mustCreateUser(&service.User{
+		Email:        "signup-source@test.com",
+		PasswordHash: "test-password-hash",
+		SignupSource: "linuxdo",
+	})
+
+	got, err := s.repo.GetByID(s.ctx, user.ID)
+	s.Require().NoError(err, "GetByID")
+	s.Require().Equal("linuxdo", got.SignupSource)
+}
+
 func (s *UserRepoSuite) TestGetByID_NotFound() {
 	_, err := s.repo.GetByID(s.ctx, 999999)
 	s.Require().Error(err, "expected error for non-existent ID")
