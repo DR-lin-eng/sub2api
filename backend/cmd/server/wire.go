@@ -66,7 +66,6 @@ func initializeCoordinatorApplication(buildInfo handler.BuildInfo) (*Coordinator
 		repository.ProviderSet,
 		service.ProviderSet,
 		providePrivacyClientFactory,
-		provideServiceBuildInfo,
 		provideCleanup,
 		wire.Struct(new(CoordinatorApplication), "Cleanup"),
 	)

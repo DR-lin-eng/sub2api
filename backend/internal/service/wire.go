@@ -307,6 +307,18 @@ func ProvideSchedulerSnapshotAdmissionBinding(
 	return svc
 }
 
+func ProvideSchedulerSnapshotServiceWithAdmission(
+	cache SchedulerCache,
+	outboxRepo SchedulerOutboxRepository,
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	cfg *config.Config,
+	tokenRefreshService *TokenRefreshService,
+) *SchedulerSnapshotService {
+	svc := ProvideSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
+	return ProvideSchedulerSnapshotAdmissionBinding(svc, tokenRefreshService)
+}
+
 // ProvideRateLimitService creates RateLimitService with optional dependencies.
 func ProvideRateLimitService(
 	accountRepo AccountRepository,
@@ -400,6 +412,14 @@ func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
 // ProvideSoraMediaStorage 初始化 Sora 媒体存储
 func ProvideSoraMediaStorage(cfg *config.Config) *SoraMediaStorage {
 	return NewSoraMediaStorage(cfg)
+}
+
+func ProvideSoraS3Storage(settingService *SettingService) *SoraS3Storage {
+	svc := NewSoraS3Storage(settingService)
+	if settingService != nil {
+		settingService.SetOnS3UpdateCallback(svc.RefreshClient)
+	}
+	return svc
 }
 
 func ProvideSoraSDKClient(
@@ -703,6 +723,8 @@ func ProvideOpenAIOAuthService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	payment.ProviderSet,
+
 	// Core services
 	NewAuthService,
 	NewUserService,
@@ -721,8 +743,11 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	ProvideGatewayService,
+	ProvideSoraS3Storage,
 	ProvideSoraMediaStorage,
 	ProvideSoraMediaCleanupService,
+	NewSoraQuotaService,
+	NewSoraGenerationService,
 	ProvideSoraSDKClient,
 	wire.Bind(new(SoraClient), new(*SoraSDKClient)),
 	NewSoraGatewayService,
@@ -768,12 +793,11 @@ var ProviderSet = wire.NewSet(
 	ProvideConcurrencyService,
 	ProvideUserMessageQueueService,
 	NewUsageRecordWorkerPool,
-	ProvideSchedulerSnapshotService,
+	ProvideSchedulerSnapshotServiceWithAdmission,
 	NewIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,
 	ProvideTokenRefreshService,
-	ProvideSchedulerSnapshotAdmissionBinding,
 	ProvideAccountExpiryService,
 	ProvideSubscriptionExpiryService,
 	ProvideTimingWheelService,
