@@ -609,6 +609,20 @@ export async function setActiveSoraS3Profile(profileID: string): Promise<SoraS3P
   return data
 }
 
+export interface WebSearchEmulationConfig {
+  enabled: boolean
+  providers: Array<Record<string, unknown>>
+}
+
+export async function getWebSearchEmulationConfig(): Promise<WebSearchEmulationConfig> {
+  try {
+    const { data } = await apiClient.get<WebSearchEmulationConfig>('/admin/settings/web-search-emulation')
+    return data
+  } catch {
+    return { enabled: false, providers: [] }
+  }
+}
+
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -638,7 +652,8 @@ export const settingsAPI = {
   createSoraS3Profile,
   updateSoraS3Profile,
   deleteSoraS3Profile,
-  setActiveSoraS3Profile
+  setActiveSoraS3Profile,
+  getWebSearchEmulationConfig
 }
 
 export default settingsAPI

@@ -25,6 +25,10 @@ import apiKeysAPI from './apiKeys'
 import scheduledTestsAPI from './scheduledTests'
 import backupAPI from './backup'
 import proxyMaintenanceAPI from './proxyMaintenance'
+import channelMonitorAPI from './channelMonitor'
+import channelMonitorTemplateAPI from './channelMonitorTemplate'
+import channelsAPI from './channels'
+import paymentAPI from './payment'
 
 /**
  * Unified admin API object for convenient access
@@ -51,7 +55,11 @@ export const adminAPI = {
   apiKeys: apiKeysAPI,
   scheduledTests: scheduledTestsAPI,
   backup: backupAPI,
-  proxyMaintenance: proxyMaintenanceAPI
+  proxyMaintenance: proxyMaintenanceAPI,
+  channelMonitor: channelMonitorAPI,
+  channelMonitorTemplate: channelMonitorTemplateAPI,
+  channels: channelsAPI,
+  payment: paymentAPI
 }
 
 export {
@@ -76,7 +84,11 @@ export {
   apiKeysAPI,
   scheduledTestsAPI,
   backupAPI,
-  proxyMaintenanceAPI
+  proxyMaintenanceAPI,
+  channelMonitorAPI,
+  channelMonitorTemplateAPI,
+  channelsAPI,
+  paymentAPI
 }
 
 export default adminAPI

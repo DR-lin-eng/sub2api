@@ -26,13 +26,13 @@ import (
 )
 
 var (
-	ErrRegistrationDisabled   = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
-	ErrSettingNotFound        = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
-	ErrSoraS3ProfileNotFound  = infraerrors.NotFound("SORA_S3_PROFILE_NOT_FOUND", "sora s3 profile not found")
-	ErrSoraS3ProfileExists    = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
+	ErrRegistrationDisabled          = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
+	ErrSettingNotFound               = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
+	ErrSoraS3ProfileNotFound         = infraerrors.NotFound("SORA_S3_PROFILE_NOT_FOUND", "sora s3 profile not found")
+	ErrSoraS3ProfileExists           = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
 	ErrTLSFingerprintProfileNotFound = infraerrors.NotFound("TLS_FINGERPRINT_PROFILE_NOT_FOUND", "tls fingerprint profile not found")
 	ErrTLSFingerprintProfileExists   = infraerrors.Conflict("TLS_FINGERPRINT_PROFILE_EXISTS", "tls fingerprint profile already exists")
-	ErrDefaultSubGroupInvalid = infraerrors.BadRequest(
+	ErrDefaultSubGroupInvalid        = infraerrors.BadRequest(
 		"DEFAULT_SUBSCRIPTION_GROUP_INVALID",
 		"default subscription group must exist and be subscription type",
 	)
@@ -137,15 +137,15 @@ type DefaultSubscriptionGroupReader interface {
 
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo           SettingRepository
-	defaultSubGroupReader DefaultSubscriptionGroupReader
-	cfg                   *config.Config
-	onUpdate              func() // Callback when settings are updated (for cache invalidation)
-	onS3Update            func() // Callback when Sora S3 settings are updated
+	settingRepo            SettingRepository
+	defaultSubGroupReader  DefaultSubscriptionGroupReader
+	cfg                    *config.Config
+	onUpdate               func() // Callback when settings are updated (for cache invalidation)
+	onS3Update             func() // Callback when Sora S3 settings are updated
 	onTLSFingerprintUpdate func() // Callback when TLS fingerprint settings are updated
-	version               string // Application version
-	hotSettings           sync.Map
-	hotSettingsSF         singleflight.Group
+	version                string // Application version
+	hotSettings            sync.Map
+	hotSettingsSF          singleflight.Group
 }
 
 // NewSettingService 创建系统设置服务实例
@@ -330,9 +330,18 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyHideCcsImportButton,
 		SettingKeyPurchaseSubscriptionEnabled,
 		SettingKeyPurchaseSubscriptionURL,
+		SettingPaymentEnabled,
 		SettingKeySoraClientEnabled,
 		SettingKeyCustomMenuItems,
 		SettingKeyLinuxDoConnectEnabled,
+		settingKeyWeChatConnectEnabled,
+		settingKeyWeChatConnectOpenEnabled,
+		settingKeyWeChatConnectMPEnabled,
+		settingKeyWeChatConnectMobileEnabled,
+		settingKeyOIDCConnectEnabled,
+		settingKeyOIDCConnectProviderName,
+		settingKeyChannelMonitorEnabled,
+		settingKeyAvailableChannelsEnabled,
 		SettingKeyBackendModeEnabled,
 	}
 
@@ -354,31 +363,54 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	registrationEmailSuffixWhitelist := ParseRegistrationEmailSuffixWhitelist(
 		settings[SettingKeyRegistrationEmailSuffixWhitelist],
 	)
+	weChatOAuth := s.effectiveWeChatConnectOAuthConfig(settings)
+	oidcProviderName := ""
+	oidcEnabled := false
+	if s != nil && s.cfg != nil {
+		oidcEnabled = s.cfg.OIDC.Enabled
+		oidcProviderName = strings.TrimSpace(s.cfg.OIDC.ProviderName)
+	}
+	if raw, ok := settings[settingKeyOIDCConnectEnabled]; ok {
+		oidcEnabled = strings.TrimSpace(raw) == "true"
+	}
+	if value := strings.TrimSpace(settings[settingKeyOIDCConnectProviderName]); value != "" {
+		oidcProviderName = value
+	}
 
 	return &PublicSettings{
-		RegistrationEnabled:              settings[SettingKeyRegistrationEnabled] == "true",
-		EmailVerifyEnabled:               emailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist: registrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                 settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
-		PasswordResetEnabled:             passwordResetEnabled,
-		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
-		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
-		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
-		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
-		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
-		SiteLogo:                         settings[SettingKeySiteLogo],
-		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
-		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
-		ContactInfo:                      settings[SettingKeyContactInfo],
-		DocURL:                           settings[SettingKeyDocURL],
-		HomeContent:                      sanitizePublicHomeContent(settings[SettingKeyHomeContent]),
-		HideCcsImportButton:              settings[SettingKeyHideCcsImportButton] == "true",
-		PurchaseSubscriptionEnabled:      settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
-		PurchaseSubscriptionURL:          sanitizePublicEmbeddedURL(settings[SettingKeyPurchaseSubscriptionURL]),
-		SoraClientEnabled:                settings[SettingKeySoraClientEnabled] == "true",
-		CustomMenuItems:                  settings[SettingKeyCustomMenuItems],
-		LinuxDoOAuthEnabled:              linuxDoEnabled,
-		BackendModeEnabled:               settings[SettingKeyBackendModeEnabled] == "true",
+		RegistrationEnabled:                  settings[SettingKeyRegistrationEnabled] == "true",
+		EmailVerifyEnabled:                   emailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist:     registrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                     settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
+		PasswordResetEnabled:                 passwordResetEnabled,
+		InvitationCodeEnabled:                settings[SettingKeyInvitationCodeEnabled] == "true",
+		TotpEnabled:                          settings[SettingKeyTotpEnabled] == "true",
+		TurnstileEnabled:                     settings[SettingKeyTurnstileEnabled] == "true",
+		TurnstileSiteKey:                     settings[SettingKeyTurnstileSiteKey],
+		SiteName:                             s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
+		SiteLogo:                             settings[SettingKeySiteLogo],
+		SiteSubtitle:                         s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
+		APIBaseURL:                           settings[SettingKeyAPIBaseURL],
+		ContactInfo:                          settings[SettingKeyContactInfo],
+		DocURL:                               settings[SettingKeyDocURL],
+		HomeContent:                          sanitizePublicHomeContent(settings[SettingKeyHomeContent]),
+		HideCcsImportButton:                  settings[SettingKeyHideCcsImportButton] == "true",
+		PurchaseSubscriptionEnabled:          settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
+		PurchaseSubscriptionURL:              sanitizePublicEmbeddedURL(settings[SettingKeyPurchaseSubscriptionURL]),
+		PaymentEnabled:                       settings[SettingPaymentEnabled] == "true",
+		SoraClientEnabled:                    settings[SettingKeySoraClientEnabled] == "true",
+		CustomMenuItems:                      settings[SettingKeyCustomMenuItems],
+		LinuxDoOAuthEnabled:                  linuxDoEnabled,
+		WeChatOAuthEnabled:                   weChatOAuth.Enabled,
+		WeChatOAuthOpenEnabled:               weChatOAuth.OpenEnabled,
+		WeChatOAuthMPEnabled:                 weChatOAuth.MPEnabled,
+		WeChatOAuthMobileEnabled:             weChatOAuth.MobileEnabled,
+		OIDCOAuthEnabled:                     oidcEnabled,
+		OIDCOAuthProviderName:                oidcProviderName,
+		ChannelMonitorEnabled:                settings[settingKeyChannelMonitorEnabled] == "true",
+		ChannelMonitorDefaultIntervalSeconds: 60,
+		AvailableChannelsEnabled:             settings[settingKeyAvailableChannelsEnabled] == "true",
+		BackendModeEnabled:                   settings[SettingKeyBackendModeEnabled] == "true",
 	}, nil
 }
 
@@ -446,55 +478,75 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 
 	// Return a struct that matches the frontend's expected format
 	return &struct {
-		RegistrationEnabled              bool            `json:"registration_enabled"`
-		EmailVerifyEnabled               bool            `json:"email_verify_enabled"`
-		RegistrationEmailSuffixWhitelist []string        `json:"registration_email_suffix_whitelist"`
-		PromoCodeEnabled                 bool            `json:"promo_code_enabled"`
-		PasswordResetEnabled             bool            `json:"password_reset_enabled"`
-		InvitationCodeEnabled            bool            `json:"invitation_code_enabled"`
-		TotpEnabled                      bool            `json:"totp_enabled"`
-		TurnstileEnabled                 bool            `json:"turnstile_enabled"`
-		TurnstileSiteKey                 string          `json:"turnstile_site_key,omitempty"`
-		SiteName                         string          `json:"site_name"`
-		SiteLogo                         string          `json:"site_logo,omitempty"`
-		SiteSubtitle                     string          `json:"site_subtitle,omitempty"`
-		APIBaseURL                       string          `json:"api_base_url,omitempty"`
-		ContactInfo                      string          `json:"contact_info,omitempty"`
-		DocURL                           string          `json:"doc_url,omitempty"`
-		HomeContent                      string          `json:"home_content,omitempty"`
-		HideCcsImportButton              bool            `json:"hide_ccs_import_button"`
-		PurchaseSubscriptionEnabled      bool            `json:"purchase_subscription_enabled"`
-		PurchaseSubscriptionURL          string          `json:"purchase_subscription_url,omitempty"`
-		SoraClientEnabled                bool            `json:"sora_client_enabled"`
-		CustomMenuItems                  json.RawMessage `json:"custom_menu_items"`
-		LinuxDoOAuthEnabled              bool            `json:"linuxdo_oauth_enabled"`
-		BackendModeEnabled               bool            `json:"backend_mode_enabled"`
-		Version                          string          `json:"version,omitempty"`
+		RegistrationEnabled                  bool            `json:"registration_enabled"`
+		EmailVerifyEnabled                   bool            `json:"email_verify_enabled"`
+		RegistrationEmailSuffixWhitelist     []string        `json:"registration_email_suffix_whitelist"`
+		PromoCodeEnabled                     bool            `json:"promo_code_enabled"`
+		PasswordResetEnabled                 bool            `json:"password_reset_enabled"`
+		InvitationCodeEnabled                bool            `json:"invitation_code_enabled"`
+		TotpEnabled                          bool            `json:"totp_enabled"`
+		TurnstileEnabled                     bool            `json:"turnstile_enabled"`
+		TurnstileSiteKey                     string          `json:"turnstile_site_key,omitempty"`
+		SiteName                             string          `json:"site_name"`
+		SiteLogo                             string          `json:"site_logo,omitempty"`
+		SiteSubtitle                         string          `json:"site_subtitle,omitempty"`
+		APIBaseURL                           string          `json:"api_base_url,omitempty"`
+		ContactInfo                          string          `json:"contact_info,omitempty"`
+		DocURL                               string          `json:"doc_url,omitempty"`
+		HomeContent                          string          `json:"home_content,omitempty"`
+		HideCcsImportButton                  bool            `json:"hide_ccs_import_button"`
+		PurchaseSubscriptionEnabled          bool            `json:"purchase_subscription_enabled"`
+		PurchaseSubscriptionURL              string          `json:"purchase_subscription_url,omitempty"`
+		PaymentEnabled                       bool            `json:"payment_enabled"`
+		SoraClientEnabled                    bool            `json:"sora_client_enabled"`
+		CustomMenuItems                      json.RawMessage `json:"custom_menu_items"`
+		LinuxDoOAuthEnabled                  bool            `json:"linuxdo_oauth_enabled"`
+		WeChatOAuthEnabled                   bool            `json:"wechat_oauth_enabled"`
+		WeChatOAuthOpenEnabled               bool            `json:"wechat_oauth_open_enabled"`
+		WeChatOAuthMPEnabled                 bool            `json:"wechat_oauth_mp_enabled"`
+		WeChatOAuthMobileEnabled             bool            `json:"wechat_oauth_mobile_enabled"`
+		OIDCOAuthEnabled                     bool            `json:"oidc_oauth_enabled"`
+		OIDCOAuthProviderName                string          `json:"oidc_oauth_provider_name,omitempty"`
+		ChannelMonitorEnabled                bool            `json:"channel_monitor_enabled"`
+		ChannelMonitorDefaultIntervalSeconds int             `json:"channel_monitor_default_interval_seconds"`
+		AvailableChannelsEnabled             bool            `json:"available_channels_enabled"`
+		BackendModeEnabled                   bool            `json:"backend_mode_enabled"`
+		Version                              string          `json:"version,omitempty"`
 	}{
-		RegistrationEnabled:              settings.RegistrationEnabled,
-		EmailVerifyEnabled:               settings.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist: settings.RegistrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                 settings.PromoCodeEnabled,
-		PasswordResetEnabled:             settings.PasswordResetEnabled,
-		InvitationCodeEnabled:            settings.InvitationCodeEnabled,
-		TotpEnabled:                      settings.TotpEnabled,
-		TurnstileEnabled:                 settings.TurnstileEnabled,
-		TurnstileSiteKey:                 settings.TurnstileSiteKey,
-		SiteName:                         settings.SiteName,
-		SiteLogo:                         settings.SiteLogo,
-		SiteSubtitle:                     settings.SiteSubtitle,
-		APIBaseURL:                       settings.APIBaseURL,
-		ContactInfo:                      settings.ContactInfo,
-		DocURL:                           settings.DocURL,
-		HomeContent:                      settings.HomeContent,
-		HideCcsImportButton:              settings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled:      settings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:          settings.PurchaseSubscriptionURL,
-		SoraClientEnabled:                settings.SoraClientEnabled,
-		CustomMenuItems:                  filterUserVisibleMenuItems(settings.CustomMenuItems),
-		LinuxDoOAuthEnabled:              settings.LinuxDoOAuthEnabled,
-		BackendModeEnabled:               settings.BackendModeEnabled,
-		Version:                          s.version,
+		RegistrationEnabled:                  settings.RegistrationEnabled,
+		EmailVerifyEnabled:                   settings.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist:     settings.RegistrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                     settings.PromoCodeEnabled,
+		PasswordResetEnabled:                 settings.PasswordResetEnabled,
+		InvitationCodeEnabled:                settings.InvitationCodeEnabled,
+		TotpEnabled:                          settings.TotpEnabled,
+		TurnstileEnabled:                     settings.TurnstileEnabled,
+		TurnstileSiteKey:                     settings.TurnstileSiteKey,
+		SiteName:                             settings.SiteName,
+		SiteLogo:                             settings.SiteLogo,
+		SiteSubtitle:                         settings.SiteSubtitle,
+		APIBaseURL:                           settings.APIBaseURL,
+		ContactInfo:                          settings.ContactInfo,
+		DocURL:                               settings.DocURL,
+		HomeContent:                          settings.HomeContent,
+		HideCcsImportButton:                  settings.HideCcsImportButton,
+		PurchaseSubscriptionEnabled:          settings.PurchaseSubscriptionEnabled,
+		PurchaseSubscriptionURL:              settings.PurchaseSubscriptionURL,
+		PaymentEnabled:                       settings.PaymentEnabled,
+		SoraClientEnabled:                    settings.SoraClientEnabled,
+		CustomMenuItems:                      filterUserVisibleMenuItems(settings.CustomMenuItems),
+		LinuxDoOAuthEnabled:                  settings.LinuxDoOAuthEnabled,
+		WeChatOAuthEnabled:                   settings.WeChatOAuthEnabled,
+		WeChatOAuthOpenEnabled:               settings.WeChatOAuthOpenEnabled,
+		WeChatOAuthMPEnabled:                 settings.WeChatOAuthMPEnabled,
+		WeChatOAuthMobileEnabled:             settings.WeChatOAuthMobileEnabled,
+		OIDCOAuthEnabled:                     settings.OIDCOAuthEnabled,
+		OIDCOAuthProviderName:                settings.OIDCOAuthProviderName,
+		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
+		BackendModeEnabled:                   settings.BackendModeEnabled,
+		Version:                              s.version,
 	}, nil
 }
 
@@ -1813,7 +1865,7 @@ type soraS3ProfileStoreItem struct {
 }
 
 type tlsFingerprintProfilesStore struct {
-	Enabled bool                            `json:"enabled"`
+	Enabled bool                             `json:"enabled"`
 	Items   []tlsFingerprintProfileStoreItem `json:"items"`
 }
 

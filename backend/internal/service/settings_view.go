@@ -72,8 +72,8 @@ type SystemSettings struct {
 	// 分组隔离：允许未分组 Key 调度（默认 false → 403）
 	AllowUngroupedKeyScheduling bool
 
-	AutoDelete401Accounts   bool
-	AutoDelete429Accounts   bool
+	AutoDelete401Accounts    bool
+	AutoDelete429Accounts    bool
 	AutoDeleteUselessProxies bool
 
 	// Backend 模式：禁用用户注册和自助服务，仅管理员可登录
@@ -106,12 +106,24 @@ type PublicSettings struct {
 
 	PurchaseSubscriptionEnabled bool
 	PurchaseSubscriptionURL     string
+	PaymentEnabled              bool
 	SoraClientEnabled           bool
 	CustomMenuItems             string // JSON array of custom menu items
 
-	LinuxDoOAuthEnabled bool
-	BackendModeEnabled  bool
-	Version             string
+	LinuxDoOAuthEnabled      bool
+	WeChatOAuthEnabled       bool
+	WeChatOAuthOpenEnabled   bool
+	WeChatOAuthMPEnabled     bool
+	WeChatOAuthMobileEnabled bool
+	OIDCOAuthEnabled         bool
+	OIDCOAuthProviderName    string
+
+	ChannelMonitorEnabled                bool
+	ChannelMonitorDefaultIntervalSeconds int
+	AvailableChannelsEnabled             bool
+
+	BackendModeEnabled bool
+	Version            string
 }
 
 // SoraS3Settings Sora S3 存储配置

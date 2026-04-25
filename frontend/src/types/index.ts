@@ -104,9 +104,19 @@ export interface PublicSettings {
   hide_ccs_import_button: boolean
   purchase_subscription_enabled: boolean
   purchase_subscription_url: string
+  payment_enabled: boolean
   custom_menu_items: CustomMenuItem[]
   linuxdo_oauth_enabled: boolean
+  wechat_oauth_enabled: boolean
+  wechat_oauth_open_enabled: boolean
+  wechat_oauth_mp_enabled: boolean
+  wechat_oauth_mobile_enabled: boolean
+  oidc_oauth_enabled: boolean
+  oidc_oauth_provider_name: string
   sora_client_enabled: boolean
+  channel_monitor_enabled: boolean
+  channel_monitor_default_interval_seconds: number
+  available_channels_enabled: boolean
   backend_mode_enabled: boolean
   version: string
 }

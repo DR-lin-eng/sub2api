@@ -6,6 +6,7 @@ import (
 )
 
 var codexModelMap = map[string]string{
+	"gpt-5.5":                    "gpt-5.5",
 	"gpt-5.4":                    "gpt-5.4",
 	"gpt-5.4-mini":               "gpt-5.4-mini",
 	"gpt-5.4-nano":               "gpt-5.4-nano",
@@ -235,6 +236,9 @@ func normalizeCodexModel(model string) string {
 	for _, candidate := range candidates {
 		normalized := strings.ToLower(candidate)
 
+		if strings.Contains(normalized, "gpt-5.5") || strings.Contains(normalized, "gpt 5.5") {
+			return "gpt-5.5"
+		}
 		if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
 			return "gpt-5.4-mini"
 		}
