@@ -24,6 +24,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -115,77 +116,81 @@ type oidcJWK struct {
 // OIDCOAuthStart 启动通用 OIDC OAuth 登录流程。
 // GET /api/v1/auth/oauth/oidc/start?redirect=/dashboard
 func (h *AuthHandler) OIDCOAuthStart(c *gin.Context) {
-	cfg, err := h.getOIDCOAuthConfig(c.Request.Context())
+	h.OIDCOAuthStartGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) OIDCOAuthStartGateway(c gatewayctx.GatewayContext) {
+	cfg, err := h.getOIDCOAuthConfig(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	state, err := oauth.GenerateState()
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_STATE_GEN_FAILED", "failed to generate oauth state").WithCause(err))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_STATE_GEN_FAILED", "failed to generate oauth state").WithCause(err))
 		return
 	}
 
-	redirectTo := sanitizeFrontendRedirectPath(c.Query("redirect"))
+	redirectTo := sanitizeFrontendRedirectPath(c.QueryValue("redirect"))
 	if redirectTo == "" {
 		redirectTo = oidcOAuthDefaultRedirectTo
 	}
 
 	browserSessionKey, err := generateOAuthPendingBrowserSession()
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_BROWSER_SESSION_GEN_FAILED", "failed to generate oauth browser session").WithCause(err))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_BROWSER_SESSION_GEN_FAILED", "failed to generate oauth browser session").WithCause(err))
 		return
 	}
 
-	secureCookie := isRequestHTTPS(c)
-	oidcSetCookie(c, oidcOAuthStateCookieName, encodeCookieValue(state), oidcOAuthCookieMaxAgeSec, secureCookie)
-	oidcSetCookie(c, oidcOAuthRedirectCookie, encodeCookieValue(redirectTo), oidcOAuthCookieMaxAgeSec, secureCookie)
-	intent := normalizeOAuthIntent(c.Query("intent"))
-	oidcSetCookie(c, oidcOAuthIntentCookieName, encodeCookieValue(intent), oidcOAuthCookieMaxAgeSec, secureCookie)
-	setOAuthPendingBrowserCookie(c, browserSessionKey, secureCookie)
-	clearOAuthPendingSessionCookie(c, secureCookie)
+	secureCookie := isRequestHTTPSGateway(c)
+	setOAuthCookieGateway(c, oidcOAuthStateCookieName, encodeCookieValue(state), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
+	setOAuthCookieGateway(c, oidcOAuthRedirectCookie, encodeCookieValue(redirectTo), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
+	intent := normalizeOAuthIntent(c.QueryValue("intent"))
+	setOAuthCookieGateway(c, oidcOAuthIntentCookieName, encodeCookieValue(intent), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
+	setOAuthPendingBrowserCookieGateway(c, browserSessionKey, secureCookie)
+	clearOAuthPendingSessionCookieGateway(c, secureCookie)
 	if intent == oauthIntentBindCurrentUser {
-		bindCookieValue, err := h.buildOAuthBindUserCookieFromContext(c)
+		bindCookieValue, err := h.buildOAuthBindUserCookieFromGatewayContext(c)
 		if err != nil {
-			response.ErrorFrom(c, err)
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 			return
 		}
-		oidcSetCookie(c, oidcOAuthBindUserCookieName, encodeCookieValue(bindCookieValue), oidcOAuthCookieMaxAgeSec, secureCookie)
+		setOAuthCookieGateway(c, oidcOAuthBindUserCookieName, encodeCookieValue(bindCookieValue), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
 	} else {
-		oidcClearCookie(c, oidcOAuthBindUserCookieName, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthBindUserCookieName, oidcOAuthCookiePath, secureCookie)
 	}
 
 	codeChallenge := ""
 	if cfg.UsePKCE {
 		verifier, genErr := oauth.GenerateCodeVerifier()
 		if genErr != nil {
-			response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_PKCE_GEN_FAILED", "failed to generate pkce verifier").WithCause(genErr))
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_PKCE_GEN_FAILED", "failed to generate pkce verifier").WithCause(genErr))
 			return
 		}
 		codeChallenge = oauth.GenerateCodeChallenge(verifier)
-		oidcSetCookie(c, oidcOAuthVerifierCookie, encodeCookieValue(verifier), oidcOAuthCookieMaxAgeSec, secureCookie)
+		setOAuthCookieGateway(c, oidcOAuthVerifierCookie, encodeCookieValue(verifier), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
 	}
 
 	nonce := ""
 	if cfg.ValidateIDToken {
 		nonce, err = oauth.GenerateState()
 		if err != nil {
-			response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_NONCE_GEN_FAILED", "failed to generate oauth nonce").WithCause(err))
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_NONCE_GEN_FAILED", "failed to generate oauth nonce").WithCause(err))
 			return
 		}
-		oidcSetCookie(c, oidcOAuthNonceCookie, encodeCookieValue(nonce), oidcOAuthCookieMaxAgeSec, secureCookie)
+		setOAuthCookieGateway(c, oidcOAuthNonceCookie, encodeCookieValue(nonce), oidcOAuthCookiePath, oidcOAuthCookieMaxAgeSec, secureCookie)
 	}
 
 	redirectURI := strings.TrimSpace(cfg.RedirectURL)
 	if redirectURI == "" {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth redirect url not configured"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth redirect url not configured"))
 		return
 	}
 
 	authURL, err := buildOIDCAuthorizeURL(cfg, state, nonce, codeChallenge, redirectURI)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_BUILD_URL_FAILED", "failed to build oauth authorization url").WithCause(err))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.InternalServer("OAUTH_BUILD_URL_FAILED", "failed to build oauth authorization url").WithCause(err))
 		return
 	}
 
@@ -195,9 +200,13 @@ func (h *AuthHandler) OIDCOAuthStart(c *gin.Context) {
 // OIDCOAuthCallback 处理 OIDC 回调：校验 id_token、创建/登录用户并重定向到前端。
 // GET /api/v1/auth/oauth/oidc/callback?code=...&state=...
 func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
-	cfg, cfgErr := h.getOIDCOAuthConfig(c.Request.Context())
+	h.OIDCOAuthCallbackGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) OIDCOAuthCallbackGateway(c gatewayctx.GatewayContext) {
+	cfg, cfgErr := h.getOIDCOAuthConfig(c.Request().Context())
 	if cfgErr != nil {
-		response.ErrorFrom(c, cfgErr)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, cfgErr)
 		return
 	}
 
@@ -206,72 +215,72 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		frontendCallback = oidcOAuthDefaultFrontendCB
 	}
 
-	if providerErr := strings.TrimSpace(c.Query("error")); providerErr != "" {
-		redirectOAuthError(c, frontendCallback, "provider_error", providerErr, c.Query("error_description"))
+	if providerErr := strings.TrimSpace(c.QueryValue("error")); providerErr != "" {
+		redirectOAuthErrorGateway(c, frontendCallback, "provider_error", providerErr, c.QueryValue("error_description"))
 		return
 	}
 
-	code := strings.TrimSpace(c.Query("code"))
-	state := strings.TrimSpace(c.Query("state"))
+	code := strings.TrimSpace(c.QueryValue("code"))
+	state := strings.TrimSpace(c.QueryValue("state"))
 	if code == "" || state == "" {
-		redirectOAuthError(c, frontendCallback, "missing_params", "missing code/state", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "missing_params", "missing code/state", "")
 		return
 	}
 
-	secureCookie := isRequestHTTPS(c)
+	secureCookie := isRequestHTTPSGateway(c)
 	defer func() {
-		oidcClearCookie(c, oidcOAuthStateCookieName, secureCookie)
-		oidcClearCookie(c, oidcOAuthVerifierCookie, secureCookie)
-		oidcClearCookie(c, oidcOAuthRedirectCookie, secureCookie)
-		oidcClearCookie(c, oidcOAuthNonceCookie, secureCookie)
-		oidcClearCookie(c, oidcOAuthIntentCookieName, secureCookie)
-		oidcClearCookie(c, oidcOAuthBindUserCookieName, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthStateCookieName, oidcOAuthCookiePath, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthVerifierCookie, oidcOAuthCookiePath, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthRedirectCookie, oidcOAuthCookiePath, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthNonceCookie, oidcOAuthCookiePath, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthIntentCookieName, oidcOAuthCookiePath, secureCookie)
+		clearOAuthCookieGateway(c, oidcOAuthBindUserCookieName, oidcOAuthCookiePath, secureCookie)
 	}()
 
-	expectedState, err := readCookieDecoded(c, oidcOAuthStateCookieName)
+	expectedState, err := readCookieDecodedGateway(c, oidcOAuthStateCookieName)
 	if err != nil || expectedState == "" || state != expectedState {
-		redirectOAuthError(c, frontendCallback, "invalid_state", "invalid oauth state", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "invalid_state", "invalid oauth state", "")
 		return
 	}
 
-	redirectTo, _ := readCookieDecoded(c, oidcOAuthRedirectCookie)
+	redirectTo, _ := readCookieDecodedGateway(c, oidcOAuthRedirectCookie)
 	redirectTo = sanitizeFrontendRedirectPath(redirectTo)
 	if redirectTo == "" {
 		redirectTo = oidcOAuthDefaultRedirectTo
 	}
-	browserSessionKey, _ := readOAuthPendingBrowserCookie(c)
+	browserSessionKey, _ := readOAuthPendingBrowserCookieGateway(c)
 	if strings.TrimSpace(browserSessionKey) == "" {
-		redirectOAuthError(c, frontendCallback, "missing_browser_session", "missing oauth browser session", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "missing_browser_session", "missing oauth browser session", "")
 		return
 	}
-	intent, _ := readCookieDecoded(c, oidcOAuthIntentCookieName)
+	intent, _ := readCookieDecodedGateway(c, oidcOAuthIntentCookieName)
 	intent = normalizeOAuthIntent(intent)
 
 	codeVerifier := ""
 	if cfg.UsePKCE {
-		codeVerifier, _ = readCookieDecoded(c, oidcOAuthVerifierCookie)
+		codeVerifier, _ = readCookieDecodedGateway(c, oidcOAuthVerifierCookie)
 		if codeVerifier == "" {
-			redirectOAuthError(c, frontendCallback, "missing_verifier", "missing pkce verifier", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "missing_verifier", "missing pkce verifier", "")
 			return
 		}
 	}
 
 	expectedNonce := ""
 	if cfg.ValidateIDToken {
-		expectedNonce, _ = readCookieDecoded(c, oidcOAuthNonceCookie)
+		expectedNonce, _ = readCookieDecodedGateway(c, oidcOAuthNonceCookie)
 		if expectedNonce == "" {
-			redirectOAuthError(c, frontendCallback, "missing_nonce", "missing oauth nonce", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "missing_nonce", "missing oauth nonce", "")
 			return
 		}
 	}
 
 	redirectURI := strings.TrimSpace(cfg.RedirectURL)
 	if redirectURI == "" {
-		redirectOAuthError(c, frontendCallback, "config_error", "oauth redirect url not configured", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "config_error", "oauth redirect url not configured", "")
 		return
 	}
 
-	tokenResp, err := oidcExchangeCode(c.Request.Context(), cfg, code, redirectURI, codeVerifier)
+	tokenResp, err := oidcExchangeCode(c.Request().Context(), cfg, code, redirectURI, codeVerifier)
 	if err != nil {
 		description := ""
 		var exchangeErr *oidcTokenExchangeError
@@ -288,29 +297,29 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 			log.Printf("[OIDC OAuth] token exchange failed: %v", err)
 			description = err.Error()
 		}
-		redirectOAuthError(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(description))
+		redirectOAuthErrorGateway(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(description))
 		return
 	}
 
 	var idClaims *oidcIDTokenClaims
 	if cfg.ValidateIDToken {
 		if strings.TrimSpace(tokenResp.IDToken) == "" {
-			redirectOAuthError(c, frontendCallback, "missing_id_token", "missing id_token", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "missing_id_token", "missing id_token", "")
 			return
 		}
 
-		idClaims, err = oidcParseAndValidateIDToken(c.Request.Context(), cfg, tokenResp.IDToken, expectedNonce)
+		idClaims, err = oidcParseAndValidateIDToken(c.Request().Context(), cfg, tokenResp.IDToken, expectedNonce)
 		if err != nil {
 			log.Printf("[OIDC OAuth] id_token validation failed: %v", err)
-			redirectOAuthError(c, frontendCallback, "invalid_id_token", "failed to validate id_token", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "invalid_id_token", "failed to validate id_token", "")
 			return
 		}
 	}
 
-	userInfoClaims, err := oidcFetchUserInfo(c.Request.Context(), cfg, tokenResp)
+	userInfoClaims, err := oidcFetchUserInfo(c.Request().Context(), cfg, tokenResp)
 	if err != nil {
 		log.Printf("[OIDC OAuth] userinfo fetch failed: %v", err)
-		redirectOAuthError(c, frontendCallback, "userinfo_failed", "failed to fetch user info", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "userinfo_failed", "failed to fetch user info", "")
 		return
 	}
 
@@ -322,7 +331,7 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		subject = strings.TrimSpace(userInfoClaims.Subject)
 	}
 	if subject == "" {
-		redirectOAuthError(c, frontendCallback, "missing_subject", "missing subject claim", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "missing_subject", "missing subject claim", "")
 		return
 	}
 	issuer := ""
@@ -333,7 +342,7 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		issuer = strings.TrimSpace(cfg.IssuerURL)
 	}
 	if issuer == "" {
-		redirectOAuthError(c, frontendCallback, "missing_issuer", "missing issuer claim", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "missing_issuer", "missing issuer claim", "")
 		return
 	}
 
@@ -342,7 +351,7 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		emailVerified = idClaims.EmailVerified
 	}
 	if idClaims != nil && userInfoClaims.Subject != "" && idClaims.Subject != "" && strings.TrimSpace(userInfoClaims.Subject) != strings.TrimSpace(idClaims.Subject) {
-		redirectOAuthError(c, frontendCallback, "subject_mismatch", "userinfo subject does not match id_token", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "subject_mismatch", "userinfo subject does not match id_token", "")
 		return
 	}
 
@@ -392,12 +401,12 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		upstreamClaims["compat_email"] = compatEmail
 	}
 	if intent == oauthIntentBindCurrentUser {
-		targetUserID, err := h.readOAuthBindUserIDFromCookie(c, oidcOAuthBindUserCookieName)
+		targetUserID, err := h.readOAuthBindUserIDFromCookieGateway(c, oidcOAuthBindUserCookieName)
 		if err != nil {
-			redirectOAuthError(c, frontendCallback, "invalid_state", "invalid oauth bind target", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "invalid_state", "invalid oauth bind target", "")
 			return
 		}
-		if err := h.createOAuthPendingSession(c, oauthPendingSessionPayload{
+		if err := h.createOAuthPendingSessionGateway(c, oauthPendingSessionPayload{
 			Intent:                 oauthIntentBindCurrentUser,
 			Identity:               identityRef,
 			TargetUserID:           &targetUserID,
@@ -409,20 +418,20 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 				"redirect": redirectTo,
 			},
 		}); err != nil {
-			redirectOAuthError(c, frontendCallback, "session_error", "failed to continue oauth bind", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "session_error", "failed to continue oauth bind", "")
 			return
 		}
-		redirectToFrontendCallback(c, frontendCallback)
+		redirectToFrontendCallbackGateway(c, frontendCallback)
 		return
 	}
 
-	existingIdentityUser, err := h.findOAuthIdentityUser(c.Request.Context(), identityRef)
+	existingIdentityUser, err := h.findOAuthIdentityUser(c.Request().Context(), identityRef)
 	if err != nil {
-		redirectOAuthError(c, frontendCallback, "session_error", infraerrors.Reason(err), infraerrors.Message(err))
+		redirectOAuthErrorGateway(c, frontendCallback, "session_error", infraerrors.Reason(err), infraerrors.Message(err))
 		return
 	}
 	if existingIdentityUser != nil {
-		if err := h.createOAuthPendingSession(c, oauthPendingSessionPayload{
+		if err := h.createOAuthPendingSessionGateway(c, oauthPendingSessionPayload{
 			Intent:                 oauthIntentLogin,
 			Identity:               identityRef,
 			TargetUserID:           &existingIdentityUser.ID,
@@ -434,28 +443,28 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 				"redirect": redirectTo,
 			},
 		}); err != nil {
-			redirectOAuthError(c, frontendCallback, "session_error", "failed to continue oauth login", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "session_error", "failed to continue oauth login", "")
 			return
 		}
-		redirectToFrontendCallback(c, frontendCallback)
+		redirectToFrontendCallbackGateway(c, frontendCallback)
 		return
 	}
 
-	compatEmailUser, err := h.findOIDCCompatEmailUser(c.Request.Context(), compatEmail)
+	compatEmailUser, err := h.findOIDCCompatEmailUser(c.Request().Context(), compatEmail)
 	if err != nil {
-		redirectOAuthError(c, frontendCallback, "session_error", infraerrors.Reason(err), infraerrors.Message(err))
+		redirectOAuthErrorGateway(c, frontendCallback, "session_error", infraerrors.Reason(err), infraerrors.Message(err))
 		return
 	}
 
 	if cfg.RequireEmailVerified {
 		if emailVerified == nil || !*emailVerified {
-			redirectOAuthError(c, frontendCallback, "email_not_verified", "email is not verified", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "email_not_verified", "email is not verified", "")
 			return
 		}
 	}
 
-	if h.isForceEmailOnThirdPartySignup(c.Request.Context()) {
-		if err := h.createOIDCOAuthChoicePendingSession(
+	if h.isForceEmailOnThirdPartySignup(c.Request().Context()) {
+		if err := h.createOIDCOAuthChoicePendingSessionGateway(
 			c,
 			identityRef,
 			email,
@@ -467,14 +476,14 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 			compatEmailUser,
 			true,
 		); err != nil {
-			redirectOAuthError(c, frontendCallback, "session_error", "failed to continue oauth login", "")
+			redirectOAuthErrorGateway(c, frontendCallback, "session_error", "failed to continue oauth login", "")
 			return
 		}
-		redirectToFrontendCallback(c, frontendCallback)
+		redirectToFrontendCallbackGateway(c, frontendCallback)
 		return
 	}
 
-	if err := h.createOIDCOAuthChoicePendingSession(
+	if err := h.createOIDCOAuthChoicePendingSessionGateway(
 		c,
 		identityRef,
 		email,
@@ -484,12 +493,12 @@ func (h *AuthHandler) OIDCOAuthCallback(c *gin.Context) {
 		upstreamClaims,
 		compatEmail,
 		compatEmailUser,
-		h.isForceEmailOnThirdPartySignup(c.Request.Context()),
+		h.isForceEmailOnThirdPartySignup(c.Request().Context()),
 	); err != nil {
-		redirectOAuthError(c, frontendCallback, "session_error", "failed to continue oauth login", "")
+		redirectOAuthErrorGateway(c, frontendCallback, "session_error", "failed to continue oauth login", "")
 		return
 	}
-	redirectToFrontendCallback(c, frontendCallback)
+	redirectToFrontendCallbackGateway(c, frontendCallback)
 }
 
 func (h *AuthHandler) findOIDCCompatEmailUser(ctx context.Context, email string) (*dbent.User, error) {
@@ -580,6 +589,70 @@ func (h *AuthHandler) createOIDCOAuthChoicePendingSession(
 	})
 }
 
+func (h *AuthHandler) createOIDCOAuthChoicePendingSessionGateway(
+	c gatewayctx.GatewayContext,
+	identity service.PendingAuthIdentityKey,
+	suggestedEmail string,
+	resolvedEmail string,
+	redirectTo string,
+	browserSessionKey string,
+	upstreamClaims map[string]any,
+	compatEmail string,
+	compatEmailUser *dbent.User,
+	forceEmailOnSignup bool,
+) error {
+	suggestionEmail := strings.TrimSpace(suggestedEmail)
+	canonicalEmail := strings.TrimSpace(resolvedEmail)
+	if suggestionEmail == "" {
+		suggestionEmail = canonicalEmail
+	}
+
+	completionResponse := map[string]any{
+		"step":                      oauthPendingChoiceStep,
+		"adoption_required":         true,
+		"redirect":                  strings.TrimSpace(redirectTo),
+		"email":                     suggestionEmail,
+		"resolved_email":            canonicalEmail,
+		"existing_account_email":    "",
+		"existing_account_bindable": false,
+		"create_account_allowed":    true,
+		"force_email_on_signup":     forceEmailOnSignup,
+		"choice_reason":             "third_party_signup",
+	}
+	if strings.TrimSpace(compatEmail) != "" {
+		completionResponse["compat_email"] = strings.TrimSpace(compatEmail)
+	}
+	if compatEmailUser != nil {
+		completionResponse["email"] = strings.TrimSpace(compatEmailUser.Email)
+		completionResponse["existing_account_email"] = strings.TrimSpace(compatEmailUser.Email)
+		completionResponse["existing_account_bindable"] = true
+		completionResponse["choice_reason"] = "compat_email_match"
+	}
+	if forceEmailOnSignup && compatEmailUser == nil {
+		completionResponse["choice_reason"] = "force_email_on_signup"
+	}
+
+	resolvedChoiceEmail := suggestionEmail
+	if compatEmailUser != nil {
+		resolvedChoiceEmail = strings.TrimSpace(compatEmailUser.Email)
+	}
+	var targetUserID *int64
+	if compatEmailUser != nil && compatEmailUser.ID > 0 {
+		targetUserID = &compatEmailUser.ID
+	}
+
+	return h.createOAuthPendingSessionGateway(c, oauthPendingSessionPayload{
+		Intent:                 oauthIntentLogin,
+		Identity:               identity,
+		TargetUserID:           targetUserID,
+		ResolvedEmail:          resolvedChoiceEmail,
+		RedirectTo:             redirectTo,
+		BrowserSessionKey:      browserSessionKey,
+		UpstreamIdentityClaims: upstreamClaims,
+		CompletionResponse:     completionResponse,
+	})
+}
+
 type completeOIDCOAuthRequest struct {
 	InvitationCode   string `json:"invitation_code" binding:"required"`
 	AdoptDisplayName *bool  `json:"adopt_display_name,omitempty"`
@@ -590,100 +663,75 @@ type completeOIDCOAuthRequest struct {
 // the invitation code and creating the user account.
 // POST /api/v1/auth/oauth/oidc/complete-registration
 func (h *AuthHandler) CompleteOIDCOAuthRegistration(c *gin.Context) {
+	h.CompleteOIDCOAuthRegistrationGateway(gatewayctx.FromGin(c))
+}
+
+func (h *AuthHandler) CompleteOIDCOAuthRegistrationGateway(c gatewayctx.GatewayContext) {
 	var req completeOIDCOAuthRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	secureCookie := isRequestHTTPS(c)
-	sessionToken, err := readOAuthPendingSessionCookie(c)
+	_, session, clearCookies, err := readPendingOAuthBrowserSessionGateway(c, h)
 	if err != nil {
-		clearOAuthPendingSessionCookie(c, secureCookie)
-		clearOAuthPendingBrowserCookie(c, secureCookie)
-		response.ErrorFrom(c, service.ErrPendingAuthSessionNotFound)
-		return
-	}
-	browserSessionKey, err := readOAuthPendingBrowserCookie(c)
-	if err != nil {
-		clearOAuthPendingSessionCookie(c, secureCookie)
-		clearOAuthPendingBrowserCookie(c, secureCookie)
-		response.ErrorFrom(c, service.ErrPendingAuthBrowserMismatch)
-		return
-	}
-	pendingSvc, err := h.pendingIdentityService()
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	session, err := pendingSvc.GetBrowserSession(c.Request.Context(), sessionToken, browserSessionKey)
-	if err != nil {
-		clearOAuthPendingSessionCookie(c, secureCookie)
-		clearOAuthPendingBrowserCookie(c, secureCookie)
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	if err := ensurePendingOAuthCompleteRegistrationSession(session); err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	if updatedSession, handled, err := h.legacyCompleteRegistrationSessionStatus(c, session); err != nil {
-		response.ErrorFrom(c, err)
+	if updatedSession, handled, err := h.legacyCompleteRegistrationSessionStatusGateway(c, session); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	} else if handled {
-		c.JSON(http.StatusOK, buildPendingOAuthSessionStatusPayload(updatedSession))
+		c.WriteJSON(http.StatusOK, buildPendingOAuthSessionStatusPayload(updatedSession))
 		return
 	} else {
 		session = updatedSession
 	}
-	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request.Context()); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.ensureBackendModeAllowsNewUserLogin(c.Request().Context()); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
 	email := strings.TrimSpace(session.ResolvedEmail)
 	username := pendingSessionStringValue(session.UpstreamIdentityClaims, "username")
 	if email == "" || username == "" {
-		response.ErrorFrom(c, infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid"))
 		return
 	}
 
 	client := h.entClient()
 	if client == nil {
-		response.ErrorFrom(c, infraerrors.ServiceUnavailable("PENDING_AUTH_NOT_READY", "pending auth service is not ready"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.ServiceUnavailable("PENDING_AUTH_NOT_READY", "pending auth service is not ready"))
 		return
 	}
-	if err := ensurePendingOAuthRegistrationIdentityAvailable(c.Request.Context(), client, session); err != nil {
-		respondPendingOAuthBindingApplyError(c, err)
+	if err := ensurePendingOAuthRegistrationIdentityAvailable(c.Request().Context(), client, session); err != nil {
+		respondPendingOAuthBindingApplyErrorContext(c, err)
 		return
 	}
-	decision, err := h.ensurePendingOAuthAdoptionDecision(c, session.ID, oauthAdoptionDecisionRequest{
+	decision, err := h.ensurePendingOAuthAdoptionDecisionWithContext(c.Request().Context(), session.ID, oauthAdoptionDecisionRequest{
 		AdoptDisplayName: req.AdoptDisplayName,
 		AdoptAvatar:      req.AdoptAvatar,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	tokenPair, user, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request.Context(), email, username, req.InvitationCode)
+	tokenPair, user, err := h.authService.LoginOrRegisterOAuthWithTokenPair(c.Request().Context(), email, username, req.InvitationCode)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	if err := applyPendingOAuthAdoptionAndConsumeSession(c.Request.Context(), client, h.authService, h.userService, session, decision, user.ID); err != nil {
-		respondPendingOAuthBindingApplyError(c, err)
+	if err := applyPendingOAuthAdoptionAndConsumeSession(c.Request().Context(), client, h.authService, h.userService, session, decision, user.ID); err != nil {
+		respondPendingOAuthBindingApplyErrorContext(c, err)
 		return
 	}
-	h.authService.RecordSuccessfulLogin(c.Request.Context(), user.ID)
-	clearOAuthPendingSessionCookie(c, secureCookie)
-	clearOAuthPendingBrowserCookie(c, secureCookie)
-
-	c.JSON(http.StatusOK, gin.H{
-		"access_token":  tokenPair.AccessToken,
-		"refresh_token": tokenPair.RefreshToken,
-		"expires_in":    tokenPair.ExpiresIn,
-		"token_type":    "Bearer",
-	})
+	h.authService.RecordSuccessfulLogin(c.Request().Context(), user.ID)
+	clearCookies()
+	writeOAuthTokenPairResponseGateway(c, tokenPair)
 }
 
 func (h *AuthHandler) getOIDCOAuthConfig(ctx context.Context) (config.OIDCConnectConfig, error) {

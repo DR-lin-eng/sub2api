@@ -8,6 +8,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -294,21 +295,25 @@ func accountStatsPricingRuleRequestToService(r accountStatsPricingRuleRequest) s
 // List handles listing channels with pagination
 // GET /api/v1/admin/channels
 func (h *ChannelHandler) List(c *gin.Context) {
-	page, pageSize := response.ParsePagination(c)
-	status := c.Query("status")
-	search := strings.TrimSpace(c.Query("search"))
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+	status := c.QueryValue("status")
+	search := strings.TrimSpace(c.QueryValue("search"))
 	if len(search) > 100 {
 		search = search[:100]
 	}
 
-	channels, pag, err := h.channelService.List(c.Request.Context(), pagination.PaginationParams{
+	channels, pag, err := h.channelService.List(c.Request().Context(), pagination.PaginationParams{
 		Page:      page,
 		PageSize:  pageSize,
-		SortBy:    c.DefaultQuery("sort_by", "created_at"),
-		SortOrder: c.DefaultQuery("sort_order", "desc"),
+		SortBy:    defaultQueryValue(c, "sort_by", "created_at"),
+		SortOrder: defaultQueryValue(c, "sort_order", "desc"),
 	}, status, search)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
@@ -316,38 +321,45 @@ func (h *ChannelHandler) List(c *gin.Context) {
 	for i := range channels {
 		out = append(out, channelToResponse(&channels[i]))
 	}
-	response.Paginated(c, out, pag.Total, page, pageSize)
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, pag.Total, page, pageSize)
 }
 
 // GetByID handles getting a channel by ID
 // GET /api/v1/admin/channels/:id
 func (h *ChannelHandler) GetByID(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
 		return
 	}
 
-	channel, err := h.channelService.GetByID(c.Request.Context(), id)
+	channel, err := h.channelService.GetByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, channelToResponse(channel))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, channelToResponse(channel))
 }
 
 // Create handles creating a new channel
 // POST /api/v1/admin/channels
 func (h *ChannelHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req createChannelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
 
 	pricing := pricingRequestToService(req.ModelPricing)
-	// Main model_pricing requires a platform; default to anthropic for backward compatibility.
 	for i := range pricing {
 		if pricing[i].Platform == "" {
 			pricing[i].Platform = service.PlatformAnthropic
@@ -357,12 +369,12 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 	var statsRules []service.AccountStatsPricingRule
 	for i, r := range req.AccountStatsPricingRules {
 		if len(r.GroupIDs) == 0 && len(r.AccountIDs) == 0 {
-			response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
 				fmt.Sprintf("pricing rule #%d must have at least one group or account", i+1)))
 			return
 		}
 		if len(r.Pricing) == 0 {
-			response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
+			response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
 				fmt.Sprintf("pricing rule #%d must have at least one pricing entry", i+1)))
 			return
 		}
@@ -371,7 +383,7 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 		statsRules = append(statsRules, rule)
 	}
 
-	channel, err := h.channelService.Create(c.Request.Context(), &service.CreateChannelInput{
+	channel, err := h.channelService.Create(c.Request().Context(), &service.CreateChannelInput{
 		Name:                       req.Name,
 		Description:                req.Description,
 		GroupIDs:                   req.GroupIDs,
@@ -385,25 +397,29 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 		AccountStatsPricingRules:   statsRules,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, channelToResponse(channel))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, channelToResponse(channel))
 }
 
 // Update handles updating a channel
 // PUT /api/v1/admin/channels/:id
 func (h *ChannelHandler) Update(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
 		return
 	}
 
 	var req updateChannelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
 
@@ -432,12 +448,12 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		statsRules := make([]service.AccountStatsPricingRule, 0, len(*req.AccountStatsPricingRules))
 		for i, r := range *req.AccountStatsPricingRules {
 			if len(r.GroupIDs) == 0 && len(r.AccountIDs) == 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("PRICING_RULE_EMPTY_SCOPE",
 					fmt.Sprintf("pricing rule #%d must have at least one group or account", i+1)))
 				return
 			}
 			if len(r.Pricing) == 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
+				response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("PRICING_RULE_EMPTY_PRICING",
 					fmt.Sprintf("pricing rule #%d must have at least one pricing entry", i+1)))
 				return
 			}
@@ -448,50 +464,57 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		input.AccountStatsPricingRules = &statsRules
 	}
 
-	channel, err := h.channelService.Update(c.Request.Context(), id, input)
+	channel, err := h.channelService.Update(c.Request().Context(), id, input)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, channelToResponse(channel))
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, channelToResponse(channel))
 }
 
 // Delete handles deleting a channel
 // DELETE /api/v1/admin/channels/:id
 func (h *ChannelHandler) Delete(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
 	if err != nil {
-		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_CHANNEL_ID", "Invalid channel ID"))
 		return
 	}
 
-	if err := h.channelService.Delete(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.channelService.Delete(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Channel deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"message": "Channel deleted successfully"})
 }
 
 // GetModelDefaultPricing 获取模型的默认定价（用于前端自动填充）
 // GET /api/v1/admin/channels/model-pricing?model=claude-sonnet-4
 func (h *ChannelHandler) GetModelDefaultPricing(c *gin.Context) {
-	model := strings.TrimSpace(c.Query("model"))
+	h.GetModelDefaultPricingGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelHandler) GetModelDefaultPricingGateway(c gatewayctx.GatewayContext) {
+	model := strings.TrimSpace(c.QueryValue("model"))
 	if model == "" {
-		response.ErrorFrom(c, infraerrors.BadRequest("MISSING_PARAMETER", "model parameter is required").
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("MISSING_PARAMETER", "model parameter is required").
 			WithMetadata(map[string]string{"param": "model"}))
 		return
 	}
 
 	pricing, err := h.billingService.GetModelPricing(model)
 	if err != nil {
-		// 模型不在定价列表中
-		response.Success(c, gin.H{"found": false})
+		response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"found": false})
 		return
 	}
 
-	response.Success(c, gin.H{
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
 		"found":              true,
 		"input_price":        pricing.InputPricePerToken,
 		"output_price":       pricing.OutputPricePerToken,

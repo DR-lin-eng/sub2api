@@ -71,8 +71,23 @@ func TestCoreExecutableRouteParity(t *testing.T) {
 	nativeAuditDefs := append([]gatewayctx.RouteDef{}, executableUserFeatureRoutes(h)...)
 	nativeAuditDefs = append(nativeAuditDefs, ExecutableAuthRoutes(h)...)
 	nativeAuditDefs = append(nativeAuditDefs, ExecutablePaymentRoutes(h)...)
+	nativeAuditDefs = append(nativeAuditDefs, ExecutableAdminRoutes(h)...)
 	handlerNames := collectRouteHandlerNames(nativeAuditDefs)
 	for _, item := range []routeKey{
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/linuxdo/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/linuxdo/callback"},
+		{method: http.MethodPost, path: "/api/v1/auth/oauth/linuxdo/complete-registration"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/linuxdo/bind/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/wechat/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/wechat/bind/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/wechat/callback"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/wechat/payment/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/wechat/payment/callback"},
+		{method: http.MethodPost, path: "/api/v1/auth/oauth/wechat/complete-registration"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/oidc/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/oidc/bind/start"},
+		{method: http.MethodGet, path: "/api/v1/auth/oauth/oidc/callback"},
+		{method: http.MethodPost, path: "/api/v1/auth/oauth/oidc/complete-registration"},
 		{method: http.MethodPost, path: "/api/v1/auth/oauth/pending/exchange"},
 		{method: http.MethodPost, path: "/api/v1/auth/oauth/pending/send-verify-code"},
 		{method: http.MethodPost, path: "/api/v1/auth/oauth/pending/create-account"},
@@ -93,6 +108,11 @@ func TestCoreExecutableRouteParity(t *testing.T) {
 		{method: http.MethodPost, path: "/api/v1/payment/webhook/stripe"},
 		{method: http.MethodGet, path: "/api/v1/admin/payment/dashboard"},
 		{method: http.MethodGet, path: "/api/v1/admin/payment/orders"},
+		{method: http.MethodGet, path: "/api/v1/admin/channels"},
+		{method: http.MethodGet, path: "/api/v1/admin/channels/model-pricing"},
+		{method: http.MethodGet, path: "/api/v1/admin/channel-monitors"},
+		{method: http.MethodGet, path: "/api/v1/admin/channel-monitor-templates"},
+		{method: http.MethodGet, path: "/api/v1/admin/tls-fingerprint-profiles"},
 	} {
 		name, ok := handlerNames[item]
 		require.True(t, ok, "route %s %s should be registered", item.method, item.path)

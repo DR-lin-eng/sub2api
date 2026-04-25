@@ -34,6 +34,8 @@ backend/.gocache/
 # ===================
 node_modules/
 frontend/node_modules/
+/.pnpm-store/
+frontend/.pnpm-store/
 frontend/dist/
 *.local
 *.tsbuildinfo
@@ -128,6 +130,7 @@ backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/
 .docker-go/
+backend/rust/target/
 __pycache__/
 *.pyc
 *.pyo

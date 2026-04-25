@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -196,6 +198,15 @@ func ParseChannelMonitorID(c *gin.Context) (int64, bool) {
 	return id, true
 }
 
+func parseChannelMonitorIDGateway(c gatewayctx.GatewayContext) (int64, bool) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("INVALID_MONITOR_ID", "invalid monitor id"))
+		return 0, false
+	}
+	return id, true
+}
+
 // parseListEnabled 解析 enabled query 参数：true/false 转为 *bool，空或非法则返回 nil。
 func parseListEnabled(raw string) *bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -214,6 +225,55 @@ func parseListEnabled(raw string) *bool {
 
 // List GET /api/v1/admin/channel-monitors
 func (h *ChannelMonitorHandler) List(c *gin.Context) {
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) ListGateway(c gatewayctx.GatewayContext) {
+	page, pageSize := response.ParsePaginationValues(c)
+	if pageSize > monitorMaxPageSize {
+		pageSize = monitorMaxPageSize
+	}
+
+	params := service.ChannelMonitorListParams{
+		Page:     page,
+		PageSize: pageSize,
+		Provider: strings.TrimSpace(c.QueryValue("provider")),
+		Enabled:  parseListEnabled(c.QueryValue("enabled")),
+		Search:   strings.TrimSpace(c.QueryValue("search")),
+	}
+
+	items, total, err := h.monitorService.List(c.Request().Context(), params)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+
+	summaries := h.batchSummaryForContext(c.Request().Context(), items)
+	out := make([]*channelMonitorResponse, 0, len(items))
+	for _, m := range items {
+		out = append(out, buildListItemResponse(m, summaries[m.ID]))
+	}
+	response.PaginatedContext(gatewayJSONResponder{ctx: c}, out, total, page, pageSize)
+}
+
+// batchSummaryFor 批量聚合 latest + 7d 可用率，避免每行 2 次 SQL（消除 N+1）。
+func (h *ChannelMonitorHandler) batchSummaryForContext(ctx context.Context, items []*service.ChannelMonitor) map[int64]service.MonitorStatusSummary {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ids := make([]int64, 0, len(items))
+	primaryByID := make(map[int64]string, len(items))
+	extrasByID := make(map[int64][]string, len(items))
+	for _, m := range items {
+		ids = append(ids, m.ID)
+		primaryByID[m.ID] = m.PrimaryModel
+		extrasByID[m.ID] = m.ExtraModels
+	}
+	return h.monitorService.BatchMonitorStatusSummary(ctx, ids, primaryByID, extrasByID)
+}
+
+// ListLegacy GET /api/v1/admin/channel-monitors
+func (h *ChannelMonitorHandler) ListLegacy(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 	if pageSize > monitorMaxPageSize {
 		pageSize = monitorMaxPageSize
@@ -233,25 +293,12 @@ func (h *ChannelMonitorHandler) List(c *gin.Context) {
 		return
 	}
 
-	summaries := h.batchSummaryFor(c, items)
+	summaries := h.batchSummaryForContext(c.Request.Context(), items)
 	out := make([]*channelMonitorResponse, 0, len(items))
 	for _, m := range items {
 		out = append(out, buildListItemResponse(m, summaries[m.ID]))
 	}
 	response.Paginated(c, out, total, page, pageSize)
-}
-
-// batchSummaryFor 批量聚合 latest + 7d 可用率，避免每行 2 次 SQL（消除 N+1）。
-func (h *ChannelMonitorHandler) batchSummaryFor(c *gin.Context, items []*service.ChannelMonitor) map[int64]service.MonitorStatusSummary {
-	ids := make([]int64, 0, len(items))
-	primaryByID := make(map[int64]string, len(items))
-	extrasByID := make(map[int64][]string, len(items))
-	for _, m := range items {
-		ids = append(ids, m.ID)
-		primaryByID[m.ID] = m.PrimaryModel
-		extrasByID[m.ID] = m.ExtraModels
-	}
-	return h.monitorService.BatchMonitorStatusSummary(c.Request.Context(), ids, primaryByID, extrasByID)
 }
 
 // buildListItemResponse 把 monitor + summary 装成 admin list 的响应行。
@@ -273,6 +320,24 @@ func buildListItemResponse(m *service.ChannelMonitor, summary service.MonitorSta
 
 // Get GET /api/v1/admin/channel-monitors/:id
 func (h *ChannelMonitorHandler) Get(c *gin.Context) {
+	h.GetGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) GetGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseChannelMonitorIDGateway(c)
+	if !ok {
+		return
+	}
+	m, err := h.monitorService.Get(c.Request().Context(), id)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, channelMonitorToResponse(m))
+}
+
+// Get GET /api/v1/admin/channel-monitors/:id
+func (h *ChannelMonitorHandler) GetLegacy(c *gin.Context) {
 	id, ok := ParseChannelMonitorID(c)
 	if !ok {
 		return
@@ -287,6 +352,48 @@ func (h *ChannelMonitorHandler) Get(c *gin.Context) {
 
 // Create POST /api/v1/admin/channel-monitors
 func (h *ChannelMonitorHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) CreateGateway(c gatewayctx.GatewayContext) {
+	var req channelMonitorCreateRequest
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+		return
+	}
+
+	subject, _ := middleware2.GetAuthSubjectFromGatewayContext(c)
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	m, err := h.monitorService.Create(c.Request().Context(), service.ChannelMonitorCreateParams{
+		Name:             req.Name,
+		Provider:         req.Provider,
+		Endpoint:         req.Endpoint,
+		APIKey:           req.APIKey,
+		PrimaryModel:     req.PrimaryModel,
+		ExtraModels:      req.ExtraModels,
+		GroupName:        req.GroupName,
+		Enabled:          enabled,
+		IntervalSeconds:  req.IntervalSeconds,
+		CreatedBy:        subject.UserID,
+		TemplateID:       req.TemplateID,
+		ExtraHeaders:     req.ExtraHeaders,
+		BodyOverrideMode: req.BodyOverrideMode,
+		BodyOverride:     req.BodyOverride,
+	})
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.CreatedContext(gatewayJSONResponder{ctx: c}, channelMonitorToResponse(m))
+}
+
+// Create POST /api/v1/admin/channel-monitors
+func (h *ChannelMonitorHandler) CreateLegacy(c *gin.Context) {
 	var req channelMonitorCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
@@ -325,6 +432,45 @@ func (h *ChannelMonitorHandler) Create(c *gin.Context) {
 
 // Update PUT /api/v1/admin/channel-monitors/:id
 func (h *ChannelMonitorHandler) Update(c *gin.Context) {
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseChannelMonitorIDGateway(c)
+	if !ok {
+		return
+	}
+	var req channelMonitorUpdateRequest
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
+		return
+	}
+
+	m, err := h.monitorService.Update(c.Request().Context(), id, service.ChannelMonitorUpdateParams{
+		Name:             req.Name,
+		Provider:         req.Provider,
+		Endpoint:         req.Endpoint,
+		APIKey:           req.APIKey,
+		PrimaryModel:     req.PrimaryModel,
+		ExtraModels:      req.ExtraModels,
+		GroupName:        req.GroupName,
+		Enabled:          req.Enabled,
+		IntervalSeconds:  req.IntervalSeconds,
+		TemplateID:       req.TemplateID,
+		ClearTemplate:    req.ClearTemplate,
+		ExtraHeaders:     req.ExtraHeaders,
+		BodyOverrideMode: req.BodyOverrideMode,
+		BodyOverride:     req.BodyOverride,
+	})
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, channelMonitorToResponse(m))
+}
+
+// Update PUT /api/v1/admin/channel-monitors/:id
+func (h *ChannelMonitorHandler) UpdateLegacy(c *gin.Context) {
 	id, ok := ParseChannelMonitorID(c)
 	if !ok {
 		return
@@ -360,6 +506,23 @@ func (h *ChannelMonitorHandler) Update(c *gin.Context) {
 
 // Delete DELETE /api/v1/admin/channel-monitors/:id
 func (h *ChannelMonitorHandler) Delete(c *gin.Context) {
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseChannelMonitorIDGateway(c)
+	if !ok {
+		return
+	}
+	if err := h.monitorService.Delete(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, nil)
+}
+
+// Delete DELETE /api/v1/admin/channel-monitors/:id
+func (h *ChannelMonitorHandler) DeleteLegacy(c *gin.Context) {
 	id, ok := ParseChannelMonitorID(c)
 	if !ok {
 		return
@@ -373,6 +536,28 @@ func (h *ChannelMonitorHandler) Delete(c *gin.Context) {
 
 // Run POST /api/v1/admin/channel-monitors/:id/run
 func (h *ChannelMonitorHandler) Run(c *gin.Context) {
+	h.RunGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) RunGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseChannelMonitorIDGateway(c)
+	if !ok {
+		return
+	}
+	results, err := h.monitorService.RunCheck(c.Request().Context(), id)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	out := make([]channelMonitorCheckResultResponse, 0, len(results))
+	for _, r := range results {
+		out = append(out, checkResultToResponse(r))
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"results": out})
+}
+
+// Run POST /api/v1/admin/channel-monitors/:id/run
+func (h *ChannelMonitorHandler) RunLegacy(c *gin.Context) {
 	id, ok := ParseChannelMonitorID(c)
 	if !ok {
 		return
@@ -391,6 +576,31 @@ func (h *ChannelMonitorHandler) Run(c *gin.Context) {
 
 // History GET /api/v1/admin/channel-monitors/:id/history
 func (h *ChannelMonitorHandler) History(c *gin.Context) {
+	h.HistoryGateway(gatewayctx.FromGin(c))
+}
+
+func (h *ChannelMonitorHandler) HistoryGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseChannelMonitorIDGateway(c)
+	if !ok {
+		return
+	}
+	limit := parseHistoryLimit(c.QueryValue("limit"))
+	model := strings.TrimSpace(c.QueryValue("model"))
+
+	entries, err := h.monitorService.ListHistory(c.Request().Context(), id, model, limit)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	out := make([]channelMonitorHistoryItemResponse, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, historyEntryToResponse(e))
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"items": out})
+}
+
+// History GET /api/v1/admin/channel-monitors/:id/history
+func (h *ChannelMonitorHandler) HistoryLegacy(c *gin.Context) {
 	id, ok := ParseChannelMonitorID(c)
 	if !ok {
 		return

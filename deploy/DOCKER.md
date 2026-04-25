@@ -13,6 +13,30 @@ docker run -d \
   ghcr.io/dr-lin-eng/sub2api:latest
 ```
 
+## Local Build
+
+Default image build:
+
+```bash
+./deploy/build_image.sh
+```
+
+Compatibility image build with retry:
+
+```bash
+./deploy/build_compat_image.sh --tag sub2api:compat
+```
+
+If Docker Hub is unstable in your environment, override the base images:
+
+```bash
+NODE_IMAGE=<your-node-image> \
+GOLANG_IMAGE=<your-go-image> \
+RUNTIME_IMAGE=<your-runtime-image> \
+POSTGRES_IMAGE=<your-postgres-image> \
+./deploy/build_compat_image.sh
+```
+
 ## Docker Compose
 
 ```yaml

@@ -25,43 +25,43 @@ func executableAdminFeatureRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 	out := make([]gatewayctx.RouteDef, 0, 24)
 	if h.Admin.TLSFingerprintProfile != nil {
 		out = append(out,
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/tls-fingerprint-profiles", Handler: adaptLegacyGinRoute("/api/v1/admin/tls-fingerprint-profiles", h.Admin.TLSFingerprintProfile.List), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/tls-fingerprint-profiles/:id", h.Admin.TLSFingerprintProfile.GetByID), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/tls-fingerprint-profiles", Handler: adaptLegacyGinRoute("/api/v1/admin/tls-fingerprint-profiles", h.Admin.TLSFingerprintProfile.Create), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/tls-fingerprint-profiles/:id", h.Admin.TLSFingerprintProfile.Update), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/tls-fingerprint-profiles/:id", h.Admin.TLSFingerprintProfile.Delete), Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/tls-fingerprint-profiles", Handler: h.Admin.TLSFingerprintProfile.ListGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: h.Admin.TLSFingerprintProfile.GetByIDGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/tls-fingerprint-profiles", Handler: h.Admin.TLSFingerprintProfile.CreateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: h.Admin.TLSFingerprintProfile.UpdateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/tls-fingerprint-profiles/:id", Handler: h.Admin.TLSFingerprintProfile.DeleteGateway, Middleware: mw},
 		)
 	}
 	if h.Admin.Channel != nil {
 		out = append(out,
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels", Handler: adaptLegacyGinRoute("/api/v1/admin/channels", h.Admin.Channel.List), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels/model-pricing", Handler: adaptLegacyGinRoute("/api/v1/admin/channels/model-pricing", h.Admin.Channel.GetModelDefaultPricing), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channels/:id", h.Admin.Channel.GetByID), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channels", Handler: adaptLegacyGinRoute("/api/v1/admin/channels", h.Admin.Channel.Create), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channels/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channels/:id", h.Admin.Channel.Update), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channels/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channels/:id", h.Admin.Channel.Delete), Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels", Handler: h.Admin.Channel.ListGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels/model-pricing", Handler: h.Admin.Channel.GetModelDefaultPricingGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channels/:id", Handler: h.Admin.Channel.GetByIDGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channels", Handler: h.Admin.Channel.CreateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channels/:id", Handler: h.Admin.Channel.UpdateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channels/:id", Handler: h.Admin.Channel.DeleteGateway, Middleware: mw},
 		)
 	}
 	if h.Admin.ChannelMonitor != nil {
 		out = append(out,
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors", h.Admin.ChannelMonitor.List), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors/:id", h.Admin.ChannelMonitor.Get), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitors", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors", h.Admin.ChannelMonitor.Create), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channel-monitors/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors/:id", h.Admin.ChannelMonitor.Update), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channel-monitors/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors/:id", h.Admin.ChannelMonitor.Delete), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitors/:id/run", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors/:id/run", h.Admin.ChannelMonitor.Run), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors/:id/history", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitors/:id/history", h.Admin.ChannelMonitor.History), Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors", Handler: h.Admin.ChannelMonitor.ListGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors/:id", Handler: h.Admin.ChannelMonitor.GetGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitors", Handler: h.Admin.ChannelMonitor.CreateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channel-monitors/:id", Handler: h.Admin.ChannelMonitor.UpdateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channel-monitors/:id", Handler: h.Admin.ChannelMonitor.DeleteGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitors/:id/run", Handler: h.Admin.ChannelMonitor.RunGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitors/:id/history", Handler: h.Admin.ChannelMonitor.HistoryGateway, Middleware: mw},
 		)
 	}
 	if h.Admin.ChannelMonitorTemplate != nil {
 		out = append(out,
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates", h.Admin.ChannelMonitorTemplate.List), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates/:id", h.Admin.ChannelMonitorTemplate.Get), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitor-templates", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates", h.Admin.ChannelMonitorTemplate.Create), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates/:id", h.Admin.ChannelMonitorTemplate.Update), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates/:id", h.Admin.ChannelMonitorTemplate.Delete), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitor-templates/:id/apply", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates/:id/apply", h.Admin.ChannelMonitorTemplate.Apply), Middleware: mw},
-			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates/:id/monitors", Handler: adaptLegacyGinRoute("/api/v1/admin/channel-monitor-templates/:id/monitors", h.Admin.ChannelMonitorTemplate.AssociatedMonitors), Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates", Handler: h.Admin.ChannelMonitorTemplate.ListGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: h.Admin.ChannelMonitorTemplate.GetGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitor-templates", Handler: h.Admin.ChannelMonitorTemplate.CreateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: h.Admin.ChannelMonitorTemplate.UpdateGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/channel-monitor-templates/:id", Handler: h.Admin.ChannelMonitorTemplate.DeleteGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/channel-monitor-templates/:id/apply", Handler: h.Admin.ChannelMonitorTemplate.ApplyGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/channel-monitor-templates/:id/monitors", Handler: h.Admin.ChannelMonitorTemplate.AssociatedMonitorsGateway, Middleware: mw},
 		)
 	}
 

@@ -25,13 +25,21 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+backend/rust/target/
+backend/internal/web/dist/
+frontend/dist/
 
 # Node modules (will be installed in container)
 frontend/node_modules/
 node_modules/
+.pnpm-store/
+frontend/.pnpm-store/
 
 # Go build cache (will be built in container)
 backend/vendor/
+.gocache/
+backend/.gocache/
+.docker-go/
 
 # Test files
 *_test.go
@@ -56,6 +64,7 @@ logs/
 tmp/
 temp/
 *.tmp
+*.tsbuildinfo
 
 # Deploy files (not needed in image)
 deploy/install.sh

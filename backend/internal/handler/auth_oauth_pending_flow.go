@@ -175,13 +175,13 @@ func redirectToFrontendCallback(c *gin.Context, frontendCallback string) {
 	c.Redirect(http.StatusFound, u.String())
 }
 
-func (h *AuthHandler) createOAuthPendingSession(c *gin.Context, payload oauthPendingSessionPayload) error {
+func (h *AuthHandler) createOAuthPendingSessionWithContext(ctx context.Context, payload oauthPendingSessionPayload, setSessionCookie func(string)) error {
 	svc, err := h.pendingIdentityService()
 	if err != nil {
 		return err
 	}
 
-	session, err := svc.CreatePendingSession(c.Request.Context(), service.CreatePendingAuthSessionInput{
+	session, err := svc.CreatePendingSession(ctx, service.CreatePendingAuthSessionInput{
 		Intent:                 strings.TrimSpace(payload.Intent),
 		Identity:               payload.Identity,
 		TargetUserID:           payload.TargetUserID,
@@ -197,8 +197,30 @@ func (h *AuthHandler) createOAuthPendingSession(c *gin.Context, payload oauthPen
 		return infraerrors.InternalServer("PENDING_AUTH_SESSION_CREATE_FAILED", "failed to create pending auth session").WithCause(err)
 	}
 
-	setOAuthPendingSessionCookie(c, session.SessionToken, isRequestHTTPS(c))
+	if setSessionCookie != nil {
+		setSessionCookie(session.SessionToken)
+	}
 	return nil
+}
+
+func (h *AuthHandler) createOAuthPendingSession(c *gin.Context, payload oauthPendingSessionPayload) error {
+	if c == nil || c.Request == nil {
+		return infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid")
+	}
+	secureCookie := isRequestHTTPS(c)
+	return h.createOAuthPendingSessionWithContext(c.Request.Context(), payload, func(sessionToken string) {
+		setOAuthPendingSessionCookie(c, sessionToken, secureCookie)
+	})
+}
+
+func (h *AuthHandler) createOAuthPendingSessionGateway(c gatewayctx.GatewayContext, payload oauthPendingSessionPayload) error {
+	if c == nil || c.Request() == nil {
+		return infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid")
+	}
+	secureCookie := isRequestHTTPSGateway(c)
+	return h.createOAuthPendingSessionWithContext(c.Request().Context(), payload, func(sessionToken string) {
+		setOAuthPendingSessionCookieGateway(c, sessionToken, secureCookie)
+	})
 }
 
 func readCompletionResponse(session map[string]any) (map[string]any, bool) {
@@ -331,8 +353,8 @@ func buildLegacyCompleteRegistrationPendingResponse(
 	return completionResponse
 }
 
-func (h *AuthHandler) legacyCompleteRegistrationSessionStatus(
-	c *gin.Context,
+func (h *AuthHandler) legacyCompleteRegistrationSessionStatusWithContext(
+	ctx context.Context,
 	session *dbent.PendingAuthSession,
 ) (*dbent.PendingAuthSession, bool, error) {
 	if session == nil {
@@ -344,8 +366,8 @@ func (h *AuthHandler) legacyCompleteRegistrationSessionStatus(
 		return session, true, nil
 	}
 
-	emailVerificationRequired := h != nil && h.authService != nil && h.authService.IsEmailVerifyEnabled(c.Request.Context())
-	forceEmailOnSignup := h.isForceEmailOnThirdPartySignup(c.Request.Context())
+	emailVerificationRequired := h != nil && h.authService != nil && h.authService.IsEmailVerifyEnabled(ctx)
+	forceEmailOnSignup := h.isForceEmailOnThirdPartySignup(ctx)
 	if !emailVerificationRequired && !forceEmailOnSignup {
 		return session, false, nil
 	}
@@ -356,7 +378,7 @@ func (h *AuthHandler) legacyCompleteRegistrationSessionStatus(
 	}
 
 	updatedSession, err := updatePendingOAuthSessionProgress(
-		c.Request.Context(),
+		ctx,
 		client,
 		session,
 		strings.TrimSpace(session.Intent),
@@ -368,6 +390,26 @@ func (h *AuthHandler) legacyCompleteRegistrationSessionStatus(
 		return nil, false, infraerrors.InternalServer("PENDING_AUTH_SESSION_UPDATE_FAILED", "failed to update pending oauth session").WithCause(err)
 	}
 	return updatedSession, true, nil
+}
+
+func (h *AuthHandler) legacyCompleteRegistrationSessionStatus(
+	c *gin.Context,
+	session *dbent.PendingAuthSession,
+) (*dbent.PendingAuthSession, bool, error) {
+	if c == nil || c.Request == nil {
+		return nil, false, infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid")
+	}
+	return h.legacyCompleteRegistrationSessionStatusWithContext(c.Request.Context(), session)
+}
+
+func (h *AuthHandler) legacyCompleteRegistrationSessionStatusGateway(
+	c gatewayctx.GatewayContext,
+	session *dbent.PendingAuthSession,
+) (*dbent.PendingAuthSession, bool, error) {
+	if c == nil || c.Request() == nil {
+		return nil, false, infraerrors.BadRequest("PENDING_AUTH_SESSION_INVALID", "pending auth registration context is invalid")
+	}
+	return h.legacyCompleteRegistrationSessionStatusWithContext(c.Request().Context(), session)
 }
 
 func (r oauthAdoptionDecisionRequest) hasDecision() bool {

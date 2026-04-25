@@ -127,7 +127,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodGet,
 				Path:    "/api/v1/auth/oauth/linuxdo/start",
-				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/start", h.Auth.LinuxDoOAuthStart),
+				Handler: h.Auth.LinuxDoOAuthStartGateway,
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard",
@@ -136,7 +136,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodGet,
 				Path:    "/api/v1/auth/oauth/linuxdo/callback",
-				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/callback", h.Auth.LinuxDoOAuthCallback),
+				Handler: h.Auth.LinuxDoOAuthCallbackGateway,
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard",
@@ -145,7 +145,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodPost,
 				Path:    "/api/v1/auth/oauth/linuxdo/complete-registration",
-				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/complete-registration", h.Auth.CompleteLinuxDoOAuthRegistration),
+				Handler: h.Auth.CompleteLinuxDoOAuthRegistrationGateway,
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard", "rl_auth_linuxdo_complete",

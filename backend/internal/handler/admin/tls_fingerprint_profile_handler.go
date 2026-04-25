@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/gatewayctx"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -17,6 +19,15 @@ type TLSFingerprintProfileHandler struct {
 // NewTLSFingerprintProfileHandler 创建 TLS 指纹模板处理器
 func NewTLSFingerprintProfileHandler(service *service.TLSFingerprintProfileService) *TLSFingerprintProfileHandler {
 	return &TLSFingerprintProfileHandler{service: service}
+}
+
+func parseTLSFingerprintProfileIDGateway(c gatewayctx.GatewayContext) (int64, bool) {
+	id, err := strconv.ParseInt(c.PathParam("id"), 10, 64)
+	if err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid profile ID")
+		return 0, false
+	}
+	return id, true
 }
 
 // CreateTLSFingerprintProfilePayload 创建模板请求
@@ -54,42 +65,53 @@ type UpdateTLSFingerprintProfilePayload struct {
 // List 获取所有模板
 // GET /api/v1/admin/tls-fingerprint-profiles
 func (h *TLSFingerprintProfileHandler) List(c *gin.Context) {
-	profiles, err := h.service.List(c.Request.Context())
+	h.ListGateway(gatewayctx.FromGin(c))
+}
+
+func (h *TLSFingerprintProfileHandler) ListGateway(c gatewayctx.GatewayContext) {
+	profiles, err := h.service.List(c.Request().Context())
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
-	response.Success(c, profiles)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profiles)
 }
 
 // GetByID 根据 ID 获取模板
 // GET /api/v1/admin/tls-fingerprint-profiles/:id
 func (h *TLSFingerprintProfileHandler) GetByID(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Invalid profile ID")
+	h.GetByIDGateway(gatewayctx.FromGin(c))
+}
+
+func (h *TLSFingerprintProfileHandler) GetByIDGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseTLSFingerprintProfileIDGateway(c)
+	if !ok {
 		return
 	}
 
-	profile, err := h.service.GetByID(c.Request.Context(), id)
+	profile, err := h.service.GetByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	if profile == nil {
-		response.NotFound(c, "Profile not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Profile not found")
 		return
 	}
 
-	response.Success(c, profile)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, profile)
 }
 
 // Create 创建模板
 // POST /api/v1/admin/tls-fingerprint-profiles
 func (h *TLSFingerprintProfileHandler) Create(c *gin.Context) {
+	h.CreateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *TLSFingerprintProfileHandler) CreateGateway(c gatewayctx.GatewayContext) {
 	var req CreateTLSFingerprintProfilePayload
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
@@ -106,50 +128,51 @@ func (h *TLSFingerprintProfileHandler) Create(c *gin.Context) {
 		PSKModes:            req.PSKModes,
 		Extensions:          req.Extensions,
 	}
-
 	if req.EnableGREASE != nil {
 		profile.EnableGREASE = *req.EnableGREASE
 	}
 
-	created, err := h.service.Create(c.Request.Context(), profile)
+	created, err := h.service.Create(c.Request().Context(), profile)
 	if err != nil {
 		if _, ok := err.(*model.ValidationError); ok {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, created)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, created)
 }
 
 // Update 更新模板（支持部分更新）
 // PUT /api/v1/admin/tls-fingerprint-profiles/:id
 func (h *TLSFingerprintProfileHandler) Update(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Invalid profile ID")
+	h.UpdateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *TLSFingerprintProfileHandler) UpdateGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseTLSFingerprintProfileIDGateway(c)
+	if !ok {
 		return
 	}
 
 	var req UpdateTLSFingerprintProfilePayload
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
+	if err := c.BindJSON(&req); err != nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, "Invalid request: "+err.Error())
 		return
 	}
 
-	existing, err := h.service.GetByID(c.Request.Context(), id)
+	existing, err := h.service.GetByID(c.Request().Context(), id)
 	if err != nil {
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 	if existing == nil {
-		response.NotFound(c, "Profile not found")
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusNotFound, "Profile not found")
 		return
 	}
 
-	// 部分更新
 	profile := &model.TLSFingerprintProfile{
 		ID:                  id,
 		Name:                existing.Name,
@@ -203,32 +226,35 @@ func (h *TLSFingerprintProfileHandler) Update(c *gin.Context) {
 		profile.Extensions = req.Extensions
 	}
 
-	updated, err := h.service.Update(c.Request.Context(), profile)
+	updated, err := h.service.Update(c.Request().Context(), profile)
 	if err != nil {
 		if _, ok := err.(*model.ValidationError); ok {
-			response.BadRequest(c, err.Error())
+			response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusBadRequest, err.Error())
 			return
 		}
-		response.ErrorFrom(c, err)
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, updated)
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, updated)
 }
 
 // Delete 删除模板
 // DELETE /api/v1/admin/tls-fingerprint-profiles/:id
 func (h *TLSFingerprintProfileHandler) Delete(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Invalid profile ID")
+	h.DeleteGateway(gatewayctx.FromGin(c))
+}
+
+func (h *TLSFingerprintProfileHandler) DeleteGateway(c gatewayctx.GatewayContext) {
+	id, ok := parseTLSFingerprintProfileIDGateway(c)
+	if !ok {
 		return
 	}
 
-	if err := h.service.Delete(c.Request.Context(), id); err != nil {
-		response.ErrorFrom(c, err)
+	if err := h.service.Delete(c.Request().Context(), id); err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Profile deleted successfully"})
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{"message": "Profile deleted successfully"})
 }

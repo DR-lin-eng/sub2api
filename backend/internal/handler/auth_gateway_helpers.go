@@ -96,6 +96,66 @@ func clearOAuthPendingSessionCookieGateway(c gatewayctx.GatewayContext, secure b
 	})
 }
 
+func setOAuthPendingBrowserCookieGateway(c gatewayctx.GatewayContext, sessionKey string, secure bool) {
+	if c == nil {
+		return
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     oauthPendingBrowserCookieName,
+		Value:    encodeCookieValue(sessionKey),
+		Path:     oauthPendingBrowserCookiePath,
+		MaxAge:   oauthPendingCookieMaxAgeSec,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func setOAuthPendingSessionCookieGateway(c gatewayctx.GatewayContext, sessionToken string, secure bool) {
+	if c == nil {
+		return
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     oauthPendingSessionCookieName,
+		Value:    encodeCookieValue(sessionToken),
+		Path:     oauthPendingSessionCookiePath,
+		MaxAge:   oauthPendingCookieMaxAgeSec,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func setOAuthCookieGateway(c gatewayctx.GatewayContext, name, value, path string, maxAgeSec int, secure bool) {
+	if c == nil {
+		return
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		MaxAge:   maxAgeSec,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearOAuthCookieGateway(c gatewayctx.GatewayContext, name, path string, secure bool) {
+	if c == nil {
+		return
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     name,
+		Value:    "",
+		Path:     path,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func readOAuthPendingBrowserCookieGateway(c gatewayctx.GatewayContext) (string, error) {
 	return readCookieDecodedGateway(c, oauthPendingBrowserCookieName)
 }
@@ -157,6 +217,66 @@ func (h *AuthHandler) PrepareOAuthBindAccessTokenCookieGateway(c gatewayctx.Gate
 
 	setOAuthBindAccessTokenCookieGateway(c, token, isRequestHTTPSGateway(c))
 	c.SetStatus(http.StatusNoContent)
+}
+
+func (h *AuthHandler) buildOAuthBindUserCookieFromGatewayContext(c gatewayctx.GatewayContext) (string, error) {
+	userID, err := h.resolveOAuthBindTargetUserIDGateway(c)
+	if err != nil || userID == nil || *userID <= 0 {
+		return "", infraerrors.Unauthorized("UNAUTHORIZED", "authentication required")
+	}
+	return buildOAuthBindUserCookieValue(*userID, h.oauthBindCookieSecret())
+}
+
+func (h *AuthHandler) readOAuthBindUserIDFromCookieGateway(c gatewayctx.GatewayContext, cookieName string) (int64, error) {
+	value, err := readCookieDecodedGateway(c, cookieName)
+	if err != nil {
+		return 0, err
+	}
+	return parseOAuthBindUserCookieValue(value, h.oauthBindCookieSecret())
+}
+
+func redirectWithFragmentGateway(c gatewayctx.GatewayContext, frontendCallback string, fragment url.Values) {
+	u, err := url.Parse(frontendCallback)
+	if err != nil {
+		c.Redirect(http.StatusFound, linuxDoOAuthDefaultRedirectTo)
+		return
+	}
+	if u.Scheme != "" && !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		c.Redirect(http.StatusFound, linuxDoOAuthDefaultRedirectTo)
+		return
+	}
+	u.Fragment = fragment.Encode()
+	c.SetHeader("Cache-Control", "no-store")
+	c.SetHeader("Pragma", "no-cache")
+	c.Redirect(http.StatusFound, u.String())
+}
+
+func redirectOAuthErrorGateway(c gatewayctx.GatewayContext, frontendCallback string, code string, message string, description string) {
+	fragment := url.Values{}
+	fragment.Set("error", truncateFragmentValue(code))
+	if strings.TrimSpace(message) != "" {
+		fragment.Set("error_message", truncateFragmentValue(message))
+	}
+	if strings.TrimSpace(description) != "" {
+		fragment.Set("error_description", truncateFragmentValue(description))
+	}
+	redirectWithFragmentGateway(c, frontendCallback, fragment)
+}
+
+func redirectToFrontendCallbackGateway(c gatewayctx.GatewayContext, frontendCallback string) {
+	u, err := url.Parse(frontendCallback)
+	if err != nil {
+		c.Redirect(http.StatusFound, linuxDoOAuthDefaultRedirectTo)
+		return
+	}
+	if u.Scheme != "" && !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		c.Redirect(http.StatusFound, linuxDoOAuthDefaultRedirectTo)
+		return
+	}
+	u.Fragment = ""
+	c.SetHeader("Cache-Control", "no-store")
+	c.SetHeader("Pragma", "no-cache")
+	c.Redirect(http.StatusFound, u.String())
 }
 
 func readPendingOAuthBrowserSessionGateway(c gatewayctx.GatewayContext, h *AuthHandler) (*service.AuthPendingIdentityService, *dbent.PendingAuthSession, func(), error) {

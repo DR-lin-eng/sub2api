@@ -28,37 +28,37 @@ func executableAuthExtensionRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/linuxdo/bind/start",
-			Handler:    withQueryValue("intent", "bind_current_user", adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/bind/start", h.Auth.LinuxDoOAuthStart)),
+			Handler:    withQueryValue("intent", "bind_current_user", h.Auth.LinuxDoOAuthStartGateway),
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/wechat/start",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/start", h.Auth.WeChatOAuthStart),
+			Handler:    h.Auth.WeChatOAuthStartGateway,
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/wechat/bind/start",
-			Handler:    withQueryValue("intent", "bind_current_user", adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/bind/start", h.Auth.WeChatOAuthStart)),
+			Handler:    withQueryValue("intent", "bind_current_user", h.Auth.WeChatOAuthStartGateway),
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/wechat/callback",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/callback", h.Auth.WeChatOAuthCallback),
+			Handler:    h.Auth.WeChatOAuthCallbackGateway,
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/wechat/payment/start",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/payment/start", h.Auth.WeChatPaymentOAuthStart),
+			Handler:    h.Auth.WeChatPaymentOAuthStartGateway,
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/wechat/payment/callback",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/payment/callback", h.Auth.WeChatPaymentOAuthCallback),
+			Handler:    h.Auth.WeChatPaymentOAuthCallbackGateway,
 			Middleware: common,
 		},
 		{
@@ -100,7 +100,7 @@ func executableAuthExtensionRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		{
 			Method:     http.MethodPost,
 			Path:       "/api/v1/auth/oauth/wechat/complete-registration",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/wechat/complete-registration", h.Auth.CompleteWeChatOAuthRegistration),
+			Handler:    h.Auth.CompleteWeChatOAuthRegistrationGateway,
 			Middleware: append(common, "rl_auth_oauth_wechat_complete"),
 		},
 		{
@@ -118,25 +118,25 @@ func executableAuthExtensionRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/oidc/start",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/oidc/start", h.Auth.OIDCOAuthStart),
+			Handler:    h.Auth.OIDCOAuthStartGateway,
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/oidc/bind/start",
-			Handler:    withQueryValue("intent", "bind_current_user", adaptLegacyGinRoute("/api/v1/auth/oauth/oidc/bind/start", h.Auth.OIDCOAuthStart)),
+			Handler:    withQueryValue("intent", "bind_current_user", h.Auth.OIDCOAuthStartGateway),
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodGet,
 			Path:       "/api/v1/auth/oauth/oidc/callback",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/oidc/callback", h.Auth.OIDCOAuthCallback),
+			Handler:    h.Auth.OIDCOAuthCallbackGateway,
 			Middleware: common,
 		},
 		{
 			Method:     http.MethodPost,
 			Path:       "/api/v1/auth/oauth/oidc/complete-registration",
-			Handler:    adaptLegacyGinRoute("/api/v1/auth/oauth/oidc/complete-registration", h.Auth.CompleteOIDCOAuthRegistration),
+			Handler:    h.Auth.CompleteOIDCOAuthRegistrationGateway,
 			Middleware: append(common, "rl_auth_oauth_oidc_complete"),
 		},
 		{
