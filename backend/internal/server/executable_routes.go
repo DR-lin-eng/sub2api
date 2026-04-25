@@ -45,6 +45,18 @@ const (
 	middlewareTagRLForgot         = "rl_auth_forgot_password"
 	middlewareTagRLReset          = "rl_auth_reset_password"
 	middlewareTagRLLinuxDoFinish  = "rl_auth_linuxdo_complete"
+	middlewareTagRLOAuthPendingExchange     = "rl_auth_oauth_pending_exchange"
+	middlewareTagRLOAuthPendingSendVerify   = "rl_auth_oauth_pending_send_verify"
+	middlewareTagRLOAuthPendingCreateAcct   = "rl_auth_oauth_pending_create_account"
+	middlewareTagRLOAuthPendingBindLogin    = "rl_auth_oauth_pending_bind_login"
+	middlewareTagRLOAuthLinuxDoBindLogin    = "rl_auth_oauth_linuxdo_bind_login"
+	middlewareTagRLOAuthLinuxDoCreateAcct   = "rl_auth_oauth_linuxdo_create_account"
+	middlewareTagRLOAuthWeChatComplete      = "rl_auth_oauth_wechat_complete"
+	middlewareTagRLOAuthWeChatBindLogin     = "rl_auth_oauth_wechat_bind_login"
+	middlewareTagRLOAuthWeChatCreateAcct    = "rl_auth_oauth_wechat_create_account"
+	middlewareTagRLOAuthOIDCComplete        = "rl_auth_oauth_oidc_complete"
+	middlewareTagRLOAuthOIDCBindLogin       = "rl_auth_oauth_oidc_bind_login"
+	middlewareTagRLOAuthOIDCCreateAcct      = "rl_auth_oauth_oidc_create_account"
 )
 
 const nativeRouteFallbackToHTTPHandlerKey = "_native_route_fallback_http_handler"
@@ -85,6 +97,7 @@ func buildExecutableRuntimeConfig(
 	rawDefs = append(rawDefs, routes.ExecutableAdminRoutes(handlers)...)
 	rawDefs = append(rawDefs, routes.ExecutableAuthRoutes(handlers)...)
 	rawDefs = append(rawDefs, routes.ExecutableUserRoutes(handlers)...)
+	rawDefs = append(rawDefs, routes.ExecutablePaymentRoutes(handlers)...)
 	rawDefs = append(rawDefs, routes.ExecutableSoraClientRoutes(handlers)...)
 	rawDefs = append(rawDefs, web.ExecutableRoutes(frontendServer)...)
 
@@ -268,6 +281,54 @@ func applyExecutableMiddlewares(runtimeCfg *executableRuntimeConfig, c gatewayct
 			}
 		case middlewareTagRLLinuxDoFinish:
 			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthPendingExchange:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-exchange", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthPendingSendVerify:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-send-verify-code", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthPendingCreateAcct:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthPendingBindLogin:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-bind-login", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthLinuxDoBindLogin:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthLinuxDoCreateAcct:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthWeChatComplete:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthWeChatBindLogin:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthWeChatCreateAcct:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthOIDCComplete:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthOIDCBindLogin:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+				return false
+			}
+		case middlewareTagRLOAuthOIDCCreateAcct:
+			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
 				return false
 			}
 		}

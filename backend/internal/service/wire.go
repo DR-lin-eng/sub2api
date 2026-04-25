@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/curlcffi"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/google/wire"
@@ -313,11 +315,13 @@ func ProvideRateLimitService(
 	geminiQuotaService *GeminiQuotaService,
 	tempUnschedCache TempUnschedCache,
 	timeoutCounterCache TimeoutCounterCache,
+	openAI403CounterCache OpenAI403CounterCache,
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	svc.SetTimeoutCounterCache(timeoutCounterCache)
+	svc.SetOpenAI403CounterCache(openAI403CounterCache)
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
 	return svc
@@ -376,7 +380,9 @@ func ProvideOpsCleanupService(
 	db *sql.DB,
 	redisClient *redis.Client,
 	cfg *config.Config,
+	channelMonitorSvc *ChannelMonitorService,
 ) *OpsCleanupService {
+	_ = channelMonitorSvc
 	svc := NewOpsCleanupService(opsRepo, db, redisClient, cfg)
 	if singletonBackgroundServicesEnabled() {
 		svc.Start()
@@ -479,6 +485,41 @@ func ProvideScheduledTestRunnerService(
 		svc.Start()
 	}
 	return svc
+}
+
+// ProvidePaymentConfigService wraps NewPaymentConfigService to accept the named
+// payment.EncryptionKey type instead of raw []byte, avoiding Wire ambiguity.
+func ProvidePaymentConfigService(entClient *dbent.Client, settingRepo SettingRepository, key payment.EncryptionKey) *PaymentConfigService {
+	return NewPaymentConfigService(entClient, settingRepo, []byte(key))
+}
+
+// ProvideBalanceNotifyService creates BalanceNotifyService.
+func ProvideBalanceNotifyService(emailService *EmailService, settingRepo SettingRepository, accountRepo AccountRepository) *BalanceNotifyService {
+	return NewBalanceNotifyService(emailService, settingRepo, accountRepo)
+}
+
+// ProvidePaymentOrderExpiryService creates and starts PaymentOrderExpiryService.
+func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService) *PaymentOrderExpiryService {
+	svc := NewPaymentOrderExpiryService(paymentSvc, 60*time.Second)
+	if singletonBackgroundServicesEnabled() {
+		svc.Start()
+	}
+	return svc
+}
+
+// ProvideChannelMonitorService creates channel monitor CRUD/runtime service.
+func ProvideChannelMonitorService(repo ChannelMonitorRepository, encryptor SecretEncryptor) *ChannelMonitorService {
+	return NewChannelMonitorService(repo, encryptor)
+}
+
+// ProvideChannelMonitorRunner wires the monitor service to its scheduler and starts it.
+func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService) *ChannelMonitorRunner {
+	r := NewChannelMonitorRunner(svc, settingService)
+	svc.SetScheduler(r)
+	if singletonBackgroundServicesEnabled() {
+		r.Start()
+	}
+	return r
 }
 
 func ProvideProxyMaintenanceService(
@@ -744,6 +785,7 @@ var ProviderSet = wire.NewSet(
 	NewUsageCache,
 	NewTotpService,
 	NewErrorPassthroughService,
+	NewTLSFingerprintProfileService,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,
 	ProvideSystemOperationLockService,
@@ -753,4 +795,13 @@ var ProviderSet = wire.NewSet(
 	ProvideProxyMaintenanceService,
 	ProvideProxyMaintenanceRunnerService,
 	NewGroupCapacityService,
+	NewChannelService,
+	NewModelPricingResolver,
+	ProvidePaymentConfigService,
+	NewPaymentService,
+	ProvidePaymentOrderExpiryService,
+	ProvideBalanceNotifyService,
+	ProvideChannelMonitorService,
+	ProvideChannelMonitorRunner,
+	NewChannelMonitorRequestTemplateService,
 )

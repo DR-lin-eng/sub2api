@@ -127,7 +127,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodGet,
 				Path:    "/api/v1/auth/oauth/linuxdo/start",
-				Handler: h.Auth.LinuxDoOAuthStartGateway,
+				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/start", h.Auth.LinuxDoOAuthStart),
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard",
@@ -136,7 +136,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodGet,
 				Path:    "/api/v1/auth/oauth/linuxdo/callback",
-				Handler: h.Auth.LinuxDoOAuthCallbackGateway,
+				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/callback", h.Auth.LinuxDoOAuthCallback),
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard",
@@ -145,7 +145,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{
 				Method:  http.MethodPost,
 				Path:    "/api/v1/auth/oauth/linuxdo/complete-registration",
-				Handler: h.Auth.CompleteLinuxDoOAuthRegistrationGateway,
+				Handler: adaptLegacyGinRoute("/api/v1/auth/oauth/linuxdo/complete-registration", h.Auth.CompleteLinuxDoOAuthRegistration),
 				Middleware: []string{
 					"request_logger", "cors", "security_headers", "client_request_id",
 					"backend_mode_auth_guard", "rl_auth_linuxdo_complete",
@@ -192,6 +192,7 @@ func ExecutableAuthRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			},
 		})
 	}
+	defs = append(defs, executableAuthExtensionRoutes(h)...)
 	return defs
 }
 
@@ -253,6 +254,7 @@ func RegisterAuthRoutes(
 			}),
 			h.Auth.CompleteLinuxDoOAuthRegistration,
 		)
+		registerAuthExtendedRoutes(auth, rateLimiter, h)
 	}
 
 	// 公开设置（无需认证）
@@ -274,5 +276,6 @@ func RegisterAuthRoutes(
 		authenticated.GET("/auth/me", h.Auth.GetCurrentUser)
 		// 撤销所有会话（需要认证）
 		authenticated.POST("/auth/revoke-all-sessions", h.Auth.RevokeAllSessions)
+		registerAuthenticatedAuthExtendedRoutes(authenticated, h)
 	}
 }

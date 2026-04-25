@@ -43,6 +43,22 @@ const (
 	FieldTotpEnabled = "totp_enabled"
 	// FieldTotpEnabledAt holds the string denoting the totp_enabled_at field in the database.
 	FieldTotpEnabledAt = "totp_enabled_at"
+	// FieldSignupSource holds the string denoting the signup_source field in the database.
+	FieldSignupSource = "signup_source"
+	// FieldLastLoginAt holds the string denoting the last_login_at field in the database.
+	FieldLastLoginAt = "last_login_at"
+	// FieldLastActiveAt holds the string denoting the last_active_at field in the database.
+	FieldLastActiveAt = "last_active_at"
+	// FieldBalanceNotifyEnabled holds the string denoting the balance_notify_enabled field in the database.
+	FieldBalanceNotifyEnabled = "balance_notify_enabled"
+	// FieldBalanceNotifyThresholdType holds the string denoting the balance_notify_threshold_type field in the database.
+	FieldBalanceNotifyThresholdType = "balance_notify_threshold_type"
+	// FieldBalanceNotifyThreshold holds the string denoting the balance_notify_threshold field in the database.
+	FieldBalanceNotifyThreshold = "balance_notify_threshold"
+	// FieldBalanceNotifyExtraEmails holds the string denoting the balance_notify_extra_emails field in the database.
+	FieldBalanceNotifyExtraEmails = "balance_notify_extra_emails"
+	// FieldTotalRecharged holds the string denoting the total_recharged field in the database.
+	FieldTotalRecharged = "total_recharged"
 	// FieldSoraStorageQuotaBytes holds the string denoting the sora_storage_quota_bytes field in the database.
 	FieldSoraStorageQuotaBytes = "sora_storage_quota_bytes"
 	// FieldSoraStorageUsedBytes holds the string denoting the sora_storage_used_bytes field in the database.
@@ -55,12 +71,18 @@ const (
 	EdgeSubscriptions = "subscriptions"
 	// EdgeAssignedSubscriptions holds the string denoting the assigned_subscriptions edge name in mutations.
 	EdgeAssignedSubscriptions = "assigned_subscriptions"
+	// EdgeAuthIdentities holds the string denoting the auth_identities edge name in mutations.
+	EdgeAuthIdentities = "auth_identities"
+	// EdgePendingAuthSessions holds the string denoting the pending_auth_sessions edge name in mutations.
+	EdgePendingAuthSessions = "pending_auth_sessions"
 	// EdgeAnnouncementReads holds the string denoting the announcement_reads edge name in mutations.
 	EdgeAnnouncementReads = "announcement_reads"
 	// EdgeAllowedGroups holds the string denoting the allowed_groups edge name in mutations.
 	EdgeAllowedGroups = "allowed_groups"
 	// EdgeUsageLogs holds the string denoting the usage_logs edge name in mutations.
 	EdgeUsageLogs = "usage_logs"
+	// EdgePaymentOrders holds the string denoting the payment_orders edge name in mutations.
+	EdgePaymentOrders = "payment_orders"
 	// EdgeAttributeValues holds the string denoting the attribute_values edge name in mutations.
 	EdgeAttributeValues = "attribute_values"
 	// EdgePromoCodeUsages holds the string denoting the promo_code_usages edge name in mutations.
@@ -97,6 +119,20 @@ const (
 	AssignedSubscriptionsInverseTable = "user_subscriptions"
 	// AssignedSubscriptionsColumn is the table column denoting the assigned_subscriptions relation/edge.
 	AssignedSubscriptionsColumn = "assigned_by"
+	// AuthIdentitiesTable is the table that holds the auth_identities relation/edge.
+	AuthIdentitiesTable = "auth_identities"
+	// AuthIdentitiesInverseTable is the table name for the AuthIdentity entity.
+	// It exists in this package in order to avoid circular dependency with the "authidentity" package.
+	AuthIdentitiesInverseTable = "auth_identities"
+	// AuthIdentitiesColumn is the table column denoting the auth_identities relation/edge.
+	AuthIdentitiesColumn = "user_id"
+	// PendingAuthSessionsTable is the table that holds the pending_auth_sessions relation/edge.
+	PendingAuthSessionsTable = "pending_auth_sessions"
+	// PendingAuthSessionsInverseTable is the table name for the PendingAuthSession entity.
+	// It exists in this package in order to avoid circular dependency with the "pendingauthsession" package.
+	PendingAuthSessionsInverseTable = "pending_auth_sessions"
+	// PendingAuthSessionsColumn is the table column denoting the pending_auth_sessions relation/edge.
+	PendingAuthSessionsColumn = "target_user_id"
 	// AnnouncementReadsTable is the table that holds the announcement_reads relation/edge.
 	AnnouncementReadsTable = "announcement_reads"
 	// AnnouncementReadsInverseTable is the table name for the AnnouncementRead entity.
@@ -116,6 +152,13 @@ const (
 	UsageLogsInverseTable = "usage_logs"
 	// UsageLogsColumn is the table column denoting the usage_logs relation/edge.
 	UsageLogsColumn = "user_id"
+	// PaymentOrdersTable is the table that holds the payment_orders relation/edge.
+	PaymentOrdersTable = "payment_orders"
+	// PaymentOrdersInverseTable is the table name for the PaymentOrder entity.
+	// It exists in this package in order to avoid circular dependency with the "paymentorder" package.
+	PaymentOrdersInverseTable = "payment_orders"
+	// PaymentOrdersColumn is the table column denoting the payment_orders relation/edge.
+	PaymentOrdersColumn = "user_id"
 	// AttributeValuesTable is the table that holds the attribute_values relation/edge.
 	AttributeValuesTable = "user_attribute_values"
 	// AttributeValuesInverseTable is the table name for the UserAttributeValue entity.
@@ -156,6 +199,14 @@ var Columns = []string{
 	FieldTotpSecretEncrypted,
 	FieldTotpEnabled,
 	FieldTotpEnabledAt,
+	FieldSignupSource,
+	FieldLastLoginAt,
+	FieldLastActiveAt,
+	FieldBalanceNotifyEnabled,
+	FieldBalanceNotifyThresholdType,
+	FieldBalanceNotifyThreshold,
+	FieldBalanceNotifyExtraEmails,
+	FieldTotalRecharged,
 	FieldSoraStorageQuotaBytes,
 	FieldSoraStorageUsedBytes,
 }
@@ -214,6 +265,18 @@ var (
 	DefaultNotes string
 	// DefaultTotpEnabled holds the default value on creation for the "totp_enabled" field.
 	DefaultTotpEnabled bool
+	// DefaultSignupSource holds the default value on creation for the "signup_source" field.
+	DefaultSignupSource string
+	// SignupSourceValidator is a validator for the "signup_source" field. It is called by the builders before save.
+	SignupSourceValidator func(string) error
+	// DefaultBalanceNotifyEnabled holds the default value on creation for the "balance_notify_enabled" field.
+	DefaultBalanceNotifyEnabled bool
+	// DefaultBalanceNotifyThresholdType holds the default value on creation for the "balance_notify_threshold_type" field.
+	DefaultBalanceNotifyThresholdType string
+	// DefaultBalanceNotifyExtraEmails holds the default value on creation for the "balance_notify_extra_emails" field.
+	DefaultBalanceNotifyExtraEmails string
+	// DefaultTotalRecharged holds the default value on creation for the "total_recharged" field.
+	DefaultTotalRecharged float64
 	// DefaultSoraStorageQuotaBytes holds the default value on creation for the "sora_storage_quota_bytes" field.
 	DefaultSoraStorageQuotaBytes int64
 	// DefaultSoraStorageUsedBytes holds the default value on creation for the "sora_storage_used_bytes" field.
@@ -298,6 +361,46 @@ func ByTotpEnabledAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldTotpEnabledAt, opts...).ToFunc()
 }
 
+// BySignupSource orders the results by the signup_source field.
+func BySignupSource(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSignupSource, opts...).ToFunc()
+}
+
+// ByLastLoginAt orders the results by the last_login_at field.
+func ByLastLoginAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldLastLoginAt, opts...).ToFunc()
+}
+
+// ByLastActiveAt orders the results by the last_active_at field.
+func ByLastActiveAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldLastActiveAt, opts...).ToFunc()
+}
+
+// ByBalanceNotifyEnabled orders the results by the balance_notify_enabled field.
+func ByBalanceNotifyEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBalanceNotifyEnabled, opts...).ToFunc()
+}
+
+// ByBalanceNotifyThresholdType orders the results by the balance_notify_threshold_type field.
+func ByBalanceNotifyThresholdType(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBalanceNotifyThresholdType, opts...).ToFunc()
+}
+
+// ByBalanceNotifyThreshold orders the results by the balance_notify_threshold field.
+func ByBalanceNotifyThreshold(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBalanceNotifyThreshold, opts...).ToFunc()
+}
+
+// ByBalanceNotifyExtraEmails orders the results by the balance_notify_extra_emails field.
+func ByBalanceNotifyExtraEmails(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBalanceNotifyExtraEmails, opts...).ToFunc()
+}
+
+// ByTotalRecharged orders the results by the total_recharged field.
+func ByTotalRecharged(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTotalRecharged, opts...).ToFunc()
+}
+
 // BySoraStorageQuotaBytes orders the results by the sora_storage_quota_bytes field.
 func BySoraStorageQuotaBytes(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSoraStorageQuotaBytes, opts...).ToFunc()
@@ -364,6 +467,34 @@ func ByAssignedSubscriptions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOp
 	}
 }
 
+// ByAuthIdentitiesCount orders the results by auth_identities count.
+func ByAuthIdentitiesCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newAuthIdentitiesStep(), opts...)
+	}
+}
+
+// ByAuthIdentities orders the results by auth_identities terms.
+func ByAuthIdentities(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newAuthIdentitiesStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByPendingAuthSessionsCount orders the results by pending_auth_sessions count.
+func ByPendingAuthSessionsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newPendingAuthSessionsStep(), opts...)
+	}
+}
+
+// ByPendingAuthSessions orders the results by pending_auth_sessions terms.
+func ByPendingAuthSessions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newPendingAuthSessionsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByAnnouncementReadsCount orders the results by announcement_reads count.
 func ByAnnouncementReadsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -403,6 +534,20 @@ func ByUsageLogsCount(opts ...sql.OrderTermOption) OrderOption {
 func ByUsageLogs(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	return func(s *sql.Selector) {
 		sqlgraph.OrderByNeighborTerms(s, newUsageLogsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByPaymentOrdersCount orders the results by payment_orders count.
+func ByPaymentOrdersCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newPaymentOrdersStep(), opts...)
+	}
+}
+
+// ByPaymentOrders orders the results by payment_orders terms.
+func ByPaymentOrders(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newPaymentOrdersStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
 
@@ -475,6 +620,20 @@ func newAssignedSubscriptionsStep() *sqlgraph.Step {
 		sqlgraph.Edge(sqlgraph.O2M, false, AssignedSubscriptionsTable, AssignedSubscriptionsColumn),
 	)
 }
+func newAuthIdentitiesStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(AuthIdentitiesInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, AuthIdentitiesTable, AuthIdentitiesColumn),
+	)
+}
+func newPendingAuthSessionsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(PendingAuthSessionsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, PendingAuthSessionsTable, PendingAuthSessionsColumn),
+	)
+}
 func newAnnouncementReadsStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -494,6 +653,13 @@ func newUsageLogsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(UsageLogsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, UsageLogsTable, UsageLogsColumn),
+	)
+}
+func newPaymentOrdersStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(PaymentOrdersInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, PaymentOrdersTable, PaymentOrdersColumn),
 	)
 }
 func newAttributeValuesStep() *sqlgraph.Step {

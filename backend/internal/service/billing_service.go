@@ -52,6 +52,7 @@ type ModelPricing struct {
 	CacheReadPricePerTokenPriority float64 // priority service tier 下缓存读取每token价格 (USD)
 	CacheCreation5mPrice           float64 // 5分钟缓存创建每token价格 (USD)
 	CacheCreation1hPrice           float64 // 1小时缓存创建每token价格 (USD)
+	ImageOutputPricePerToken       float64 // 图片输出 token 价格 (USD)
 	SupportsCacheBreakdown         bool    // 是否支持详细的缓存分类
 	LongContextInputThreshold      int     // 超过阈值后按整次会话提升输入价格
 	LongContextInputMultiplier     float64 // 长上下文整次会话输入倍率

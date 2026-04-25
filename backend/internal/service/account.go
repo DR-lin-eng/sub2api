@@ -1625,6 +1625,75 @@ func (a *Account) GetQuotaWeeklyUsed() float64 {
 	return a.getExtraFloat64("quota_weekly_used")
 }
 
+func (a *Account) GetQuotaNotifyDailyEnabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["quota_notify_daily_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func (a *Account) GetQuotaNotifyDailyThreshold() float64 {
+	return a.getExtraFloat64("quota_notify_daily_threshold")
+}
+
+func (a *Account) GetQuotaNotifyDailyThresholdType() string {
+	if t := strings.TrimSpace(a.getExtraString("quota_notify_daily_threshold_type")); t != "" {
+		return t
+	}
+	return "fixed"
+}
+
+func (a *Account) GetQuotaNotifyWeeklyEnabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["quota_notify_weekly_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func (a *Account) GetQuotaNotifyWeeklyThreshold() float64 {
+	return a.getExtraFloat64("quota_notify_weekly_threshold")
+}
+
+func (a *Account) GetQuotaNotifyWeeklyThresholdType() string {
+	if t := strings.TrimSpace(a.getExtraString("quota_notify_weekly_threshold_type")); t != "" {
+		return t
+	}
+	return "fixed"
+}
+
+func (a *Account) GetQuotaNotifyTotalEnabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["quota_notify_total_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func (a *Account) GetQuotaNotifyTotalThreshold() float64 {
+	return a.getExtraFloat64("quota_notify_total_threshold")
+}
+
+func (a *Account) GetQuotaNotifyTotalThresholdType() string {
+	if t := strings.TrimSpace(a.getExtraString("quota_notify_total_threshold_type")); t != "" {
+		return t
+	}
+	return "fixed"
+}
+
 // getExtraFloat64 从 Extra 中读取指定 key 的 float64 值
 func (a *Account) getExtraFloat64(key string) float64 {
 	if a.Extra == nil {

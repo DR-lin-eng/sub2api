@@ -45,6 +45,22 @@ type User struct {
 	TotpEnabled bool `json:"totp_enabled,omitempty"`
 	// TotpEnabledAt holds the value of the "totp_enabled_at" field.
 	TotpEnabledAt *time.Time `json:"totp_enabled_at,omitempty"`
+	// SignupSource holds the value of the "signup_source" field.
+	SignupSource string `json:"signup_source,omitempty"`
+	// LastLoginAt holds the value of the "last_login_at" field.
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// LastActiveAt holds the value of the "last_active_at" field.
+	LastActiveAt *time.Time `json:"last_active_at,omitempty"`
+	// BalanceNotifyEnabled holds the value of the "balance_notify_enabled" field.
+	BalanceNotifyEnabled bool `json:"balance_notify_enabled,omitempty"`
+	// BalanceNotifyThresholdType holds the value of the "balance_notify_threshold_type" field.
+	BalanceNotifyThresholdType string `json:"balance_notify_threshold_type,omitempty"`
+	// BalanceNotifyThreshold holds the value of the "balance_notify_threshold" field.
+	BalanceNotifyThreshold *float64 `json:"balance_notify_threshold,omitempty"`
+	// BalanceNotifyExtraEmails holds the value of the "balance_notify_extra_emails" field.
+	BalanceNotifyExtraEmails string `json:"balance_notify_extra_emails,omitempty"`
+	// TotalRecharged holds the value of the "total_recharged" field.
+	TotalRecharged float64 `json:"total_recharged,omitempty"`
 	// SoraStorageQuotaBytes holds the value of the "sora_storage_quota_bytes" field.
 	SoraStorageQuotaBytes int64 `json:"sora_storage_quota_bytes,omitempty"`
 	// SoraStorageUsedBytes holds the value of the "sora_storage_used_bytes" field.
@@ -65,12 +81,18 @@ type UserEdges struct {
 	Subscriptions []*UserSubscription `json:"subscriptions,omitempty"`
 	// AssignedSubscriptions holds the value of the assigned_subscriptions edge.
 	AssignedSubscriptions []*UserSubscription `json:"assigned_subscriptions,omitempty"`
+	// AuthIdentities holds the value of the auth_identities edge.
+	AuthIdentities []*AuthIdentity `json:"auth_identities,omitempty"`
+	// PendingAuthSessions holds the value of the pending_auth_sessions edge.
+	PendingAuthSessions []*PendingAuthSession `json:"pending_auth_sessions,omitempty"`
 	// AnnouncementReads holds the value of the announcement_reads edge.
 	AnnouncementReads []*AnnouncementRead `json:"announcement_reads,omitempty"`
 	// AllowedGroups holds the value of the allowed_groups edge.
 	AllowedGroups []*Group `json:"allowed_groups,omitempty"`
 	// UsageLogs holds the value of the usage_logs edge.
 	UsageLogs []*UsageLog `json:"usage_logs,omitempty"`
+	// PaymentOrders holds the value of the payment_orders edge.
+	PaymentOrders []*PaymentOrder `json:"payment_orders,omitempty"`
 	// AttributeValues holds the value of the attribute_values edge.
 	AttributeValues []*UserAttributeValue `json:"attribute_values,omitempty"`
 	// PromoCodeUsages holds the value of the promo_code_usages edge.
@@ -79,7 +101,7 @@ type UserEdges struct {
 	UserAllowedGroups []*UserAllowedGroup `json:"user_allowed_groups,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [10]bool
+	loadedTypes [13]bool
 }
 
 // APIKeysOrErr returns the APIKeys value or an error if the edge
@@ -118,10 +140,28 @@ func (e UserEdges) AssignedSubscriptionsOrErr() ([]*UserSubscription, error) {
 	return nil, &NotLoadedError{edge: "assigned_subscriptions"}
 }
 
+// AuthIdentitiesOrErr returns the AuthIdentities value or an error if the edge
+// was not loaded in eager-loading.
+func (e UserEdges) AuthIdentitiesOrErr() ([]*AuthIdentity, error) {
+	if e.loadedTypes[4] {
+		return e.AuthIdentities, nil
+	}
+	return nil, &NotLoadedError{edge: "auth_identities"}
+}
+
+// PendingAuthSessionsOrErr returns the PendingAuthSessions value or an error if the edge
+// was not loaded in eager-loading.
+func (e UserEdges) PendingAuthSessionsOrErr() ([]*PendingAuthSession, error) {
+	if e.loadedTypes[5] {
+		return e.PendingAuthSessions, nil
+	}
+	return nil, &NotLoadedError{edge: "pending_auth_sessions"}
+}
+
 // AnnouncementReadsOrErr returns the AnnouncementReads value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) AnnouncementReadsOrErr() ([]*AnnouncementRead, error) {
-	if e.loadedTypes[4] {
+	if e.loadedTypes[6] {
 		return e.AnnouncementReads, nil
 	}
 	return nil, &NotLoadedError{edge: "announcement_reads"}
@@ -130,7 +170,7 @@ func (e UserEdges) AnnouncementReadsOrErr() ([]*AnnouncementRead, error) {
 // AllowedGroupsOrErr returns the AllowedGroups value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) AllowedGroupsOrErr() ([]*Group, error) {
-	if e.loadedTypes[5] {
+	if e.loadedTypes[7] {
 		return e.AllowedGroups, nil
 	}
 	return nil, &NotLoadedError{edge: "allowed_groups"}
@@ -139,16 +179,25 @@ func (e UserEdges) AllowedGroupsOrErr() ([]*Group, error) {
 // UsageLogsOrErr returns the UsageLogs value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) UsageLogsOrErr() ([]*UsageLog, error) {
-	if e.loadedTypes[6] {
+	if e.loadedTypes[8] {
 		return e.UsageLogs, nil
 	}
 	return nil, &NotLoadedError{edge: "usage_logs"}
 }
 
+// PaymentOrdersOrErr returns the PaymentOrders value or an error if the edge
+// was not loaded in eager-loading.
+func (e UserEdges) PaymentOrdersOrErr() ([]*PaymentOrder, error) {
+	if e.loadedTypes[9] {
+		return e.PaymentOrders, nil
+	}
+	return nil, &NotLoadedError{edge: "payment_orders"}
+}
+
 // AttributeValuesOrErr returns the AttributeValues value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) AttributeValuesOrErr() ([]*UserAttributeValue, error) {
-	if e.loadedTypes[7] {
+	if e.loadedTypes[10] {
 		return e.AttributeValues, nil
 	}
 	return nil, &NotLoadedError{edge: "attribute_values"}
@@ -157,7 +206,7 @@ func (e UserEdges) AttributeValuesOrErr() ([]*UserAttributeValue, error) {
 // PromoCodeUsagesOrErr returns the PromoCodeUsages value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) PromoCodeUsagesOrErr() ([]*PromoCodeUsage, error) {
-	if e.loadedTypes[8] {
+	if e.loadedTypes[11] {
 		return e.PromoCodeUsages, nil
 	}
 	return nil, &NotLoadedError{edge: "promo_code_usages"}
@@ -166,7 +215,7 @@ func (e UserEdges) PromoCodeUsagesOrErr() ([]*PromoCodeUsage, error) {
 // UserAllowedGroupsOrErr returns the UserAllowedGroups value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) UserAllowedGroupsOrErr() ([]*UserAllowedGroup, error) {
-	if e.loadedTypes[9] {
+	if e.loadedTypes[12] {
 		return e.UserAllowedGroups, nil
 	}
 	return nil, &NotLoadedError{edge: "user_allowed_groups"}
@@ -177,15 +226,15 @@ func (*User) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case user.FieldTotpEnabled:
+		case user.FieldTotpEnabled, user.FieldBalanceNotifyEnabled:
 			values[i] = new(sql.NullBool)
-		case user.FieldBalance:
+		case user.FieldBalance, user.FieldBalanceNotifyThreshold, user.FieldTotalRecharged:
 			values[i] = new(sql.NullFloat64)
 		case user.FieldID, user.FieldConcurrency, user.FieldSoraStorageQuotaBytes, user.FieldSoraStorageUsedBytes:
 			values[i] = new(sql.NullInt64)
-		case user.FieldEmail, user.FieldPasswordHash, user.FieldRole, user.FieldStatus, user.FieldUsername, user.FieldNotes, user.FieldTotpSecretEncrypted:
+		case user.FieldEmail, user.FieldPasswordHash, user.FieldRole, user.FieldStatus, user.FieldUsername, user.FieldNotes, user.FieldTotpSecretEncrypted, user.FieldSignupSource, user.FieldBalanceNotifyThresholdType, user.FieldBalanceNotifyExtraEmails:
 			values[i] = new(sql.NullString)
-		case user.FieldCreatedAt, user.FieldUpdatedAt, user.FieldDeletedAt, user.FieldTotpEnabledAt:
+		case user.FieldCreatedAt, user.FieldUpdatedAt, user.FieldDeletedAt, user.FieldTotpEnabledAt, user.FieldLastLoginAt, user.FieldLastActiveAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -295,6 +344,57 @@ func (_m *User) assignValues(columns []string, values []any) error {
 				_m.TotpEnabledAt = new(time.Time)
 				*_m.TotpEnabledAt = value.Time
 			}
+		case user.FieldSignupSource:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field signup_source", values[i])
+			} else if value.Valid {
+				_m.SignupSource = value.String
+			}
+		case user.FieldLastLoginAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field last_login_at", values[i])
+			} else if value.Valid {
+				_m.LastLoginAt = new(time.Time)
+				*_m.LastLoginAt = value.Time
+			}
+		case user.FieldLastActiveAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field last_active_at", values[i])
+			} else if value.Valid {
+				_m.LastActiveAt = new(time.Time)
+				*_m.LastActiveAt = value.Time
+			}
+		case user.FieldBalanceNotifyEnabled:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field balance_notify_enabled", values[i])
+			} else if value.Valid {
+				_m.BalanceNotifyEnabled = value.Bool
+			}
+		case user.FieldBalanceNotifyThresholdType:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field balance_notify_threshold_type", values[i])
+			} else if value.Valid {
+				_m.BalanceNotifyThresholdType = value.String
+			}
+		case user.FieldBalanceNotifyThreshold:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field balance_notify_threshold", values[i])
+			} else if value.Valid {
+				_m.BalanceNotifyThreshold = new(float64)
+				*_m.BalanceNotifyThreshold = value.Float64
+			}
+		case user.FieldBalanceNotifyExtraEmails:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field balance_notify_extra_emails", values[i])
+			} else if value.Valid {
+				_m.BalanceNotifyExtraEmails = value.String
+			}
+		case user.FieldTotalRecharged:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field total_recharged", values[i])
+			} else if value.Valid {
+				_m.TotalRecharged = value.Float64
+			}
 		case user.FieldSoraStorageQuotaBytes:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field sora_storage_quota_bytes", values[i])
@@ -340,6 +440,16 @@ func (_m *User) QueryAssignedSubscriptions() *UserSubscriptionQuery {
 	return NewUserClient(_m.config).QueryAssignedSubscriptions(_m)
 }
 
+// QueryAuthIdentities queries the "auth_identities" edge of the User entity.
+func (_m *User) QueryAuthIdentities() *AuthIdentityQuery {
+	return NewUserClient(_m.config).QueryAuthIdentities(_m)
+}
+
+// QueryPendingAuthSessions queries the "pending_auth_sessions" edge of the User entity.
+func (_m *User) QueryPendingAuthSessions() *PendingAuthSessionQuery {
+	return NewUserClient(_m.config).QueryPendingAuthSessions(_m)
+}
+
 // QueryAnnouncementReads queries the "announcement_reads" edge of the User entity.
 func (_m *User) QueryAnnouncementReads() *AnnouncementReadQuery {
 	return NewUserClient(_m.config).QueryAnnouncementReads(_m)
@@ -353,6 +463,11 @@ func (_m *User) QueryAllowedGroups() *GroupQuery {
 // QueryUsageLogs queries the "usage_logs" edge of the User entity.
 func (_m *User) QueryUsageLogs() *UsageLogQuery {
 	return NewUserClient(_m.config).QueryUsageLogs(_m)
+}
+
+// QueryPaymentOrders queries the "payment_orders" edge of the User entity.
+func (_m *User) QueryPaymentOrders() *PaymentOrderQuery {
+	return NewUserClient(_m.config).QueryPaymentOrders(_m)
 }
 
 // QueryAttributeValues queries the "attribute_values" edge of the User entity.
@@ -440,6 +555,36 @@ func (_m *User) String() string {
 		builder.WriteString("totp_enabled_at=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("signup_source=")
+	builder.WriteString(_m.SignupSource)
+	builder.WriteString(", ")
+	if v := _m.LastLoginAt; v != nil {
+		builder.WriteString("last_login_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.LastActiveAt; v != nil {
+		builder.WriteString("last_active_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("balance_notify_enabled=")
+	builder.WriteString(fmt.Sprintf("%v", _m.BalanceNotifyEnabled))
+	builder.WriteString(", ")
+	builder.WriteString("balance_notify_threshold_type=")
+	builder.WriteString(_m.BalanceNotifyThresholdType)
+	builder.WriteString(", ")
+	if v := _m.BalanceNotifyThreshold; v != nil {
+		builder.WriteString("balance_notify_threshold=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("balance_notify_extra_emails=")
+	builder.WriteString(_m.BalanceNotifyExtraEmails)
+	builder.WriteString(", ")
+	builder.WriteString("total_recharged=")
+	builder.WriteString(fmt.Sprintf("%v", _m.TotalRecharged))
 	builder.WriteString(", ")
 	builder.WriteString("sora_storage_quota_bytes=")
 	builder.WriteString(fmt.Sprintf("%v", _m.SoraStorageQuotaBytes))

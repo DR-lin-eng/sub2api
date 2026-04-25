@@ -100,9 +100,21 @@ func valueOrZero(v *int64) int64 {
 	return *v
 }
 
+// AccountQuotaState holds the post-update quota state returned by usage billing.
+type AccountQuotaState struct {
+	TotalUsed   float64
+	TotalLimit  float64
+	DailyUsed   float64
+	DailyLimit  float64
+	WeeklyUsed  float64
+	WeeklyLimit float64
+}
+
 type UsageBillingApplyResult struct {
 	Applied              bool
 	APIKeyQuotaExhausted bool
+	NewBalance           *float64
+	QuotaState           *AccountQuotaState
 }
 
 type UsageBillingRepository interface {

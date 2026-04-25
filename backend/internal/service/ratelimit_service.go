@@ -23,6 +23,7 @@ type RateLimitService struct {
 	geminiQuotaService    *GeminiQuotaService
 	tempUnschedCache      TempUnschedCache
 	timeoutCounterCache   TimeoutCounterCache
+	openAI403CounterCache OpenAI403CounterCache
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
 	usageCacheMu          sync.RWMutex
@@ -67,6 +68,11 @@ func NewRateLimitService(accountRepo AccountRepository, usageRepo UsageLogReposi
 // SetTimeoutCounterCache 设置超时计数器缓存（可选依赖）
 func (s *RateLimitService) SetTimeoutCounterCache(cache TimeoutCounterCache) {
 	s.timeoutCounterCache = cache
+}
+
+// SetOpenAI403CounterCache 设置 OpenAI 403 计数缓存（可选依赖）
+func (s *RateLimitService) SetOpenAI403CounterCache(cache OpenAI403CounterCache) {
+	s.openAI403CounterCache = cache
 }
 
 // SetSettingService 设置系统设置服务（可选依赖）

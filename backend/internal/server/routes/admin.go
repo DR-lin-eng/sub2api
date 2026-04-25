@@ -408,6 +408,7 @@ func ExecutableAdminRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/settings/sora-s3/profiles/:profile_id/activate", Handler: h.Admin.Setting.SetActiveSoraS3ProfileGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "admin_auth"}},
 		)
 	}
+	out = append(out, executableAdminFeatureRoutes(h)...)
 	return out
 }
 
@@ -490,6 +491,9 @@ func RegisterAdminRoutes(
 
 		// 代理自动维护计划
 		registerProxyMaintenanceRoutes(admin, h)
+
+		// TLS 指纹 / 渠道 / 渠道监控补充能力
+		registerAdminFeatureRoutes(admin, h)
 	}
 }
 

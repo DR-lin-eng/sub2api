@@ -73,6 +73,12 @@ const (
 // LinuxDoConnectSyntheticEmailDomain 是 LinuxDo Connect 用户的合成邮箱后缀（RFC 保留域名）。
 const LinuxDoConnectSyntheticEmailDomain = "@linuxdo-connect.invalid"
 
+// OIDCConnectSyntheticEmailDomain 是 OIDC 用户的合成邮箱后缀（RFC 保留域名）。
+const OIDCConnectSyntheticEmailDomain = "@oidc-connect.invalid"
+
+// WeChatConnectSyntheticEmailDomain 是 WeChat Connect 用户的合成邮箱后缀（RFC 保留域名）。
+const WeChatConnectSyntheticEmailDomain = "@wechat-connect.invalid"
+
 // Setting keys
 const (
 	// 注册设置
@@ -214,7 +220,7 @@ const (
 	SettingKeySoraS3CDNURL          = "sora_s3_cdn_url"           // CDN 加速 URL（可选）
 	// SettingKeyTLSFingerprintProfiles stores JSON config for DB-backed TLS fingerprint settings.
 	SettingKeyTLSFingerprintProfiles = "tls_fingerprint_profiles"
-	SettingKeySoraS3Profiles        = "sora_s3_profiles"          // Sora S3 多配置（JSON）
+	SettingKeySoraS3Profiles         = "sora_s3_profiles" // Sora S3 多配置（JSON）
 
 	// =========================
 	// Sora 用户存储配额
@@ -236,13 +242,22 @@ const (
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
 
 	// 自动清理策略
-	SettingKeyAutoDelete401Accounts   = "auto_delete_401_accounts"
-	SettingKeyAutoDelete429Accounts   = "auto_delete_429_accounts"
+	SettingKeyAutoDelete401Accounts    = "auto_delete_401_accounts"
+	SettingKeyAutoDelete429Accounts    = "auto_delete_429_accounts"
 	SettingKeyAutoDeleteUselessProxies = "auto_delete_useless_proxies"
 
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
+
+	// 余额/配额通知
+	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"
+	SettingKeyBalanceLowNotifyThreshold   = "balance_low_notify_threshold"
+	SettingKeyBalanceLowNotifyRechargeURL = "balance_low_notify_recharge_url"
+	SettingKeyAccountQuotaNotifyEnabled   = "account_quota_notify_enabled"
+	SettingKeyAccountQuotaNotifyEmails    = "account_quota_notify_emails"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).
 const AdminAPIKeyPrefix = "admin-"
+
+const featureKeyWebSearchEmulation = "web_search_emulation"

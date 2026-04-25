@@ -77,6 +77,10 @@ var ProviderSet = wire.NewSet(
 	NewUserAttributeValueRepository,
 	NewUserGroupRateRepository,
 	NewErrorPassthroughRepository,
+	NewTLSFingerprintProfileRepository,
+	NewChannelRepository,
+	NewChannelMonitorRepository,
+	NewChannelMonitorRequestTemplateRepository,
 
 	// Cache implementations
 	NewGatewayCache,
@@ -84,9 +88,12 @@ var ProviderSet = wire.NewSet(
 	NewAPIKeyCache,
 	NewTempUnschedCache,
 	NewTimeoutCounterCache,
+	NewOpenAI403CounterCache,
+	NewInternal500CounterCache,
 	ProvideConcurrencyCache,
 	ProvideSessionLimitCache,
 	NewRPMCache,
+	NewUserRPMCache,
 	NewUserMsgQueueCache,
 	NewDashboardCache,
 	NewEmailCache,
@@ -101,6 +108,7 @@ var ProviderSet = wire.NewSet(
 	NewTotpCache,
 	NewRefreshTokenCache,
 	NewErrorPassthroughCache,
+	NewTLSFingerprintProfileCache,
 
 	// Encryptors
 	NewAESEncryptor,

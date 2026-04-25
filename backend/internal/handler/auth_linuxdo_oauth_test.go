@@ -41,7 +41,7 @@ func TestLinuxDoParseUserInfoParsesIDAndUsername(t *testing.T) {
 		UserInfoURL: "https://connect.linux.do/api/user",
 	}
 
-	email, username, subject, err := linuxDoParseUserInfo(`{"id":123,"username":"alice"}`, cfg)
+	email, username, subject, _, _, err := linuxDoParseUserInfo(`{"id":123,"username":"alice"}`, cfg)
 	require.NoError(t, err)
 	require.Equal(t, "123", subject)
 	require.Equal(t, "alice", username)
@@ -53,7 +53,7 @@ func TestLinuxDoParseUserInfoDefaultsUsername(t *testing.T) {
 		UserInfoURL: "https://connect.linux.do/api/user",
 	}
 
-	email, username, subject, err := linuxDoParseUserInfo(`{"id":"123"}`, cfg)
+	email, username, subject, _, _, err := linuxDoParseUserInfo(`{"id":"123"}`, cfg)
 	require.NoError(t, err)
 	require.Equal(t, "123", subject)
 	require.Equal(t, "linuxdo_123", username)
@@ -65,11 +65,11 @@ func TestLinuxDoParseUserInfoRejectsUnsafeSubject(t *testing.T) {
 		UserInfoURL: "https://connect.linux.do/api/user",
 	}
 
-	_, _, _, err := linuxDoParseUserInfo(`{"id":"123@456"}`, cfg)
+	_, _, _, _, _, err := linuxDoParseUserInfo(`{"id":"123@456"}`, cfg)
 	require.Error(t, err)
 
 	tooLong := strings.Repeat("a", linuxDoOAuthMaxSubjectLen+1)
-	_, _, _, err = linuxDoParseUserInfo(`{"id":"`+tooLong+`"}`, cfg)
+	_, _, _, _, _, err = linuxDoParseUserInfo(`{"id":"`+tooLong+`"}`, cfg)
 	require.Error(t, err)
 }
 

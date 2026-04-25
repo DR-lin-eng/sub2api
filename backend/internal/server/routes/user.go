@@ -75,6 +75,7 @@ func ExecutableUserRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/user/totp/disable", Handler: h.Totp.DisableGateway, Middleware: []string{"request_logger", "cors", "security_headers", "client_request_id", "jwt_auth", "backend_mode_user_guard"}},
 		)
 	}
+	out = append(out, executableUserFeatureRoutes(h)...)
 	return out
 }
 
@@ -160,5 +161,7 @@ func RegisterUserRoutes(
 			subscriptions.GET("/progress", h.Subscription.GetProgress)
 			subscriptions.GET("/summary", h.Subscription.GetSummary)
 		}
+
+		registerUserFeatureRoutes(authenticated, h)
 	}
 }
