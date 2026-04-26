@@ -96,6 +96,10 @@ func (g authJSONResponder) WriteJSON(status int, payload any) {
 	g.ctx.WriteJSON(status, payload)
 }
 
+func (h *AuthHandler) respondInvalidCredentials(c gatewayctx.GatewayContext) {
+	response.ErrorFromContext(authJSONResponder{ctx: c}, service.ErrInvalidCredentials)
+}
+
 // respondWithTokenPair 生成 Token 对并返回认证响应
 // 如果 Token 对生成失败，回退到只返回 Access Token（向后兼容）
 func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
@@ -213,6 +217,11 @@ func (h *AuthHandler) LoginGateway(c gatewayctx.GatewayContext) {
 	}
 	_ = token // token 由 authService.Login 返回但此处由 respondWithTokenPair 重新生成
 
+	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
+		h.respondInvalidCredentials(c)
+		return
+	}
+
 	// Check if TOTP 2FA is enabled for this user
 	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request().Context()) && user.TotpEnabled {
 		// Create a temporary login session for 2FA
@@ -227,12 +236,6 @@ func (h *AuthHandler) LoginGateway(c gatewayctx.GatewayContext) {
 			TempToken:       tempToken,
 			UserEmailMasked: service.MaskEmail(user.Email),
 		})
-		return
-	}
-
-	// Backend mode: only admin can login
-	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
-		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusForbidden, "Backend mode is active. Only admin login is allowed.")
 		return
 	}
 
@@ -287,6 +290,26 @@ func (h *AuthHandler) Login2FAGateway(c gatewayctx.GatewayContext) {
 		"user_id", session.UserID,
 		"email", session.Email)
 
+	// Get the user before verification so backend mode can fail closed without
+	// preserving a pending 2FA session for non-admin users.
+	user, err := h.userService.GetByID(c.Request().Context(), session.UserID)
+	if err != nil {
+		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
+		return
+	}
+
+	// Backend mode: non-admin 2FA sessions must be invalidated and respond the
+	// same as invalid credentials.
+	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
+		if err := h.totpService.DeleteLoginSession(c.Request().Context(), req.TempToken); err != nil {
+			slog.Debug("login_2fa_delete_session_failed",
+				"user_id", session.UserID,
+				"error", err)
+		}
+		h.respondInvalidCredentials(c)
+		return
+	}
+
 	// Verify the TOTP code
 	if err := h.totpService.VerifyCode(c.Request().Context(), session.UserID, req.TotpCode); err != nil {
 		slog.Debug("login_2fa_verify_failed",
@@ -296,20 +319,7 @@ func (h *AuthHandler) Login2FAGateway(c gatewayctx.GatewayContext) {
 		return
 	}
 
-	// Get the user (before session deletion so we can check backend mode)
-	user, err := h.userService.GetByID(c.Request().Context(), session.UserID)
-	if err != nil {
-		response.ErrorFromContext(authJSONResponder{ctx: c}, err)
-		return
-	}
-
-	// Backend mode: only admin can login (check BEFORE deleting session)
-	if h.settingSvc.IsBackendModeEnabled(c.Request().Context()) && !user.IsAdmin() {
-		response.ErrorContext(authJSONResponder{ctx: c}, http.StatusForbidden, "Backend mode is active. Only admin login is allowed.")
-		return
-	}
-
-	// Delete the login session (only after all checks pass)
+	// Delete the login session after all checks pass.
 	_ = h.totpService.DeleteLoginSession(c.Request().Context(), req.TempToken)
 
 	h.respondWithTokenPairGateway(c, user)

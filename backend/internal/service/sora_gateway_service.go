@@ -121,8 +121,8 @@ func (s *SoraGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 func (s *SoraGatewayService) ForwardContext(ctx context.Context, c gatewayctx.GatewayContext, account *Account, body []byte, clientStream bool) (*ForwardResult, error) {
 	startTime := time.Now()
 
-	// apikey 类型账号：HTTP 透传到上游，不走 SoraSDKClient
-	if account.Type == AccountTypeAPIKey && account.GetBaseURL() != "" {
+	// apikey 类型账号：始终要求显式 base_url，并走 HTTP 透传路径。
+	if account.Type == AccountTypeAPIKey {
 		if s.httpUpstream == nil {
 			s.writeSoraErrorContext(c, http.StatusInternalServerError, "api_error", "HTTP upstream client not configured", clientStream)
 			return nil, errors.New("httpUpstream not configured for sora apikey forwarding")

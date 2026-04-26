@@ -57,25 +57,27 @@ func TestWriteSSECommentAndData(t *testing.T) {
 	require.Equal(t, ":ping\n\ndata: hello\ndata: world\n\n", rec.Body.String())
 }
 
-func TestGinGatewayContextClientIP_PrefersForwardedHeaders(t *testing.T) {
+func TestGinGatewayContextClientIP_IgnoresSpoofedForwardedHeadersWhenUntrusted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx, engine := gin.CreateTestContext(httptest.NewRecorder())
+	require.NoError(t, engine.SetTrustedProxies(nil))
+
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.RemoteAddr = "10.0.0.8:54321"
+	req.RemoteAddr = "203.0.113.88:54321"
 	req.Header.Set("CF-Connecting-IP", "203.0.113.7")
 	req.Header.Set("X-Real-IP", "198.51.100.9")
 	req.Header.Set("X-Forwarded-For", "198.51.100.10, 10.0.0.8")
 	ctx.Request = req
 
-	require.Equal(t, "203.0.113.7", FromGin(ctx).ClientIP())
+	require.Equal(t, "203.0.113.88", FromGin(ctx).ClientIP())
 }
 
-func TestGinGatewayContextClientIP_UsesFirstPublicForwardedIP(t *testing.T) {
+func TestGinGatewayContextClientIP_UsesTrustedProxyChain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx, engine := gin.CreateTestContext(httptest.NewRecorder())
-	require.NoError(t, engine.SetTrustedProxies(nil))
+	require.NoError(t, engine.SetTrustedProxies([]string{"10.0.0.0/8"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.RemoteAddr = "10.0.0.8:54321"

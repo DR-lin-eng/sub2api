@@ -9,50 +9,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GetClientIP 从 Gin Context 中提取客户端真实 IP 地址。
-// 按以下优先级检查 Header：
-// 1. CF-Connecting-IP (Cloudflare)
-// 2. X-Real-IP (Nginx)
-// 3. X-Forwarded-For (取第一个非私有 IP)
-// 4. c.ClientIP() (Gin 内置方法)
+// GetClientIP 从 Gin Context 中提取可信客户端 IP。
+// 该值依赖 Gin / GatewayContext 已配置的可信代理链，不直接信任原始转发头。
 func GetClientIP(c *gin.Context) string {
 	return GetClientIPContext(gatewayctx.FromGin(c))
 }
 
-// GetClientIPContext 从 GatewayContext 中提取客户端真实 IP 地址。
-// 语义与 GetClientIP 保持一致。
+// GetClientIPContext 从 GatewayContext 中提取可信客户端 IP。
 func GetClientIPContext(c gatewayctx.GatewayContext) string {
-	if c == nil {
-		return ""
-	}
-
-	// 1. Cloudflare
-	if ip := c.HeaderValue("CF-Connecting-IP"); ip != "" {
-		return normalizeIP(ip)
-	}
-
-	// 2. Nginx X-Real-IP
-	if ip := c.HeaderValue("X-Real-IP"); ip != "" {
-		return normalizeIP(ip)
-	}
-
-	// 3. X-Forwarded-For (多个 IP 时取第一个公网 IP)
-	if xff := c.HeaderValue("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		for _, ip := range ips {
-			ip = strings.TrimSpace(ip)
-			if ip != "" && !isPrivateIP(ip) {
-				return normalizeIP(ip)
-			}
-		}
-		// 如果都是私有 IP，返回第一个
-		if len(ips) > 0 {
-			return normalizeIP(strings.TrimSpace(ips[0]))
-		}
-	}
-
-	// 4. Context 内置方法
-	return normalizeIP(c.ClientIP())
+	return GetTrustedClientIPContext(c)
 }
 
 // GetTrustedClientIP 从 Gin 的可信代理解析链提取客户端 IP。

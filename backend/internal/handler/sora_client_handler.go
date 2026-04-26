@@ -973,9 +973,9 @@ func (h *SoraClientHandler) fetchUpstreamModels(ctx context.Context) ([]service.
 		return nil, fmt.Errorf("账号缺少 api_key")
 	}
 
-	baseURL := account.GetBaseURL()
-	if baseURL == "" {
-		return nil, fmt.Errorf("账号缺少 base_url")
+	baseURL, err := service.NormalizeSoraAPIKeyBaseURL(account.GetCredential("base_url"))
+	if err != nil {
+		return nil, fmt.Errorf("账号 base_url 无效: %w", err)
 	}
 
 	// 构建上游模型列表请求

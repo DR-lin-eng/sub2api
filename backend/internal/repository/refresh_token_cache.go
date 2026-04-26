@@ -12,6 +12,7 @@ import (
 
 const (
 	refreshTokenKeyPrefix   = "refresh_token:"
+	refreshTokenUsedPrefix  = "refresh_token_used:"
 	userRefreshTokensPrefix = "user_refresh_tokens:"
 	tokenFamilyPrefix       = "token_family:"
 )
@@ -24,6 +25,10 @@ func refreshTokenKey(tokenHash string) string {
 // userRefreshTokensKey generates the Redis key for user's token set.
 func userRefreshTokensKey(userID int64) string {
 	return fmt.Sprintf("%s%d", userRefreshTokensPrefix, userID)
+}
+
+func refreshTokenUsedKey(tokenHash string) string {
+	return refreshTokenUsedPrefix + tokenHash
 }
 
 // tokenFamilyKey generates the Redis key for token family set.
@@ -65,9 +70,40 @@ func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash strin
 	return &data, nil
 }
 
+func (c *refreshTokenCache) StoreConsumedRefreshTokenFamily(ctx context.Context, tokenHash string, familyID string, ttl time.Duration) error {
+	if ttl <= 0 {
+		return nil
+	}
+	return c.rdb.Set(ctx, refreshTokenUsedKey(tokenHash), familyID, ttl).Err()
+}
+
+func (c *refreshTokenCache) GetConsumedRefreshTokenFamily(ctx context.Context, tokenHash string) (string, bool, error) {
+	familyID, err := c.rdb.Get(ctx, refreshTokenUsedKey(tokenHash)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return familyID, true, nil
+}
+
 func (c *refreshTokenCache) DeleteRefreshToken(ctx context.Context, tokenHash string) error {
-	key := refreshTokenKey(tokenHash)
-	return c.rdb.Del(ctx, key).Err()
+	var data *service.RefreshTokenData
+	if stored, err := c.GetRefreshToken(ctx, tokenHash); err == nil {
+		data = stored
+	} else if err != nil && err != service.ErrRefreshTokenNotFound {
+		return err
+	}
+
+	pipe := c.rdb.Pipeline()
+	pipe.Del(ctx, refreshTokenKey(tokenHash))
+	if data != nil {
+		pipe.SRem(ctx, userRefreshTokensKey(data.UserID), tokenHash)
+		pipe.SRem(ctx, tokenFamilyKey(data.FamilyID), tokenHash)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID int64) error {
@@ -81,18 +117,16 @@ func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID 
 		return nil
 	}
 
-	// Build keys to delete
-	keys := make([]string, 0, len(tokenHashes)+1)
-	for _, hash := range tokenHashes {
-		keys = append(keys, refreshTokenKey(hash))
-	}
-	keys = append(keys, userRefreshTokensKey(userID))
-
-	// Delete all keys in a pipeline
 	pipe := c.rdb.Pipeline()
-	for _, key := range keys {
-		pipe.Del(ctx, key)
+	for _, hash := range tokenHashes {
+		pipe.Del(ctx, refreshTokenKey(hash))
+		if data, dataErr := c.GetRefreshToken(ctx, hash); dataErr == nil && data != nil {
+			pipe.SRem(ctx, tokenFamilyKey(data.FamilyID), hash)
+		} else if dataErr != nil && dataErr != service.ErrRefreshTokenNotFound {
+			return fmt.Errorf("get refresh token %s: %w", hash, dataErr)
+		}
 	}
+	pipe.Del(ctx, userRefreshTokensKey(userID))
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -108,18 +142,16 @@ func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID stri
 		return nil
 	}
 
-	// Build keys to delete
-	keys := make([]string, 0, len(tokenHashes)+1)
-	for _, hash := range tokenHashes {
-		keys = append(keys, refreshTokenKey(hash))
-	}
-	keys = append(keys, tokenFamilyKey(familyID))
-
-	// Delete all keys in a pipeline
 	pipe := c.rdb.Pipeline()
-	for _, key := range keys {
-		pipe.Del(ctx, key)
+	for _, hash := range tokenHashes {
+		pipe.Del(ctx, refreshTokenKey(hash))
+		if data, dataErr := c.GetRefreshToken(ctx, hash); dataErr == nil && data != nil {
+			pipe.SRem(ctx, userRefreshTokensKey(data.UserID), hash)
+		} else if dataErr != nil && dataErr != service.ErrRefreshTokenNotFound {
+			return fmt.Errorf("get refresh token %s: %w", hash, dataErr)
+		}
 	}
+	pipe.Del(ctx, tokenFamilyKey(familyID))
 	_, err = pipe.Exec(ctx)
 	return err
 }

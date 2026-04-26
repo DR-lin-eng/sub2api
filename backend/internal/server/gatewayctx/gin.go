@@ -72,9 +72,6 @@ func (c *ginGatewayContext) ClientIP() string {
 	if c == nil || c.gin == nil {
 		return ""
 	}
-	if ip := forwardedClientIPFromRequest(c.gin.Request); ip != "" {
-		return ip
-	}
 	return normalizeForwardedClientIP(c.gin.ClientIP())
 }
 

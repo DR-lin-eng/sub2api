@@ -1587,13 +1587,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	// Sora apikey 账号的 base_url 必填校验
 	if input.Platform == PlatformSora && input.Type == AccountTypeAPIKey {
 		baseURL, _ := input.Credentials["base_url"].(string)
-		baseURL = strings.TrimSpace(baseURL)
-		if baseURL == "" {
-			return nil, errors.New("sora apikey 账号必须设置 base_url")
+		normalizedBaseURL, err := NormalizeSoraAPIKeyBaseURL(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("sora apikey 账号 base_url 无效: %w", err)
 		}
-		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-			return nil, errors.New("base_url 必须以 http:// 或 https:// 开头")
+		if input.Credentials == nil {
+			input.Credentials = map[string]any{}
 		}
+		input.Credentials["base_url"] = normalizedBaseURL
 	}
 
 	account := &Account{
@@ -1759,13 +1760,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// Sora apikey 账号的 base_url 必填校验
 	if account.Platform == PlatformSora && account.Type == AccountTypeAPIKey {
 		baseURL, _ := account.Credentials["base_url"].(string)
-		baseURL = strings.TrimSpace(baseURL)
-		if baseURL == "" {
-			return nil, errors.New("sora apikey 账号必须设置 base_url")
+		normalizedBaseURL, err := NormalizeSoraAPIKeyBaseURL(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("sora apikey 账号 base_url 无效: %w", err)
 		}
-		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-			return nil, errors.New("base_url 必须以 http:// 或 https:// 开头")
+		if account.Credentials == nil {
+			account.Credentials = map[string]any{}
 		}
+		account.Credentials["base_url"] = normalizedBaseURL
 	}
 
 	// 先验证分组是否存在（在任何写操作之前）

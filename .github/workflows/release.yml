@@ -263,11 +263,21 @@ jobs:
         run: |
           echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve GoReleaser config
+        id: goreleaser_config
+        shell: bash
+        run: |
+          if [ "${{ env.SIMPLE_RELEASE }}" = "true" ]; then
+            echo "config=.goreleaser.simple.yaml" >> "$GITHUB_OUTPUT"
+          else
+            echo "config=.goreleaser.yaml" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
-          args: release --clean --skip=validate ${{ env.SIMPLE_RELEASE == 'true' && '--config=.goreleaser.simple.yaml' || '' }}
+          args: release --clean --skip=validate --config=${{ steps.goreleaser_config.outputs.config }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_MESSAGE: ${{ steps.tag_message.outputs.message }}

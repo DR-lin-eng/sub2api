@@ -16,7 +16,7 @@ import (
 )
 
 // forwardToUpstream 将请求 HTTP 透传到上游 Sora 服务（用于 apikey 类型账号）。
-// 上游地址为 account.GetBaseURL() + "/sora/v1/chat/completions"，
+// 上游地址为显式配置的 base_url + "/sora/v1/chat/completions"，
 // 使用 account.GetCredential("api_key") 作为 Bearer Token。
 // 支持流式和非流式响应的直接透传。
 func (s *SoraGatewayService) forwardToUpstream(
@@ -44,15 +44,10 @@ func (s *SoraGatewayService) forwardToUpstreamContext(
 		return nil, fmt.Errorf("sora apikey account %d missing api_key", account.ID)
 	}
 
-	baseURL := account.GetBaseURL()
-	if baseURL == "" {
-		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Sora apikey account missing base_url", clientStream)
-		return nil, fmt.Errorf("sora apikey account %d missing base_url", account.ID)
-	}
-	// 校验 scheme 合法性（仅允许 http/https）
-	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Sora apikey base_url must start with http:// or https://", clientStream)
-		return nil, fmt.Errorf("sora apikey account %d invalid base_url scheme: %s", account.ID, baseURL)
+	baseURL, err := NormalizeSoraAPIKeyBaseURL(account.GetCredential("base_url"))
+	if err != nil {
+		s.writeSoraErrorContext(c, http.StatusBadGateway, "upstream_error", "Invalid Sora apikey base_url", clientStream)
+		return nil, fmt.Errorf("sora apikey account %d invalid base_url: %w", account.ID, err)
 	}
 	upstreamURL := strings.TrimRight(baseURL, "/") + "/sora/v1/chat/completions"
 

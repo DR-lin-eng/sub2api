@@ -30,6 +30,12 @@ func (r *stubJWTUserRepo) GetByID(_ context.Context, id int64) (*service.User, e
 	return u, nil
 }
 
+func (r *stubJWTUserRepo) Update(_ context.Context, user *service.User) error {
+	clone := *user
+	r.users[user.ID] = &clone
+	return nil
+}
+
 // newJWTTestEnv 创建 JWT 认证中间件测试环境。
 // 返回 gin.Engine（已注册 JWT 中间件）和 AuthService（用于生成 Token）。
 func newJWTTestEnv(users map[int64]*service.User) (*gin.Engine, *service.AuthService) {
@@ -243,6 +249,31 @@ func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
 
 	token, err := authSvc.GenerateToken(userForToken)
 	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	var body ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "TOKEN_REVOKED", body.Code)
+}
+
+func TestJWTAuth_RevokeAllUserSessionsRevokesExistingAccessToken(t *testing.T) {
+	user := &service.User{
+		ID:           1,
+		Email:        "test@example.com",
+		Role:         "user",
+		Status:       service.StatusActive,
+		TokenVersion: 1,
+	}
+	router, authSvc := newJWTTestEnv(map[int64]*service.User{1: user})
+
+	token, err := authSvc.GenerateToken(user)
+	require.NoError(t, err)
+	require.NoError(t, authSvc.RevokeAllUserSessions(context.Background(), user.ID))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)

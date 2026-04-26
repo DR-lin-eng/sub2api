@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -95,9 +94,6 @@ func (c *nativeGatewayContext) ClientIP() string {
 	if c == nil {
 		return ""
 	}
-	if ip := forwardedClientIPFromRequest(c.req); ip != "" {
-		return ip
-	}
 	if c.clientIP != "" {
 		return normalizeForwardedClientIP(c.clientIP)
 	}
@@ -105,43 +101,6 @@ func (c *nativeGatewayContext) ClientIP() string {
 		return ""
 	}
 	return normalizeForwardedClientIP(c.req.RemoteAddr)
-}
-
-func forwardedClientIPFromRequest(req *http.Request) string {
-	if req == nil {
-		return ""
-	}
-	if ip := strings.TrimSpace(req.Header.Get("CF-Connecting-IP")); ip != "" {
-		return normalizeForwardedClientIP(ip)
-	}
-	if ip := strings.TrimSpace(req.Header.Get("X-Real-IP")); ip != "" {
-		return normalizeForwardedClientIP(ip)
-	}
-	if xff := strings.TrimSpace(req.Header.Get("X-Forwarded-For")); xff != "" {
-		return pickForwardedClientIP(xff)
-	}
-	return ""
-}
-
-func pickForwardedClientIP(xff string) string {
-	parts := strings.Split(xff, ",")
-	if len(parts) == 0 {
-		return ""
-	}
-	first := ""
-	for _, part := range parts {
-		ip := normalizeForwardedClientIP(part)
-		if ip == "" {
-			continue
-		}
-		if first == "" {
-			first = ip
-		}
-		if !isPrivateForwardedClientIP(ip) {
-			return ip
-		}
-	}
-	return first
 }
 
 func normalizeForwardedClientIP(raw string) string {
@@ -155,15 +114,6 @@ func normalizeForwardedClientIP(raw string) string {
 	ip = strings.TrimPrefix(ip, "[")
 	ip = strings.TrimSuffix(ip, "]")
 	return strings.TrimSpace(ip)
-}
-
-func isPrivateForwardedClientIP(raw string) bool {
-	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
-	if err != nil || !addr.IsValid() {
-		return false
-	}
-	addr = addr.Unmap()
-	return addr.IsPrivate() || addr.IsLoopback()
 }
 
 func (c *nativeGatewayContext) Method() string {

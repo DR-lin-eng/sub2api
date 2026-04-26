@@ -259,19 +259,19 @@ func runCoordinatorProcess(cfg *config.Config, buildInfo handler.BuildInfo) erro
 	log.Printf("Coordinator ready: pid=%d", os.Getpid())
 
 	sigCh := make(chan os.Signal, 8)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1)
+	signal.Notify(sigCh, coordinatorProcessSignals()...)
 	defer signal.Stop(sigCh)
 
 	for {
 		sig := <-sigCh
-		switch sig {
-		case syscall.SIGUSR1:
+		switch {
+		case isLogReopenSignal(sig):
 			if cfg.Process.LogReopenSignalEnabled {
 				if err := reopenLoggerFromConfig(); err != nil {
 					log.Printf("Coordinator log reopen failed: %v", err)
 				}
 			}
-		case syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT:
+		case sig == syscall.SIGINT, sig == syscall.SIGTERM, sig == syscall.SIGQUIT:
 			log.Printf("Coordinator exiting on %s", sig.String())
 			return nil
 		}

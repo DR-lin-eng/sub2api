@@ -39,8 +39,16 @@ type RefreshTokenCache interface {
 	// 返回 (nil, err) 如果发生其他错误
 	GetRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenData, error)
 
+	// StoreConsumedRefreshTokenFamily 标记一个已消费（已轮转）的 Refresh Token。
+	// tokenHash 为旧 token 的哈希，familyID 用于后续复用检测时撤销整族会话。
+	StoreConsumedRefreshTokenFamily(ctx context.Context, tokenHash string, familyID string, ttl time.Duration) error
+
+	// GetConsumedRefreshTokenFamily 查询已消费 token 对应的 familyID。
+	// 返回 (familyID, true, nil) 表示该 token 曾被成功消费，后续再使用属于复用攻击。
+	GetConsumedRefreshTokenFamily(ctx context.Context, tokenHash string) (string, bool, error)
+
 	// DeleteRefreshToken 删除单个Refresh Token
-	// 用于Token轮转时使旧Token失效
+	// 同时清理该 token 在用户/家族活跃集合中的成员关系。
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
 
 	// DeleteUserRefreshTokens 删除用户的所有Refresh Token

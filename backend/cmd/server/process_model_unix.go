@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +21,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	rustffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
-	"golang.org/x/sys/unix"
 )
 
 type managedWorker struct {
@@ -584,17 +582,14 @@ func signalChildReady() error {
 	return nil
 }
 
+func coordinatorProcessSignals() []os.Signal {
+	return []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1}
+}
+
+func isLogReopenSignal(sig os.Signal) bool {
+	return sig == syscall.SIGUSR1
+}
+
 func applyWorkerCPUAffinity(workerIndex int) error {
-	if runtime.GOOS != "linux" {
-		return nil
-	}
-	cpus := runtime.NumCPU()
-	if cpus <= 0 {
-		return nil
-	}
-	targetCPU := workerIndex % cpus
-	var set unix.CPUSet
-	set.Zero()
-	set.Set(targetCPU)
-	return unix.SchedSetaffinity(0, &set)
+	return applyWorkerCPUAffinityPlatform(workerIndex)
 }
