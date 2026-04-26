@@ -327,7 +327,34 @@ func ParseOpenAISSEBodySummary(body []byte) OpenAISSEBodySummary {
 		}
 	}
 	recordMetric(ffiMetricSSEBodySummary, false)
-	return OpenAISSEBodySummary{}
+
+	var summary OpenAISSEBodySummary
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		envelope := ParseOpenAIWSEventEnvelope([]byte(payload))
+		if envelope.ResponseRaw != "" {
+			summary.FinalResponseRaw = envelope.ResponseRaw
+			summary.HasFinalResponse = true
+		}
+		if IsOpenAIWSTerminalEvent(envelope.EventType) {
+			summary.TerminalEventType = envelope.EventType
+			summary.TerminalPayload = payload
+			summary.HasTerminalEvent = true
+			usage := ParseOpenAIWSUsageFields([]byte(payload))
+			summary.InputTokens = usage.InputTokens
+			summary.OutputTokens = usage.OutputTokens
+			summary.CachedInputTokens = usage.CachedInputTokens
+		}
+	}
+	return summary
 }
 
 func BuildSSEDataFrame(message []byte) ([]byte, bool) {

@@ -153,6 +153,7 @@ func (c *ginGatewayContext) SetStatus(status int) {
 		return
 	}
 	c.gin.Status(status)
+	c.gin.Writer.WriteHeaderNow()
 }
 
 func (c *ginGatewayContext) SetCookie(cookie *http.Cookie) {

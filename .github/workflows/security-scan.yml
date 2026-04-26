@@ -21,9 +21,6 @@ jobs:
           go-version-file: backend/go.mod
           check-latest: false
           cache-dependency-path: backend/go.sum
-      - name: Verify Go version
-        run: |
-          go version | grep -q 'go1.26.1'
       - name: Run govulncheck
         working-directory: backend
         run: |

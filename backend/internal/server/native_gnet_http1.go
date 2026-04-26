@@ -415,6 +415,12 @@ func (w *gnetHTTPResponseWriter) Written() bool {
 	return w.wroteHead
 }
 
+func (w *gnetHTTPResponseWriter) StatusCode() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.statusCode
+}
+
 func (w *gnetHTTPResponseWriter) Size() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -564,6 +570,10 @@ func (w *detachedHTTPResponseWriter) Header() http.Header {
 
 func (w *detachedHTTPResponseWriter) Written() bool {
 	return w.wroteHead
+}
+
+func (w *detachedHTTPResponseWriter) StatusCode() int {
+	return w.statusCode
 }
 
 func (w *detachedHTTPResponseWriter) Size() int {

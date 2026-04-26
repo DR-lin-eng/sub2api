@@ -184,6 +184,18 @@ func applyExecutableMiddlewares(runtimeCfg *executableRuntimeConfig, c gatewayct
 		corsCfg = sermiddleware.PrepareCORSRuntimeConfig(config.CORSConfig{})
 		cspCfg = config.CSPConfig{Enabled: true, Policy: config.DefaultCSPPolicy}
 	}
+	allowAuthRateLimit := func(key string, limit int, window time.Duration) bool {
+		if runtimeCfg == nil || runtimeCfg.redisClient == nil {
+			return true
+		}
+		return appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(
+			c,
+			key,
+			limit,
+			window,
+			appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose},
+		)
+	}
 
 	for _, tag := range tags {
 		switch tag {
@@ -244,91 +256,91 @@ func applyExecutableMiddlewares(runtimeCfg *executableRuntimeConfig, c gatewayct
 				return false
 			}
 		case middlewareTagRLAuthRegister:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-register", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("auth-register", 5, time.Minute) {
 				return false
 			}
 		case middlewareTagRLAuthLogin:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("auth-login", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLAuthLogin2FA:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-login-2fa", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("auth-login-2fa", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLSendVerify:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "auth-send-verify-code", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("auth-send-verify-code", 5, time.Minute) {
 				return false
 			}
 		case middlewareTagRLRefresh:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "refresh-token", 30, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("refresh-token", 30, time.Minute) {
 				return false
 			}
 		case middlewareTagRLPromo:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "validate-promo", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("validate-promo", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLInvite:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "validate-invitation", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("validate-invitation", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLForgot:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "forgot-password", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("forgot-password", 5, time.Minute) {
 				return false
 			}
 		case middlewareTagRLReset:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "reset-password", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("reset-password", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLLinuxDoFinish:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-linuxdo-complete", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthPendingExchange:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-exchange", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-pending-exchange", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthPendingSendVerify:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-send-verify-code", 5, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-pending-send-verify-code", 5, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthPendingCreateAcct:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-pending-create-account", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthPendingBindLogin:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-pending-bind-login", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-pending-bind-login", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthLinuxDoBindLogin:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-linuxdo-bind-login", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthLinuxDoCreateAcct:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-linuxdo-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-linuxdo-create-account", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthWeChatComplete:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-wechat-complete", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthWeChatBindLogin:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-wechat-bind-login", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthWeChatCreateAcct:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-wechat-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-wechat-create-account", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthOIDCComplete:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-complete", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-oidc-complete", 10, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthOIDCBindLogin:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-bind-login", 20, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-oidc-bind-login", 20, time.Minute) {
 				return false
 			}
 		case middlewareTagRLOAuthOIDCCreateAcct:
-			if runtimeCfg == nil || !appmiddleware.NewRateLimiter(runtimeCfg.redisClient).AllowContext(c, "oauth-oidc-create-account", 10, time.Minute, appmiddleware.RateLimitOptions{FailureMode: appmiddleware.RateLimitFailClose}) {
+			if !allowAuthRateLimit("oauth-oidc-create-account", 10, time.Minute) {
 				return false
 			}
 		}

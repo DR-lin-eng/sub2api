@@ -839,6 +839,9 @@ func (s *SettingService) IsRegistrationEnabled(ctx context.Context) bool {
 // IsBackendModeEnabled checks if backend mode is enabled
 // Uses in-process atomic.Value cache with 60s TTL, zero-lock hot path
 func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
+	if s == nil || s.settingRepo == nil {
+		return false
+	}
 	if cached, ok := backendModeCache.Load().(*cachedBackendMode); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return cached.value

@@ -6,12 +6,17 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to release (e.g., v1.0.0)'
-        required: true
-        type: string
+      version_bump:
+        description: 'How to compute the next version from the latest v* tag'
+        required: false
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
       simple_release:
-        description: 'Simple release: only x86_64 GHCR image, skip other artifacts'
+        description: 'Simple release: GHCR only, skip archives and Docker Hub metadata steps'
         required: false
         type: boolean
         default: false
@@ -26,11 +31,99 @@ permissions:
   packages: write
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+      target_sha: ${{ steps.meta.outputs.target_sha }}
+      create_local_tag: ${{ steps.meta.outputs.create_local_tag }}
+      tag_message: ${{ steps.meta.outputs.tag_message }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bump_tag() {
+            local tag="$1"
+            local bump="$2"
+            local version="${tag#v}"
+            local major minor patch
+            IFS='.' read -r major minor patch <<<"$version"
+            case "$bump" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+              *)
+                echo "Unsupported version bump: $bump" >&2
+                exit 1
+                ;;
+            esac
+            printf 'v%d.%d.%d' "$major" "$minor" "$patch"
+          }
+
+          create_local_tag=false
+          target_sha="${GITHUB_SHA}"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            release_tag="${GITHUB_REF#refs/tags/}"
+            target_sha="$(git rev-list -n 1 "$release_tag")"
+            tag_message="$(git tag -l --format='%(contents:body)' "$release_tag")"
+          else
+            latest_tag="$(git tag -l --sort=-version:refname 'v*' | head -n 1)"
+            if [ -z "$latest_tag" ]; then
+              latest_tag="v0.1.0"
+            fi
+            release_tag="$(bump_tag "$latest_tag" "${{ github.event.inputs.version_bump || 'patch' }}")"
+
+            if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+              target_sha="$(git rev-list -n 1 "$release_tag")"
+              tag_message="$(git tag -l --format='%(contents:body)' "$release_tag")"
+            else
+              create_local_tag=true
+              tag_message="Release ${release_tag}"
+            fi
+          fi
+
+          release_version="${release_tag#v}"
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "release_version=${release_version}"
+            echo "target_sha=${target_sha}"
+            echo "create_local_tag=${create_local_tag}"
+            echo "tag_message<<EOF"
+            echo "$tag_message"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
   build-frontend:
+    needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -60,25 +153,32 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [build-frontend]
+    needs: [prepare-release, build-frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
 
       - name: Write release VERSION file
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
+          VERSION='${{ needs.prepare-release.outputs.release_version }}'
           echo "$VERSION" > backend/cmd/server/VERSION
           echo "Release VERSION file set to: $VERSION"
+
+      - name: Create local annotated release tag
+        if: ${{ needs.prepare-release.outputs.create_local_tag == 'true' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a '${{ needs.prepare-release.outputs.release_tag }}' '${{ needs.prepare-release.outputs.target_sha }}' -m '${{ needs.prepare-release.outputs.tag_message }}'
+
+      - name: Push generated release tag
+        if: ${{ needs.prepare-release.outputs.create_local_tag == 'true' }}
+        run: git push origin refs/tags/${{ needs.prepare-release.outputs.release_tag }}
 
       - name: Download frontend artifact
         uses: actions/download-artifact@v8
@@ -113,10 +213,6 @@ jobs:
           check-latest: false
           cache-dependency-path: backend/go.sum
 
-      - name: Verify Go version
-        run: |
-          go version | grep -q 'go1.26.1'
-
       # Docker setup for GoReleaser
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -140,19 +236,11 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fetch tags with annotations
-        run: |
-          # 确保获取完整的 annotated tag 信息
-          git fetch --tags --force
-
       - name: Get tag message
         id: tag_message
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME=${{ github.event.inputs.tag }}
-          else
-            TAG_NAME=${GITHUB_REF#refs/tags/}
-          fi
+          git fetch --tags --force
+          TAG_NAME='${{ needs.prepare-release.outputs.release_tag }}'
           echo "Processing tag: $TAG_NAME"
 
           # 获取完整的 tag message（跳过第一行标题）
@@ -164,13 +252,16 @@ jobs:
           echo "$TAG_MESSAGE" | head -10
 
           # 使用 EOF 分隔符处理多行内容
-          echo "message<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "message<<EOF"
+            echo "$TAG_MESSAGE"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set lowercase owner for GHCR
         id: lowercase
-        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+        run: |
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
@@ -213,18 +304,19 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME=${{ github.event.inputs.tag }}
-          else
-            TAG_NAME=${GITHUB_REF#refs/tags/}
-          fi
+          TAG_NAME='${{ needs.prepare-release.outputs.release_tag }}'
           VERSION=${TAG_NAME#v}
           REPO="${{ github.repository }}"
           GHCR_IMAGE="ghcr.io/${REPO,,}"  # ${,,} converts to lowercase
 
           # 获取 tag message 内容并转义 Markdown 特殊字符
           TAG_MESSAGE='${{ steps.tag_message.outputs.message }}'
-          TAG_MESSAGE=$(echo "$TAG_MESSAGE" | sed 's/\([_*`\[]\)/\\\1/g')
+          backtick='`'
+          TAG_MESSAGE=${TAG_MESSAGE//\\/\\\\}
+          TAG_MESSAGE=${TAG_MESSAGE//_/\\_}
+          TAG_MESSAGE=${TAG_MESSAGE//\*/\\*}
+          TAG_MESSAGE=${TAG_MESSAGE//${backtick}/\\${backtick}}
+          TAG_MESSAGE=${TAG_MESSAGE//\[/\\[}
 
           # 限制消息长度（Telegram 消息限制 4096 字符，预留空间给头尾固定内容）
           if [ ${#TAG_MESSAGE} -gt 3500 ]; then
@@ -273,7 +365,7 @@ jobs:
               }')"
 
   sync-version-file:
-    needs: [release]
+    needs: [prepare-release, release]
     if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -284,12 +376,7 @@ jobs:
 
       - name: Sync VERSION file to released tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION=${{ github.event.inputs.tag }}
-            VERSION=${VERSION#v}
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
+          VERSION='${{ needs.prepare-release.outputs.release_version }}'
 
           CURRENT_VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION || true)
           if [ "$CURRENT_VERSION" = "$VERSION" ]; then

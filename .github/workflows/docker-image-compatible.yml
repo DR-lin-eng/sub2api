@@ -20,7 +20,7 @@ on:
       platforms:
         description: 'Comma-separated target platforms'
         required: false
-        default: 'linux/amd64'
+        default: 'linux/amd64,linux/arm64'
         type: string
 
 permissions:
@@ -60,12 +60,14 @@ jobs:
             TAGS="${TAGS}"$'\n'"${IMAGE_NAME}:compat-latest"
           fi
 
-          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
-          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$TAGS" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_name=${IMAGE_NAME}"
+            echo "image_tag=${IMAGE_TAG}"
+            echo "registry=${REGISTRY}"
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Resolve build timestamp
         id: build_time
@@ -100,7 +102,7 @@ jobs:
           context: .
           file: Dockerfile.compat
           push: true
-          platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
           tags: ${{ steps.image.outputs.tags }}
           build-args: |
             VERSION=${{ steps.image.outputs.image_tag }}

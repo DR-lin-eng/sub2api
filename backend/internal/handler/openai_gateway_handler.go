@@ -788,9 +788,8 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcomeContext(c gatewayctx
 	}
 
 	var (
-		ctx    = context.Background()
-		path   string
-		status int
+		ctx  = context.Background()
+		path string
 	)
 	if c != nil {
 		if req := c.Request(); req != nil {
@@ -799,17 +798,10 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcomeContext(c gatewayctx
 				path = strings.TrimSpace(req.URL.Path)
 			}
 		}
+	}
+	status := responseStatusFromGatewayContext(c)
+	if status <= 0 {
 		status = http.StatusOK
-		if c.ResponseWritten() {
-			if raw, ok := c.Value(service.OpsUpstreamStatusCodeKey); ok {
-				switch typed := raw.(type) {
-				case int:
-					status = typed
-				case int64:
-					status = int(typed)
-				}
-			}
-		}
 	}
 
 	outcome := "failed"
@@ -845,9 +837,9 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcomeContext(c gatewayctx
 				fields = append(fields, zap.Int64("account_id", accountID))
 			}
 		}
-		if upstreamRequestID := strings.TrimSpace(c.HeaderValue("x-request-id")); upstreamRequestID != "" {
+		if upstreamRequestID := responseHeaderValue(c, "x-request-id"); upstreamRequestID != "" {
 			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-		} else if upstreamRequestID := strings.TrimSpace(c.HeaderValue("X-Request-Id")); upstreamRequestID != "" {
+		} else if upstreamRequestID := responseHeaderValue(c, "X-Request-Id"); upstreamRequestID != "" {
 			fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
 		}
 	}
@@ -858,6 +850,43 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcomeContext(c gatewayctx
 		return
 	}
 	log.Warn("codex.remote_compact.failed")
+}
+
+func responseStatusFromGatewayContext(c gatewayctx.GatewayContext) int {
+	if c == nil {
+		return 0
+	}
+	if raw, ok := c.Value(service.OpsUpstreamStatusCodeKey); ok {
+		switch typed := raw.(type) {
+		case int:
+			return typed
+		case int64:
+			return int(typed)
+		}
+	}
+	switch native := c.Native().(type) {
+	case *gin.Context:
+		if native != nil && native.Writer != nil {
+			return native.Writer.Status()
+		}
+	case interface{ StatusCode() int }:
+		return native.StatusCode()
+	case interface{ Status() int }:
+		return native.Status()
+	}
+	return 0
+}
+
+func responseHeaderValue(c gatewayctx.GatewayContext, name string) string {
+	if c == nil {
+		return ""
+	}
+	if header := c.Header(); header != nil {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(c.HeaderValue(name))
 }
 
 // Messages handles Anthropic Messages API requests routed to OpenAI platform.
@@ -1840,11 +1869,14 @@ func (h *OpenAIGatewayHandler) tryProxyResponsesWebSocketViaRustSidecar(transpor
 }
 
 func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
-	h.recoverResponsesPanicContext(gatewayctx.FromGin(c), streamStarted)
+	h.handleRecoveredResponsesPanicContext(gatewayctx.FromGin(c), streamStarted, recover())
 }
 
 func (h *OpenAIGatewayHandler) recoverResponsesPanicContext(c gatewayctx.GatewayContext, streamStarted *bool) {
-	recovered := recover()
+	h.handleRecoveredResponsesPanicContext(c, streamStarted, recover())
+}
+
+func (h *OpenAIGatewayHandler) handleRecoveredResponsesPanicContext(c gatewayctx.GatewayContext, streamStarted *bool, recovered any) {
 	if recovered == nil {
 		return
 	}
@@ -1865,11 +1897,14 @@ func (h *OpenAIGatewayHandler) recoverResponsesPanicContext(c gatewayctx.Gateway
 // recoverAnthropicMessagesPanic recovers from panics in the Anthropic Messages
 // handler and returns an Anthropic-formatted error response.
 func (h *OpenAIGatewayHandler) recoverAnthropicMessagesPanic(c *gin.Context, streamStarted *bool) {
-	h.recoverAnthropicMessagesPanicContext(gatewayctx.FromGin(c), streamStarted)
+	h.handleRecoveredAnthropicMessagesPanicContext(gatewayctx.FromGin(c), streamStarted, recover())
 }
 
 func (h *OpenAIGatewayHandler) recoverAnthropicMessagesPanicContext(c gatewayctx.GatewayContext, streamStarted *bool) {
-	recovered := recover()
+	h.handleRecoveredAnthropicMessagesPanicContext(c, streamStarted, recover())
+}
+
+func (h *OpenAIGatewayHandler) handleRecoveredAnthropicMessagesPanicContext(c gatewayctx.GatewayContext, streamStarted *bool, recovered any) {
 	if recovered == nil {
 		return
 	}

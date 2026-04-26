@@ -118,9 +118,14 @@ func (r *Registry) ReplaceProfiles(profiles map[string]*Profile) {
 	}
 	r.profiles[DefaultProfileName] = defaultProfile
 	r.profileNames = append(r.profileNames, DefaultProfileName)
+	r.profiles[DefaultCodexProfileName] = &Profile{
+		Name:         "Codex CLI / Desktop (Node.js 20.x + OpenSSL 3.x)",
+		EnableGREASE: false,
+	}
+	r.profileNames = append(r.profileNames, DefaultCodexProfileName)
 
 	for name, profile := range profiles {
-		if name == "" || profile == nil || name == DefaultProfileName {
+		if name == "" || profile == nil || name == DefaultProfileName || name == DefaultCodexProfileName {
 			continue
 		}
 		r.profiles[name] = profile

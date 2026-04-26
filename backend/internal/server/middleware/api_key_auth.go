@@ -71,7 +71,7 @@ func ApplyAPIKeyAuthWithSubscriptionContext(apiKeyService *service.APIKeyService
 	}
 
 	if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
-		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(strings.TrimSpace(c.ClientIP()), apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
+		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(ip.GetTrustedClientIPContext(c), apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
 		if !allowed {
 			abortWithErrorContext(c, 403, "ACCESS_DENIED", "Access denied")
 			return false

@@ -71,6 +71,32 @@ type SSEOptions struct {
 	RequestID    string
 }
 
+func TrustedClientIP(ctx GatewayContext) string {
+	if ctx == nil {
+		return ""
+	}
+	switch value := ctx.(type) {
+	case *ginGatewayContext:
+		if value.gin == nil {
+			return ""
+		}
+		return normalizeForwardedClientIP(value.gin.ClientIP())
+	case *nativeGatewayContext:
+		if value.clientIP != "" {
+			return normalizeForwardedClientIP(value.clientIP)
+		}
+		if value.req == nil {
+			return ""
+		}
+		return normalizeForwardedClientIP(value.req.RemoteAddr)
+	default:
+		if req := ctx.Request(); req != nil {
+			return normalizeForwardedClientIP(req.RemoteAddr)
+		}
+		return ""
+	}
+}
+
 func WriteJSON(ctx GatewayContext, status int, value any) {
 	if ctx == nil {
 		return

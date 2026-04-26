@@ -168,8 +168,8 @@ func TestParse_Scheme大小写不敏感(t *testing.T) {
 	if parsed.Scheme != "socks4" {
 		t.Errorf("大写 SOCKS4 Scheme 应保持 socks4: got %q", parsed.Scheme)
 	}
-	if trimmed != "socks4://proxy.example.com:1080" {
-		t.Errorf("大写 SOCKS4 trimmed 应规范化为 socks4://: got %q", trimmed)
+	if trimmed != "SOCKS4://proxy.example.com:1080" {
+		t.Errorf("大写 SOCKS4 trimmed 应保留原始 scheme: got %q", trimmed)
 	}
 
 	// 大写 SOCKS5 应被接受并升级为 socks5h

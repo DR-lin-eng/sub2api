@@ -59,15 +59,15 @@ func GetClientIPContext(c gatewayctx.GatewayContext) string {
 // 该方法依赖 gin.Engine.SetTrustedProxies 配置，不会优先直接信任原始转发头值。
 // 适用于 ACL / 风控等安全敏感场景。
 func GetTrustedClientIP(c *gin.Context) string {
-	return GetTrustedClientIPContext(gatewayctx.FromGin(c))
-}
-
-// GetTrustedClientIPContext 从 GatewayContext 的可信代理解析链提取客户端 IP。
-func GetTrustedClientIPContext(c gatewayctx.GatewayContext) string {
 	if c == nil {
 		return ""
 	}
 	return normalizeIP(c.ClientIP())
+}
+
+// GetTrustedClientIPContext 从 GatewayContext 的可信代理解析链提取客户端 IP。
+func GetTrustedClientIPContext(c gatewayctx.GatewayContext) string {
+	return gatewayctx.TrustedClientIP(c)
 }
 
 // normalizeIP 规范化 IP 地址，去除端口号和空格。

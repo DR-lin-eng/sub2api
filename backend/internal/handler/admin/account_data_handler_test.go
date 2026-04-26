@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -122,8 +123,8 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	var resp dataResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, 0, resp.Code)
-	require.Empty(t, resp.Data.Type)
-	require.Equal(t, 0, resp.Data.Version)
+	require.Equal(t, "sub2api-data", resp.Data.Type)
+	require.Equal(t, 1, resp.Data.Version)
 	require.Len(t, resp.Data.Proxies, 1)
 	require.Equal(t, "pass", resp.Data.Proxies[0].Password)
 	require.Len(t, resp.Data.Accounts, 1)
@@ -174,23 +175,71 @@ func TestExportDataWithoutProxies(t *testing.T) {
 }
 
 func TestExportDataDownloadReturnsAttachment(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	adminSvc := newStubAdminService()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
 
-	adminSvc.accounts = []service.Account{
-		{
-			ID:          21,
-			Name:        "account",
-			Platform:    service.PlatformOpenAI,
-			Type:        service.AccountTypeOAuth,
-			Credentials: map[string]any{"token": "secret"},
-			Concurrency: 3,
-			Priority:    50,
-			Status:      service.StatusDisabled,
-		},
-	}
+	h := NewAccountHandler(
+		adminSvc,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		service.NewAccountExportService(db),
+	)
+
+	router.GET("/api/v1/admin/accounts/data", h.ExportData)
+
+	mock.ExpectQuery("SELECT id, name, notes, platform, type, credentials, extra, proxy_id, concurrency, priority, rate_multiplier, expires_at, auto_pause_on_expired").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(
+			sqlmock.NewRows([]string{
+				"id",
+				"name",
+				"notes",
+				"platform",
+				"type",
+				"credentials",
+				"extra",
+				"proxy_id",
+				"concurrency",
+				"priority",
+				"rate_multiplier",
+				"expires_at",
+				"auto_pause_on_expired",
+			}).AddRow(
+				int64(21),
+				"account",
+				nil,
+				service.PlatformOpenAI,
+				service.AccountTypeOAuth,
+				[]byte(`{"token":"secret"}`),
+				[]byte(`{}`),
+				nil,
+				3,
+				50,
+				nil,
+				nil,
+				false,
+			),
+		)
+	mock.ExpectQuery("SELECT account_id, group_id").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?download=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?download=1&ids=21&include_proxies=false", nil)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Header().Get("Content-Disposition"), "attachment;")
@@ -199,8 +248,11 @@ func TestExportDataDownloadReturnsAttachment(t *testing.T) {
 
 	var payload dataPayload
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Equal(t, "sub2api-data", payload.Type)
+	require.Equal(t, 1, payload.Version)
 	require.Len(t, payload.Accounts, 1)
 	require.Equal(t, "account", payload.Accounts[0].Name)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {

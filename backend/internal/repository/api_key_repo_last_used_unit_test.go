@@ -7,6 +7,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,10 @@ func newAPIKeyRepoSQLite(t *testing.T) (*apiKeyRepository, *dbent.Client) {
 	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
 	t.Cleanup(func() { _ = client.Close() })
 
-	return &apiKeyRepository{client: client}, client
+	_, err = db.Exec("ALTER TABLE api_keys ADD COLUMN group_ids TEXT")
+	require.NoError(t, err)
+
+	return &apiKeyRepository{client: client, sql: db}, client
 }
 
 func mustCreateAPIKeyRepoUser(t *testing.T, ctx context.Context, client *dbent.Client, email string) *service.User {
@@ -63,7 +67,9 @@ func TestAPIKeyRepository_CreateWithLastUsedAt(t *testing.T) {
 	require.NotNil(t, key.LastUsedAt)
 	require.WithinDuration(t, lastUsed, *key.LastUsedAt, time.Second)
 
-	got, err := repo.GetByID(ctx, key.ID)
+	got, err := client.APIKey.Query().
+		Where(apikey.IDEQ(key.ID)).
+		Only(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, got.LastUsedAt)
 	require.WithinDuration(t, lastUsed, *got.LastUsedAt, time.Second)
@@ -82,14 +88,18 @@ func TestAPIKeyRepository_UpdateLastUsed(t *testing.T) {
 	}
 	require.NoError(t, repo.Create(ctx, key))
 
-	before, err := repo.GetByID(ctx, key.ID)
+	before, err := client.APIKey.Query().
+		Where(apikey.IDEQ(key.ID)).
+		Only(ctx)
 	require.NoError(t, err)
 	require.Nil(t, before.LastUsedAt)
 
 	target := time.Now().UTC().Add(2 * time.Minute).Truncate(time.Second)
 	require.NoError(t, repo.UpdateLastUsed(ctx, key.ID, target))
 
-	after, err := repo.GetByID(ctx, key.ID)
+	after, err := client.APIKey.Query().
+		Where(apikey.IDEQ(key.ID)).
+		Only(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, after.LastUsedAt)
 	require.WithinDuration(t, target, *after.LastUsedAt, time.Second)
