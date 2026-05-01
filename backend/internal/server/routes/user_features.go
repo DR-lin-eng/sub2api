@@ -21,7 +21,23 @@ func executableUserFeatureRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		"jwt_auth",
 		"backend_mode_user_guard",
 	}
-	out := make([]gatewayctx.RouteDef, 0, 4)
+	out := make([]gatewayctx.RouteDef, 0, 6)
+	if h.User != nil {
+		out = append(out,
+			gatewayctx.RouteDef{
+				Method:     http.MethodGet,
+				Path:       "/api/v1/user/aff",
+				Handler:    h.User.GetAffiliateGateway,
+				Middleware: mw,
+			},
+			gatewayctx.RouteDef{
+				Method:     http.MethodPost,
+				Path:       "/api/v1/user/aff/transfer",
+				Handler:    h.User.TransferAffiliateQuotaGateway,
+				Middleware: mw,
+			},
+		)
+	}
 	if h.AvailableChannel != nil {
 		out = append(out, gatewayctx.RouteDef{
 			Method:     http.MethodGet,
@@ -52,6 +68,13 @@ func executableUserFeatureRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 func registerUserFeatureRoutes(authenticated *gin.RouterGroup, h *handler.Handlers) {
 	if authenticated == nil || h == nil {
 		return
+	}
+	if h.User != nil {
+		user := authenticated.Group("/user")
+		{
+			user.GET("/aff", h.User.GetAffiliate)
+			user.POST("/aff/transfer", h.User.TransferAffiliateQuota)
+		}
 	}
 	if h.AvailableChannel != nil {
 		authenticated.GET("/channels/available", h.AvailableChannel.List)

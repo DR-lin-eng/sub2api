@@ -24,7 +24,23 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - SERVER_MODE=debug
+      - SERVER_RUNTIME_MODE=gnet
+      - SERVER_H2C_ENABLED=true
       - RUN_MODE=${RUN_MODE:-standard}
+      - PROCESS_MODE=single
+      - RUST_SIDECAR_ENABLED=true
+      - RUST_SIDECAR_AUTO_START=true
+      - RUST_SIDECAR_BINARY_PATH=/app/bin/sub2api-rust-proxyd
+      - RUST_SIDECAR_SOCKET_PATH=/tmp/sub2api-rust-sidecar.sock
+      - RUST_SIDECAR_UPSTREAM_SOCKET_PATH=/tmp/sub2api-rust-upstream.sock
+      - RUST_SIDECAR_HEALTHCHECK_TIMEOUT_SECONDS=10
+      - RUST_SIDECAR_FAIL_CLOSED=true
+      - RUST_SIDECAR_H2C_DELEGATE_ENABLED=true
+      - RUST_SIDECAR_RESPONSES_WS_ENABLED=true
+      - RUST_FFI_ENABLED=true
+      - RUST_FFI_LIBRARY_PATH=/app/lib/libstreamcore.so
+      - RUST_FFI_HASH_ENABLED=true
+      - RUST_FFI_STREAMING_ENABLED=true
       - DATABASE_HOST=postgres
       - DATABASE_PORT=5432
       - DATABASE_USER=${POSTGRES_USER:-sub2api}
@@ -48,7 +64,7 @@ services:
     networks:
       - sub2api-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "test -x /app/bin/sub2api-rust-proxyd && test -r /app/lib/libstreamcore.so && python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(5); s.connect(\"/tmp/sub2api-rust-sidecar.sock\"); s.sendall(b\"GET /healthz HTTP/1.1\\r\\nHost: rust-sidecar\\r\\nConnection: close\\r\\n\\r\\n\"); data=s.recv(512); sys.exit(0 if b\"200\" in data and b\"proxyd\" in data else 1)' && wget -q -T 5 -O /dev/null http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3

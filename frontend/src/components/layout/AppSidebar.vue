@@ -544,6 +544,7 @@ const ChevronDoubleRightIcon = {
 
 const paymentEnabled = computed(() => !!appStore.cachedPublicSettings?.payment_enabled)
 const availableChannelsEnabled = computed(() => !!appStore.cachedPublicSettings?.available_channels_enabled)
+const affiliateEnabled = computed(() => !!appStore.cachedPublicSettings?.affiliate_enabled)
 const channelMonitorEnabled = computed(() => !!appStore.cachedPublicSettings?.channel_monitor_enabled)
 const purchaseEnabled = computed(() => (
   paymentEnabled.value || !!appStore.cachedPublicSettings?.purchase_subscription_enabled
@@ -557,6 +558,9 @@ const userNavItems = computed((): NavItem[] => {
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     ...(availableChannelsEnabled.value
       ? [{ path: '/available-channels', label: 'Available Channels', icon: ChannelIcon, hideInSimpleMode: true }]
+      : []),
+    ...(affiliateEnabled.value
+      ? [{ path: '/affiliate', label: 'Affiliate', icon: UsersIcon, hideInSimpleMode: true }]
       : []),
     ...(channelMonitorEnabled.value
       ? [{ path: '/monitor', label: 'Channel Status', icon: SignalIcon }]

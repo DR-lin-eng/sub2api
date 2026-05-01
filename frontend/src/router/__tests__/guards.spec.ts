@@ -77,7 +77,7 @@ function simulateGuard(
       return authState.isAdmin ? '/admin/dashboard' : '/dashboard'
     }
     if (authState.backendModeEnabled && !authState.isAuthenticated) {
-      const allowed = ['/login', '/key-usage', '/setup']
+      const allowed = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/stripe', '/payment/stripe-popup']
       if (!allowed.some((path) => toPath === path || toPath.startsWith(path))) {
         return '/login'
       }
@@ -114,7 +114,7 @@ function simulateGuard(
     if (authState.isAuthenticated && authState.isAdmin) {
       return null
     }
-    const allowed = ['/login', '/key-usage', '/setup']
+    const allowed = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/stripe', '/payment/stripe-popup']
     if (!allowed.some((path) => toPath === path || toPath.startsWith(path))) {
       return '/login'
     }
@@ -338,6 +338,18 @@ describe('路由守卫逻辑', () => {
       }
       const redirect = simulateGuard('/setup', { requiresAuth: false }, authState)
       expect(redirect).toBeNull()
+    })
+
+    it('unauthenticated: Stripe payment pages are allowed for hard navigation', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: false,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+      }
+
+      expect(simulateGuard('/payment/stripe', { requiresAuth: false }, authState)).toBeNull()
+      expect(simulateGuard('/payment/stripe-popup', { requiresAuth: false }, authState)).toBeNull()
     })
 
     it('admin: /admin/dashboard is allowed', () => {

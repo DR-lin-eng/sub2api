@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,19 @@ func TestDecodeBufferedRequestReturnsIncompleteForPartialBody(t *testing.T) {
 	require.Zero(t, consumed)
 }
 
+func TestDecodeBufferedRequestFastPathsBodylessRequests(t *testing.T) {
+	raw := []byte("GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+	req, consumed, complete, err := decodeBufferedRequest(raw, nil, nil)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.NotNil(t, req)
+	require.Equal(t, http.MethodGet, req.Method)
+	require.Equal(t, int64(0), req.ContentLength)
+	require.Same(t, http.NoBody, req.Body)
+	require.Equal(t, len(raw), consumed)
+}
+
 func TestNativeGnetHTTPRuntimeServesHTTP1(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -95,6 +109,10 @@ func TestNativeGnetHTTPRuntimeServesHTTP1(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, resp.Header.Get("Transfer-Encoding"))
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, len(body), mustAtoi(t, resp.Header.Get("Content-Length")))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -141,6 +159,8 @@ func TestNativeGnetHTTPRuntimeServesExecutableHealthRouteWithoutFallbackHandler(
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "15", resp.Header.Get("Content-Length"))
+	require.Empty(t, resp.Header.Get("Transfer-Encoding"))
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"status":"ok"}`, string(body))
@@ -155,6 +175,13 @@ func TestNativeGnetHTTPRuntimeServesExecutableHealthRouteWithoutFallbackHandler(
 	case <-time.After(2 * time.Second):
 		t.Fatal("native gnet runtime did not exit in time")
 	}
+}
+
+func mustAtoi(t *testing.T, value string) int {
+	t.Helper()
+	n, err := strconv.Atoi(value)
+	require.NoError(t, err)
+	return n
 }
 
 func TestNativeGnetHTTPRuntimeServesExecutableClaudeBootstrapAuthFailureWithoutFallbackHandler(t *testing.T) {

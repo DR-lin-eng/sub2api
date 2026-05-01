@@ -7,13 +7,24 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
+	"syscall"
 	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"golang.org/x/net/http2"
 )
+
+const (
+	classifiedListenerQueueSize = 128
+	maxClassifyPeekBytes        = 1024
+)
+
+var classifyPeekBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, maxClassifyPeekBytes)
+	},
+}
 
 type IngressRuntime interface {
 	Name() string
@@ -404,34 +415,32 @@ func classifyConn(conn net.Conn, timeout time.Duration, mux *protocolMux) (proto
 		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	}
 
-	const maxPeekBytes = 1024
-	buffer := make([]byte, maxPeekBytes)
+	buffer := classifyPeekBufferPool.Get().([]byte)
 	n := 0
 	for n < len(buffer) {
-		limit := n + 256
-		if limit > len(buffer) {
-			limit = len(buffer)
-		}
-		readN, err := conn.Read(buffer[n:limit])
+		prevN := n
+		readN, err := conn.Read(buffer[n:])
 		n += readN
 		if err != nil {
 			if errors.Is(err, io.EOF) && n > 0 {
 				break
 			}
+			putClassifyPeekBuffer(buffer)
 			return protocolTargetHTTP1, nil, err
 		}
 		if n >= len(http2.ClientPreface) && bytes.HasPrefix(buffer[:n], []byte(http2.ClientPreface)) {
 			break
 		}
-		if bytes.Contains(buffer[:n], []byte("\r\n\r\n")) {
+		if hasHTTPHeaderTerminatorIncremental(buffer[:n], prevN) {
 			break
 		}
 	}
 	if n == 0 {
+		putClassifyPeekBuffer(buffer)
 		return protocolTargetHTTP1, nil, io.ErrUnexpectedEOF
 	}
 	peeked := buffer[:n]
-	wrapped := &prefixedConn{Conn: conn, prefix: bytes.NewReader(peeked)}
+	wrapped := &prefixedConn{Conn: conn, prefix: peeked}
 	return classifyPrefaceWithOptions(peeked, mux), wrapped, nil
 }
 
@@ -446,56 +455,157 @@ func classifyPrefaceWithOptions(peeked []byte, mux *protocolMux) protocolTarget 
 		}
 		return protocolTargetH2C
 	}
-	lower := strings.ToLower(string(peeked))
-	if strings.Contains(lower, "upgrade: h2c") || strings.Contains(lower, "http2-settings:") {
+	if containsASCIIFold(peeked, "upgrade: h2c") || containsASCIIFold(peeked, "http2-settings:") {
 		if mux != nil && mux.sidecarEnabled && mux.routeH2CToSidecar {
 			return protocolTargetSidecar
 		}
 		return protocolTargetH2C
 	}
-	if mux != nil && mux.sidecarEnabled && mux.routeResponsesWSToSidecar && isOpenAIResponsesWebSocketPreface(lower) {
+	if mux != nil && mux.sidecarEnabled && mux.routeResponsesWSToSidecar && isOpenAIResponsesWebSocketPreface(peeked) {
 		return protocolTargetSidecar
 	}
-	if strings.Contains(lower, "upgrade: h2c") || strings.Contains(lower, "http2-settings:") {
+	if containsASCIIFold(peeked, "upgrade: h2c") || containsASCIIFold(peeked, "http2-settings:") {
 		return protocolTargetH2C
 	}
 	return protocolTargetHTTP1
 }
 
-func isOpenAIResponsesWebSocketPreface(lower string) bool {
-	if !strings.Contains(lower, "upgrade: websocket") {
+func isOpenAIResponsesWebSocketPreface(peeked []byte) bool {
+	if !containsASCIIFold(peeked, "upgrade: websocket") {
 		return false
 	}
-	if strings.HasPrefix(lower, "get /v1/responses ") || strings.HasPrefix(lower, "get /responses ") {
+	if hasPrefixASCIIFold(peeked, "get /v1/responses ") || hasPrefixASCIIFold(peeked, "get /responses ") {
 		return true
 	}
 	return false
 }
 
+func hasHTTPHeaderTerminatorIncremental(data []byte, prevLen int) bool {
+	if len(data) < 4 {
+		return false
+	}
+	start := prevLen - 3
+	if start < 0 {
+		start = 0
+	}
+	limit := len(data) - 3
+	for i := start; i < limit; i++ {
+		if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsASCIIFold(data []byte, token string) bool {
+	if len(token) == 0 {
+		return true
+	}
+	if len(data) < len(token) {
+		return false
+	}
+	limit := len(data) - len(token)
+	for start := 0; start <= limit; start++ {
+		if equalFoldASCII(data[start:start+len(token)], token) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrefixASCIIFold(data []byte, prefix string) bool {
+	if len(data) < len(prefix) {
+		return false
+	}
+	return equalFoldASCII(data[:len(prefix)], prefix)
+}
+
+func equalFoldASCII(data []byte, token string) bool {
+	if len(data) != len(token) {
+		return false
+	}
+	for i := range data {
+		if asciiLower(data[i]) != asciiLower(token[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiLower(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
+}
+
 type prefixedConn struct {
 	net.Conn
-	prefix io.Reader
+	prefix []byte
+}
+
+func (c *prefixedConn) SyscallConn() (syscall.RawConn, error) {
+	if c == nil || c.Conn == nil {
+		return nil, net.ErrClosed
+	}
+	sc, ok := c.Conn.(syscall.Conn)
+	if !ok {
+		return nil, errors.New("wrapped connection does not implement syscall.Conn")
+	}
+	return sc.SyscallConn()
 }
 
 func (c *prefixedConn) Read(p []byte) (int, error) {
 	if c == nil {
 		return 0, net.ErrClosed
 	}
-	if c.prefix != nil {
-		n, err := c.prefix.Read(p)
-		if err == nil {
-			return n, nil
+	if len(c.prefix) > 0 {
+		n := copy(p, c.prefix)
+		c.prefix = c.prefix[n:]
+		if len(c.prefix) == 0 {
+			c.releasePrefix()
 		}
-		if errors.Is(err, io.EOF) {
-			c.prefix = nil
-			if n > 0 {
-				return n, nil
-			}
-		} else {
-			return n, err
+		if n > 0 {
+			return n, nil
 		}
 	}
 	return c.Conn.Read(p)
+}
+
+func (c *prefixedConn) Close() error {
+	if c == nil {
+		return net.ErrClosed
+	}
+	c.releasePrefix()
+	if c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
+}
+
+func (c *prefixedConn) takePrefix() []byte {
+	if c == nil || len(c.prefix) == 0 {
+		return nil
+	}
+	prefix := c.prefix
+	c.prefix = nil
+	return prefix
+}
+
+func (c *prefixedConn) releasePrefix() {
+	if c == nil || cap(c.prefix) == 0 {
+		c.prefix = nil
+		return
+	}
+	putClassifyPeekBuffer(c.prefix)
+	c.prefix = nil
+}
+
+func putClassifyPeekBuffer(buf []byte) {
+	if cap(buf) < maxClassifyPeekBytes {
+		return
+	}
+	classifyPeekBufferPool.Put(buf[:maxClassifyPeekBytes])
 }
 
 type classifiedListener struct {
@@ -509,7 +619,7 @@ type classifiedListener struct {
 func newClassifiedListener(addr net.Addr) *classifiedListener {
 	return &classifiedListener{
 		addr: addr,
-		ch:   make(chan net.Conn),
+		ch:   make(chan net.Conn, classifiedListenerQueueSize),
 		done: make(chan struct{}),
 	}
 }

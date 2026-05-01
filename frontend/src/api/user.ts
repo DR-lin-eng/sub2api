@@ -4,7 +4,12 @@
  */
 
 import { apiClient } from './client'
-import type { User, ChangePasswordRequest } from '@/types'
+import type {
+  User,
+  ChangePasswordRequest,
+  UserAffiliateDetail,
+  AffiliateTransferResponse
+} from '@/types'
 
 /**
  * Get current user profile
@@ -45,10 +50,22 @@ export async function changePassword(
   return data
 }
 
+export async function getAffiliateDetail(): Promise<UserAffiliateDetail> {
+  const { data } = await apiClient.get<UserAffiliateDetail>('/user/aff')
+  return data
+}
+
+export async function transferAffiliateQuota(): Promise<AffiliateTransferResponse> {
+  const { data } = await apiClient.post<AffiliateTransferResponse>('/user/aff/transfer')
+  return data
+}
+
 export const userAPI = {
   getProfile,
   updateProfile,
-  changePassword
+  changePassword,
+  getAffiliateDetail,
+  transferAffiliateQuota
 }
 
 export default userAPI

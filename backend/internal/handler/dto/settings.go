@@ -58,9 +58,13 @@ type SystemSettings struct {
 	SoraClientEnabled           bool             `json:"sora_client_enabled"`
 	CustomMenuItems             []CustomMenuItem `json:"custom_menu_items"`
 
-	DefaultConcurrency   int                          `json:"default_concurrency"`
-	DefaultBalance       float64                      `json:"default_balance"`
-	DefaultSubscriptions []DefaultSubscriptionSetting `json:"default_subscriptions"`
+	DefaultConcurrency           int                          `json:"default_concurrency"`
+	DefaultBalance               float64                      `json:"default_balance"`
+	AffiliateRebateRate          float64                      `json:"affiliate_rebate_rate"`
+	AffiliateRebateFreezeHours   int                          `json:"affiliate_rebate_freeze_hours"`
+	AffiliateRebateDurationDays  int                          `json:"affiliate_rebate_duration_days"`
+	AffiliateRebatePerInviteeCap float64                      `json:"affiliate_rebate_per_invitee_cap"`
+	DefaultSubscriptions         []DefaultSubscriptionSetting `json:"default_subscriptions"`
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
@@ -91,6 +95,8 @@ type SystemSettings struct {
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
+
+	AffiliateEnabled bool `json:"affiliate_enabled"`
 }
 
 type DefaultSubscriptionSetting struct {
@@ -131,6 +137,7 @@ type PublicSettings struct {
 	ChannelMonitorEnabled                bool             `json:"channel_monitor_enabled"`
 	ChannelMonitorDefaultIntervalSeconds int              `json:"channel_monitor_default_interval_seconds"`
 	AvailableChannelsEnabled             bool             `json:"available_channels_enabled"`
+	AffiliateEnabled                     bool             `json:"affiliate_enabled"`
 	BackendModeEnabled                   bool             `json:"backend_mode_enabled"`
 	Version                              string           `json:"version"`
 }

@@ -22,7 +22,16 @@ func executableAdminFeatureRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 		"admin_auth",
 	}
 
-	out := make([]gatewayctx.RouteDef, 0, 24)
+	out := make([]gatewayctx.RouteDef, 0, 30)
+	if h.Admin.Affiliate != nil {
+		out = append(out,
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/affiliates/users", Handler: h.Admin.Affiliate.ListUsersGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/affiliates/users/lookup", Handler: h.Admin.Affiliate.LookupUsersGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPut, Path: "/api/v1/admin/affiliates/users/:user_id", Handler: h.Admin.Affiliate.UpdateUserSettingsGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodDelete, Path: "/api/v1/admin/affiliates/users/:user_id", Handler: h.Admin.Affiliate.ClearUserSettingsGateway, Middleware: mw},
+			gatewayctx.RouteDef{Method: http.MethodPost, Path: "/api/v1/admin/affiliates/users/batch-rate", Handler: h.Admin.Affiliate.BatchSetRateGateway, Middleware: mw},
+		)
+	}
 	if h.Admin.TLSFingerprintProfile != nil {
 		out = append(out,
 			gatewayctx.RouteDef{Method: http.MethodGet, Path: "/api/v1/admin/tls-fingerprint-profiles", Handler: h.Admin.TLSFingerprintProfile.ListGateway, Middleware: mw},
@@ -71,6 +80,19 @@ func executableAdminFeatureRoutes(h *handler.Handlers) []gatewayctx.RouteDef {
 func registerAdminFeatureRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	if admin == nil || h == nil || h.Admin == nil {
 		return
+	}
+	if h.Admin.Affiliate != nil {
+		affiliates := admin.Group("/affiliates")
+		{
+			users := affiliates.Group("/users")
+			{
+				users.GET("", h.Admin.Affiliate.ListUsers)
+				users.GET("/lookup", h.Admin.Affiliate.LookupUsers)
+				users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
+				users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
+				users.POST("/batch-rate", h.Admin.Affiliate.BatchSetRate)
+			}
+		}
 	}
 	if h.Admin.TLSFingerprintProfile != nil {
 		profiles := admin.Group("/tls-fingerprint-profiles")

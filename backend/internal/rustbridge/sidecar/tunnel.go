@@ -26,6 +26,25 @@ func HasBypassHeader(req *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(req.Header.Get(BypassHeader)), "1")
 }
 
+func DialSidecar(socketPath string, timeout time.Duration) (net.Conn, error) {
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		return nil, fmt.Errorf("sidecar socket path is empty")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+	configureSidecarDialer(dialer)
+	conn, err := dialer.Dial("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	tuneRelayConn(conn)
+	return conn, nil
+}
+
 func TunnelUpgradedRequest(req *http.Request, hijacker http.Hijacker, socketPath string) error {
 	if req == nil {
 		return fmt.Errorf("request is nil")
@@ -42,8 +61,9 @@ func TunnelUpgradedRequest(req *http.Request, hijacker http.Hijacker, socketPath
 	if err != nil {
 		return err
 	}
+	tuneRelayConn(clientConn)
 
-	sidecarConn, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("unix", socketPath)
+	sidecarConn, err := DialSidecar(socketPath, 5*time.Second)
 	if err != nil {
 		_, _ = clientConn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 61\r\n\r\n{\"code\":\"RUST_SIDECAR_UNAVAILABLE\",\"message\":\"sidecar unavailable\"}"))
 		_ = clientConn.Close()
@@ -75,11 +95,11 @@ func TunnelUpgradedRequest(req *http.Request, hijacker http.Hijacker, socketPath
 	done := make(chan struct{}, 2)
 
 	go func() {
-		relayCopyOneWay(sidecarConn, clientConn)
+		RelayCopyOneWay(sidecarConn, clientConn)
 		done <- struct{}{}
 	}()
 	go func() {
-		relayCopyOneWay(clientConn, sidecarConn)
+		RelayCopyOneWay(clientConn, sidecarConn)
 		done <- struct{}{}
 	}()
 	go func() {
@@ -91,16 +111,29 @@ func TunnelUpgradedRequest(req *http.Request, hijacker http.Hijacker, socketPath
 	return nil
 }
 
+func RelayCopyOneWay(dst net.Conn, src net.Conn) (int64, error) {
+	return relayCopyOneWay(dst, src)
+}
+
 func relayCopyOneWay(dst net.Conn, src net.Conn) (int64, error) {
-	bufPtr := relayBufferPool.Get().(*[]byte)
-	defer relayBufferPool.Put(bufPtr)
 	if dst == nil || src == nil {
 		return 0, nil
 	}
-	n, err := io.CopyBuffer(dst, src, *bufPtr)
+	n, handled, err := relayCopyPlatform(dst, src)
+	if !handled {
+		fallbackN, fallbackErr := relayCopyBuffered(dst, src)
+		n += fallbackN
+		err = fallbackErr
+	}
 	relayCloseWrite(dst)
 	relayCloseRead(src)
 	return n, err
+}
+
+func relayCopyBuffered(dst net.Conn, src net.Conn) (int64, error) {
+	bufPtr := relayBufferPool.Get().(*[]byte)
+	defer relayBufferPool.Put(bufPtr)
+	return io.CopyBuffer(dst, src, *bufPtr)
 }
 
 type relayCloseWriter interface {

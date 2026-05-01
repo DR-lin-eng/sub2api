@@ -516,7 +516,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 		transportCtx.SetValue("openai_responses_fallback_model", "")
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		groupSelection, err := selectOpenAIAPIKeyGroup(
+		groupSelection, err := selectOpenAIAPIKeyGroupWithCompact(
 			transportCtx.Context(),
 			apiKey,
 			previousResponseID,
@@ -524,7 +524,8 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
-			h.gatewayService.SelectAccountWithScheduler,
+			remoteCompact,
+			h.gatewayService.SelectAccountWithSchedulerWithCompact,
 		)
 		var (
 			selection        *service.AccountSelectionResult
@@ -547,7 +548,7 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 					reqLog.Info("openai.fallback_to_default_model",
 						zap.String("default_mapped_model", fallbackModel),
 					)
-					groupSelection, err = selectOpenAIAPIKeyGroup(
+					groupSelection, err = selectOpenAIAPIKeyGroupWithCompact(
 						transportCtx.Context(),
 						apiKey,
 						previousResponseID,
@@ -555,7 +556,8 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 						fallbackModel,
 						failedAccountIDs,
 						service.OpenAIUpstreamTransportAny,
-						h.gatewayService.SelectAccountWithScheduler,
+						remoteCompact,
+						h.gatewayService.SelectAccountWithSchedulerWithCompact,
 					)
 					if err == nil && groupSelection != nil {
 						selection = groupSelection.Selection
@@ -565,6 +567,10 @@ func (h *OpenAIGatewayHandler) ResponsesGateway(transportCtx gatewayctx.GatewayC
 					}
 				}
 				if err != nil {
+					if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
+						h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)
+						return
+					}
 					h.handleStreamingAwareErrorContext(transportCtx, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 					return
 				}

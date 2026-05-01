@@ -14,13 +14,15 @@ import (
 
 // UserHandler handles user-related requests
 type UserHandler struct {
-	userService *service.UserService
+	userService      *service.UserService
+	affiliateService *service.AffiliateService
 }
 
 // NewUserHandler creates a new UserHandler
-func NewUserHandler(userService *service.UserService) *UserHandler {
+func NewUserHandler(userService *service.UserService, affiliateService *service.AffiliateService) *UserHandler {
 	return &UserHandler{
-		userService: userService,
+		userService:      userService,
+		affiliateService: affiliateService,
 	}
 }
 
@@ -118,6 +120,60 @@ func (h *UserHandler) UpdateProfileGateway(c gatewayctx.GatewayContext) {
 	}
 
 	response.SuccessContext(gatewayJSONResponder{ctx: c}, dto.UserFromService(updatedUser))
+}
+
+// GetAffiliate returns the current user's affiliate details.
+// GET /api/v1/user/aff
+func (h *UserHandler) GetAffiliate(c *gin.Context) {
+	h.GetAffiliateGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) GetAffiliateGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
+	if !ok {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
+		return
+	}
+	if h.affiliateService == nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Affiliate service unavailable")
+		return
+	}
+
+	detail, err := h.affiliateService.GetAffiliateDetail(c.Request().Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, detail)
+}
+
+// TransferAffiliateQuota transfers all available affiliate quota into current balance.
+// POST /api/v1/user/aff/transfer
+func (h *UserHandler) TransferAffiliateQuota(c *gin.Context) {
+	h.TransferAffiliateQuotaGateway(gatewayctx.FromGin(c))
+}
+
+func (h *UserHandler) TransferAffiliateQuotaGateway(c gatewayctx.GatewayContext) {
+	subject, ok := middleware2.GetAuthSubjectFromGatewayContext(c)
+	if !ok {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusUnauthorized, "User not authenticated")
+		return
+	}
+	if h.affiliateService == nil {
+		response.ErrorContext(gatewayJSONResponder{ctx: c}, http.StatusServiceUnavailable, "Affiliate service unavailable")
+		return
+	}
+
+	transferred, balance, err := h.affiliateService.TransferAffiliateQuota(c.Request().Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFromContext(gatewayJSONResponder{ctx: c}, err)
+		return
+	}
+
+	response.SuccessContext(gatewayJSONResponder{ctx: c}, gin.H{
+		"transferred_quota": transferred,
+		"balance":           balance,
+	})
 }
 
 type gatewayJSONResponder struct {

@@ -3,11 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -20,7 +18,6 @@ type rustSidecarIngressRuntime struct {
 	manifest  RouteManifest
 	cfg       config.RustSidecarConfig
 	client    *rustsidecar.Client
-	closeOnce sync.Once
 }
 
 func newRustSidecarIngressRuntime(cfg *config.Config, base *http.Server, manifest RouteManifest) *rustSidecarIngressRuntime {
@@ -122,7 +119,11 @@ func (r *rustSidecarIngressRuntime) proxyConn(downstream net.Conn) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	upstream, err := (&net.Dialer{Timeout: timeout}).Dial("unix", r.client.SocketPath())
+	connectTimeout := timeout
+	if connectTimeout > 5*time.Second {
+		connectTimeout = 5 * time.Second
+	}
+	upstream, err := rustsidecar.DialSidecar(r.client.SocketPath(), connectTimeout)
 	if err != nil {
 		_ = downstream.Close()
 		return
@@ -131,11 +132,11 @@ func (r *rustSidecarIngressRuntime) proxyConn(downstream net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
-		_, _ = relaySidecarCopy(upstream, downstream)
+		_, _ = rustsidecar.RelayCopyOneWay(upstream, downstream)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = relaySidecarCopy(downstream, upstream)
+		_, _ = rustsidecar.RelayCopyOneWay(downstream, upstream)
 		done <- struct{}{}
 	}()
 	go func() {
@@ -144,49 +145,4 @@ func (r *rustSidecarIngressRuntime) proxyConn(downstream net.Conn) {
 		_ = downstream.Close()
 		_ = upstream.Close()
 	}()
-}
-
-func relaySidecarCopy(dst net.Conn, src net.Conn) (int64, error) {
-	bufPtr := rustsidecarRelayBufferPool.Get().(*[]byte)
-	defer rustsidecarRelayBufferPool.Put(bufPtr)
-	if dst == nil || src == nil {
-		return 0, nil
-	}
-	n, err := io.CopyBuffer(dst, src, *bufPtr)
-	relaySidecarCloseWrite(dst)
-	relaySidecarCloseRead(src)
-	return n, err
-}
-
-var rustsidecarRelayBufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 64*1024)
-		return &buf
-	},
-}
-
-type rustsidecarCloseWriter interface {
-	CloseWrite() error
-}
-
-type rustsidecarCloseReader interface {
-	CloseRead() error
-}
-
-func relaySidecarCloseWrite(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-	if cw, ok := conn.(rustsidecarCloseWriter); ok {
-		_ = cw.CloseWrite()
-	}
-}
-
-func relaySidecarCloseRead(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-	if cr, ok := conn.(rustsidecarCloseReader); ok {
-		_ = cr.CloseRead()
-	}
 }

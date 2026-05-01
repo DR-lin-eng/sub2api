@@ -20,6 +20,10 @@ const (
 	openAIAccountScheduleLayerLoadBalance      = "load_balance"
 )
 
+// ErrNoAvailableCompactAccounts indicates the request needs /responses/compact
+// but every otherwise eligible OpenAI account is known not to support it.
+var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts support /responses/compact")
+
 type OpenAIAccountScheduleRequest struct {
 	GroupID            *int64
 	SessionHash        string
@@ -27,6 +31,7 @@ type OpenAIAccountScheduleRequest struct {
 	PreviousResponseID string
 	RequestedModel     string
 	RequiredTransport  OpenAIUpstreamTransport
+	RequireCompact     bool
 	ExcludedIDs        map[int64]struct{}
 }
 
@@ -245,7 +250,11 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
-			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
+			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) ||
+				(req.RequireCompact && openAICompactSupportTier(selection.Account) == 0) {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
 				selection = nil
 			}
 		}
@@ -324,6 +333,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, nil
 	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+		return nil, nil
+	}
+	if req.RequireCompact && openAICompactSupportTier(account) == 0 {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -638,6 +651,55 @@ func adaptiveOpenAISelectionTopK(baseTopK int, candidateCount int, loadSkew floa
 	return adaptiveSchedulerSelectionTopK(baseTopK, candidateCount, loadSkew)
 }
 
+func noAvailableOpenAISelectionError(requestedModel string, compactBlocked bool) error {
+	if compactBlocked {
+		return ErrNoAvailableCompactAccounts
+	}
+	return openAINoAvailableAccountsError(requestedModel)
+}
+
+// openAICompactSupportTier classifies an OpenAI account by compact capability.
+// 0 = explicitly unsupported, 1 = unknown / not yet probed, 2 = explicitly supported.
+func openAICompactSupportTier(account *Account) int {
+	if account == nil || !account.IsOpenAI() {
+		return 0
+	}
+	supported, known := account.OpenAICompactSupportKnown()
+	if !known {
+		return 1
+	}
+	if supported {
+		return 2
+	}
+	return 0
+}
+
+func buildOpenAICompactAwareSelectionOrder(
+	candidates []openAIAccountCandidateScore,
+	topK int,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidateScore {
+	if !req.RequireCompact {
+		return buildOpenAITieredSelectionOrder(candidates, topK, req)
+	}
+
+	supported := make([]openAIAccountCandidateScore, 0, len(candidates))
+	unknown := make([]openAIAccountCandidateScore, 0, len(candidates))
+	for _, candidate := range candidates {
+		switch openAICompactSupportTier(candidate.account) {
+		case 2:
+			supported = append(supported, candidate)
+		case 1:
+			unknown = append(unknown, candidate)
+		}
+	}
+
+	ordered := make([]openAIAccountCandidateScore, 0, len(supported)+len(unknown))
+	ordered = append(ordered, buildOpenAITieredSelectionOrder(supported, topK, req)...)
+	ordered = append(ordered, buildOpenAITieredSelectionOrder(unknown, topK, req)...)
+	return ordered
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -647,11 +709,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, err
 	}
 	if len(accounts) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
 
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	compactBlocked := false
 	for i := range accounts {
 		account := &accounts[i]
 		if req.ExcludedIDs != nil {
@@ -671,6 +734,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
+		if req.RequireCompact && openAICompactSupportTier(account) == 0 {
+			compactBlocked = true
+			continue
+		}
 		filtered = append(filtered, account)
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
@@ -678,7 +745,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked)
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -776,13 +843,17 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	topK := s.service.openAIWSLBTopK()
 	topK = adaptiveOpenAISelectionTopK(topK, len(candidates), loadSkew)
-	selectionOrder := buildOpenAITieredSelectionOrder(candidates, topK, req)
+	selectionOrder := buildOpenAICompactAwareSelectionOrder(candidates, topK, req)
 	s.service.prefetchOpenAIAccountHealthCandidates(selectionOrder, req.RequestedModel)
 
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+			continue
+		}
+		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+			compactBlocked = true
 			continue
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
@@ -808,6 +879,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
 			continue
 		}
+		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+			compactBlocked = true
+			continue
+		}
 		return &AccountSelectionResult{
 			Account: fresh,
 			WaitPlan: &AccountWaitPlan{
@@ -819,7 +894,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}, len(candidates), topK, loadSkew, nil
 	}
 
-	return nil, len(candidates), topK, loadSkew, ErrNoAvailableAccounts
+	return nil, len(candidates), topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked)
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
@@ -901,6 +976,28 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectAccountWithSchedulerWithCompact(
+		ctx,
+		groupID,
+		previousResponseID,
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		false,
+	)
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerWithCompact(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requireCompact bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
 	if scheduler == nil {
@@ -923,6 +1020,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
 		RequiredTransport:  requiredTransport,
+		RequireCompact:     requireCompact,
 		ExcludedIDs:        excludedIDs,
 	})
 }

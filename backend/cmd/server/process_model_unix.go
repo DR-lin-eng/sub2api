@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	rustffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
+	serverruntime "github.com/Wei-Shaw/sub2api/internal/server"
 )
 
 type managedWorker struct {
@@ -44,7 +45,7 @@ func runMasterOrSingleProcess(cfg *config.Config, buildInfo handler.BuildInfo) e
 }
 
 func runMasterProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
-	listener, err := net.Listen("tcp", cfg.Server.Address())
+	listener, err := serverruntime.ListenTCPOptimized("tcp", cfg.Server.Address())
 	if err != nil {
 		return fmt.Errorf("master listen on %s: %w", cfg.Server.Address(), err)
 	}

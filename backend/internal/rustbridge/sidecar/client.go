@@ -22,26 +22,26 @@ type Client struct {
 }
 
 type HealthResponse struct {
-	Status            string `json:"status"`
-	Service           string `json:"service"`
-	Version           string `json:"version"`
-	ActiveConnections int64  `json:"active_connections,omitempty"`
-	TotalConnections  int64  `json:"total_connections,omitempty"`
-	ActiveUpgrades    int64  `json:"active_upgrades,omitempty"`
-	TotalUpgrades     int64  `json:"total_upgrades,omitempty"`
-	TotalRequests      int64 `json:"total_requests,omitempty"`
-	TotalRequestErrors int64 `json:"total_request_errors,omitempty"`
-	UpstreamUnavailableTotal int64 `json:"upstream_unavailable_total,omitempty"`
-	UpstreamHandshakeFailedTotal int64 `json:"upstream_handshake_failed_total,omitempty"`
-	UpstreamRequestFailedTotal int64 `json:"upstream_request_failed_total,omitempty"`
-	UpgradeErrorsTotal int64 `json:"upgrade_errors_total,omitempty"`
-	RelayBytesDownstreamToUpstream int64 `json:"relay_bytes_downstream_to_upstream,omitempty"`
-	RelayBytesUpstreamToDownstream int64 `json:"relay_bytes_upstream_to_downstream,omitempty"`
-	RelayFramesDownstreamToUpstream int64 `json:"relay_frames_downstream_to_upstream,omitempty"`
-	RelayFramesUpstreamToDownstream int64 `json:"relay_frames_upstream_to_downstream,omitempty"`
-	RelayCloseFramesTotal int64 `json:"relay_close_frames_total,omitempty"`
-	RelayPingFramesTotal int64 `json:"relay_ping_frames_total,omitempty"`
-	RelayPongFramesTotal int64 `json:"relay_pong_frames_total,omitempty"`
+	Status                          string `json:"status"`
+	Service                         string `json:"service"`
+	Version                         string `json:"version"`
+	ActiveConnections               int64  `json:"active_connections,omitempty"`
+	TotalConnections                int64  `json:"total_connections,omitempty"`
+	ActiveUpgrades                  int64  `json:"active_upgrades,omitempty"`
+	TotalUpgrades                   int64  `json:"total_upgrades,omitempty"`
+	TotalRequests                   int64  `json:"total_requests,omitempty"`
+	TotalRequestErrors              int64  `json:"total_request_errors,omitempty"`
+	UpstreamUnavailableTotal        int64  `json:"upstream_unavailable_total,omitempty"`
+	UpstreamHandshakeFailedTotal    int64  `json:"upstream_handshake_failed_total,omitempty"`
+	UpstreamRequestFailedTotal      int64  `json:"upstream_request_failed_total,omitempty"`
+	UpgradeErrorsTotal              int64  `json:"upgrade_errors_total,omitempty"`
+	RelayBytesDownstreamToUpstream  int64  `json:"relay_bytes_downstream_to_upstream,omitempty"`
+	RelayBytesUpstreamToDownstream  int64  `json:"relay_bytes_upstream_to_downstream,omitempty"`
+	RelayFramesDownstreamToUpstream int64  `json:"relay_frames_downstream_to_upstream,omitempty"`
+	RelayFramesUpstreamToDownstream int64  `json:"relay_frames_upstream_to_downstream,omitempty"`
+	RelayCloseFramesTotal           int64  `json:"relay_close_frames_total,omitempty"`
+	RelayPingFramesTotal            int64  `json:"relay_ping_frames_total,omitempty"`
+	RelayPongFramesTotal            int64  `json:"relay_pong_frames_total,omitempty"`
 }
 
 func NewClient(cfg config.RustSidecarConfig) (*Client, error) {
@@ -53,13 +53,21 @@ func NewClient(cfg config.RustSidecarConfig) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	dialTimeout := timeout
+	if dialTimeout > 5*time.Second {
+		dialTimeout = 5 * time.Second
+	}
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var d net.Dialer
+			d := net.Dialer{Timeout: dialTimeout}
+			configureSidecarDialer(&d)
 			return d.DialContext(ctx, "unix", socketPath)
 		},
-		DisableCompression: false,
+		DisableCompression:  true,
+		MaxIdleConns:        4,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     30 * time.Second,
 	}
 
 	return &Client{

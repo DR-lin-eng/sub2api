@@ -217,6 +217,140 @@ func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunction
 	require.Equal(t, "bash", first["name"])
 }
 
+func TestApplyCodexOAuthTransform_NormalizesUnsupportedToolChoiceToAuto(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex",
+		"tools": []any{
+			map[string]any{"type": "function", "name": "bash"},
+		},
+		"tool_choice": map[string]any{"type": "image_generation"},
+	}
+
+	applyCodexOAuthTransform(reqBody, false, false)
+	require.Equal(t, "auto", reqBody["tool_choice"])
+}
+
+func TestApplyCodexOAuthTransform_NormalizesToolRoleMessages(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex",
+		"input": []any{
+			map[string]any{
+				"type":         "message",
+				"role":         "tool",
+				"tool_call_id": "call_42",
+				"content":      "done",
+			},
+		},
+	}
+
+	applyCodexOAuthTransform(reqBody, false, false)
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	item, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "function_call_output", item["type"])
+	require.Equal(t, "fc42", item["call_id"])
+	require.Equal(t, "done", item["output"])
+}
+
+func TestApplyCodexOAuthTransform_StringifiesMessageContentText(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex",
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": map[string]any{"value": "hi"}},
+				},
+			},
+		},
+	}
+
+	applyCodexOAuthTransform(reqBody, false, false)
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	item, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	content, ok := item["content"].([]any)
+	require.True(t, ok)
+	part, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, `{"value":"hi"}`, part["text"])
+}
+
+func TestApplyCodexOAuthTransform_CodexCLIAddsImageGenerationBridge(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex",
+		"input": "draw a cat",
+	}
+
+	applyCodexOAuthTransform(reqBody, true, false)
+
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, tools)
+	firstTool, ok := tools[len(tools)-1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "image_generation", firstTool["type"])
+
+	instructions, ok := reqBody["instructions"].(string)
+	require.True(t, ok)
+	require.Contains(t, instructions, codexImageGenerationBridgeMarker)
+}
+
+func TestApplyCodexOAuthTransform_NormalizesImageOnlyModel(t *testing.T) {
+	reqBody := map[string]any{
+		"model":         "gpt-image-2",
+		"prompt":        "draw a cat",
+		"size":          "1024x1024",
+		"output_format": "png",
+	}
+
+	applyCodexOAuthTransform(reqBody, true, false)
+
+	require.Equal(t, codexOpenAIResponsesImageModel, reqBody["model"])
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	msg, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "message", msg["type"])
+	require.Equal(t, "draw a cat", msg["content"])
+	_, hasPrompt := reqBody["prompt"]
+	require.False(t, hasPrompt)
+
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "image_generation", tool["type"])
+	require.Equal(t, "gpt-image-2", tool["model"])
+	require.Equal(t, "1024x1024", tool["size"])
+	require.Equal(t, "png", tool["output_format"])
+}
+
+func TestFilterCodexInput_DoesNotTreatImageGenerationCallAsToolCall(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"type": "image_generation_call",
+			"id":   "img_1",
+		},
+	}
+
+	filtered := filterCodexInput(input, true)
+	require.Len(t, filtered, 1)
+	item, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "img_1", item["id"])
+	_, hasCallID := item["call_id"]
+	require.False(t, hasCallID)
+}
+
 func TestApplyCodexOAuthTransform_EmptyInput(t *testing.T) {
 	// 空 input 应保持为空且不触发异常。
 

@@ -1553,10 +1553,13 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 			modified = true
 		}
 	}
-	if gjson.GetBytes(out, "tool_choice").Exists() {
-		if next, ok := deleteJSONPathBytes(out, "tool_choice"); ok {
-			out = next
-			modified = true
+	tools := gjson.GetBytes(out, "tools")
+	if !tools.IsArray() || len(tools.Array()) == 0 {
+		if gjson.GetBytes(out, "tool_choice").Exists() {
+			if next, ok := deleteJSONPathBytes(out, "tool_choice"); ok {
+				out = next
+				modified = true
+			}
 		}
 	}
 
@@ -4667,26 +4670,7 @@ func (s *GatewayService) ForwardContext(ctx context.Context, c gatewayctx.Gatewa
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
-		if !strings.Contains(strings.ToLower(reqModel), "haiku") && !systemIncludesClaudeCodePrompt(parsed.System) {
-			body = injectClaudeCodePrompt(body, parsed.System)
-		}
-
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
-		if s.identityService != nil {
-			requestHeaders := http.Header{}
-			if req := c.Request(); req != nil {
-				requestHeaders = req.Header
-			}
-			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, requestHeaders)
-			if err == nil && fp != nil {
-				if metadataUserID := s.buildOAuthMetadataUserID(parsed, account, fp); metadataUserID != "" {
-					normalizeOpts.injectMetadata = true
-					normalizeOpts.metadataUserID = metadataUserID
-				}
-			}
-		}
-
-		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+		body, reqModel = s.applyClaudeCodeOAuthMimicryToParsedRequestBody(ctx, c, account, parsed, body, reqModel)
 	}
 	if account.IsOAuth() && isClaudeCode && s.identityService != nil && c != nil {
 		if req := c.Request(); req != nil {
@@ -5601,7 +5585,8 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthroughContex
 			}
 
 			if !clientDisconnected {
-				if _, err := c.WriteBytes(0, []byte(line)); err != nil {
+				restored := reverseToolNamesIfPresent(c, []byte(line))
+				if _, err := c.WriteBytes(0, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
 				} else if _, err := c.WriteBytes(0, []byte("\n")); err != nil {
@@ -5791,6 +5776,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthroughCon
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	body = reverseToolNamesIfPresent(c, body)
 	c.SetHeader("Content-Type", contentType)
 	_, _ = c.WriteBytes(resp.StatusCode, body)
 	return usage, nil
@@ -6754,6 +6740,9 @@ func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
 	if isStream {
 		req.Header.Set("x-stainless-helper-method", "stream")
 	}
+	if strings.TrimSpace(req.Header.Get("x-client-request-id")) == "" {
+		req.Header.Set("x-client-request-id", uuid.NewString())
+	}
 }
 
 func truncateForLog(b []byte, maxBytes int) string {
@@ -7479,7 +7468,8 @@ func (s *GatewayService) handleStreamingResponseContext(ctx context.Context, res
 
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
-						if _, werr := c.WriteBytes(0, []byte(block)); werr != nil {
+						restored := reverseToolNamesIfPresent(c, []byte(block))
+						if _, werr := c.WriteBytes(0, restored); werr != nil {
 							clientDisconnected = true
 							logger.LegacyPrintf("service.gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
 							break
@@ -7835,6 +7825,8 @@ func (s *GatewayService) handleNonStreamingResponseContext(ctx context.Context, 
 			contentType = upstreamType
 		}
 	}
+
+	body = reverseToolNamesIfPresent(c, body)
 
 	// 写入响应
 	c.SetHeader("Content-Type", contentType)
@@ -8584,8 +8576,7 @@ func (s *GatewayService) ForwardCountTokensContext(ctx context.Context, c gatewa
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
-		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+		body, reqModel = s.applyClaudeCodeOAuthMimicryToParsedRequestBody(ctx, c, account, parsed, body, reqModel)
 	}
 
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。

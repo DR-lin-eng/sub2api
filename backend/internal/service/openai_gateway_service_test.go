@@ -2143,7 +2143,7 @@ func TestHandleOAuthSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "data:")
 }
 
-func TestHandleOAuthSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
+func TestHandleOAuthSSEToJSON_NoFinalResponseReconstructsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -2155,7 +2155,8 @@ func TestHandleOAuthSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 	}
 	body := []byte(strings.Join([]string{
-		`data: {"type":"response.in_progress","response":{"id":"resp_3"}}`,
+		`data: {"type":"response.created","response":{"id":"resp_3","model":"gpt-4o"}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
 		`data: [DONE]`,
 	}, "\n"))
 
@@ -2163,8 +2164,36 @@ func TestHandleOAuthSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 0, usage.InputTokens)
-	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-	require.Contains(t, rec.Body.String(), `data: {"type":"response.in_progress"`)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.NotContains(t, rec.Body.String(), `data: {"type":"response.created"`)
+	require.Contains(t, rec.Body.String(), `"id":"resp_3"`)
+	require.Contains(t, rec.Body.String(), `"type":"message"`)
+	require.Contains(t, rec.Body.String(), `"text":"hello"`)
+}
+
+func TestHandleOAuthSSEToJSON_ReconstructsImageGenerationOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_img","model":"gpt-4o"}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","id":"img_1","output_format":"png","result":"b64-data"}}`,
+		`data: [DONE]`,
+	}, "\n"))
+
+	usage, err := svc.handleOAuthSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Contains(t, rec.Body.String(), `"type":"image_generation_call"`)
+	require.Contains(t, rec.Body.String(), `"result":"b64-data"`)
 }
 
 func TestHandleOAuthSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {

@@ -68,6 +68,9 @@ func isNoAvailableSelectionError(err error) bool {
 	if errors.Is(err, service.ErrNoAvailableAccounts) {
 		return true
 	}
+	if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
+		return true
+	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "no available")
 }
@@ -128,8 +131,34 @@ func selectOpenAIAPIKeyGroup(
 	requiredTransport service.OpenAIUpstreamTransport,
 	selectFn func(ctx context.Context, groupID *int64, previousResponseID, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requiredTransport service.OpenAIUpstreamTransport) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error),
 ) (*openAIAPIKeySelection, error) {
+	return selectOpenAIAPIKeyGroupWithCompact(
+		ctx,
+		apiKey,
+		previousResponseID,
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		false,
+		func(ctx context.Context, groupID *int64, previousResponseID, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requiredTransport service.OpenAIUpstreamTransport, _ bool) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error) {
+			return selectFn(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport)
+		},
+	)
+}
+
+func selectOpenAIAPIKeyGroupWithCompact(
+	ctx context.Context,
+	apiKey *service.APIKey,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport service.OpenAIUpstreamTransport,
+	requireCompact bool,
+	selectFn func(ctx context.Context, groupID *int64, previousResponseID, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requiredTransport service.OpenAIUpstreamTransport, requireCompact bool) (*service.AccountSelectionResult, service.OpenAIAccountScheduleDecision, error),
+) (*openAIAPIKeySelection, error) {
 	if !apiKeySupportsMultiGroupRouting(apiKey) {
-		selection, decision, err := selectFn(ctx, apiKey.GroupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport)
+		selection, decision, err := selectFn(ctx, apiKey.GroupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requireCompact)
 		if err != nil {
 			return nil, err
 		}
@@ -138,9 +167,13 @@ func selectOpenAIAPIKeyGroup(
 
 	var firstWait *openAIAPIKeySelection
 	var lastErr error
-	for _, group := range orderedAPIKeyGroups(apiKey, sessionHash+":"+requestedModel+":"+previousResponseID) {
+	seed := sessionHash + ":" + requestedModel + ":" + previousResponseID
+	if requireCompact {
+		seed += ":compact"
+	}
+	for _, group := range orderedAPIKeyGroups(apiKey, seed) {
 		currentAPIKey := cloneAPIKeyWithGroup(apiKey, group)
-		selection, decision, err := selectFn(ctx, currentAPIKey.GroupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport)
+		selection, decision, err := selectFn(ctx, currentAPIKey.GroupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requireCompact)
 		if err == nil {
 			if selection != nil && selection.WaitPlan != nil && !selection.Acquired {
 				if firstWait == nil {

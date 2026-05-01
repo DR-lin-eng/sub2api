@@ -112,6 +112,7 @@ func provideCleanup(
 	antigravityOAuth *service.AntigravityOAuthService,
 	gateway *service.GatewayService,
 	openAIGateway *service.OpenAIGatewayService,
+	channelMonitorRunner *service.ChannelMonitorRunner,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	proxyMaintenanceRunner *service.ProxyMaintenanceRunnerService,
 	backupSvc *service.BackupService,
@@ -254,6 +255,12 @@ func provideCleanup(
 			{"GatewayBackgroundWorkers", func() error {
 				if gateway != nil {
 					gateway.CloseBackgroundWorkers()
+				}
+				return nil
+			}},
+			{"ChannelMonitorRunner", func() error {
+				if channelMonitorRunner != nil {
+					channelMonitorRunner.Stop()
 				}
 				return nil
 			}},

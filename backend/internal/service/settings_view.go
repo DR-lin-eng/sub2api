@@ -44,9 +44,13 @@ type SystemSettings struct {
 	SoraClientEnabled           bool
 	CustomMenuItems             string // JSON array of custom menu items
 
-	DefaultConcurrency   int
-	DefaultBalance       float64
-	DefaultSubscriptions []DefaultSubscriptionSetting
+	DefaultConcurrency           int
+	DefaultBalance               float64
+	AffiliateRebateRate          float64
+	AffiliateRebateFreezeHours   int
+	AffiliateRebateDurationDays  int
+	AffiliateRebatePerInviteeCap float64
+	DefaultSubscriptions         []DefaultSubscriptionSetting
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
@@ -78,6 +82,8 @@ type SystemSettings struct {
 
 	// Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	BackendModeEnabled bool
+
+	AffiliateEnabled bool
 }
 
 type DefaultSubscriptionSetting struct {
@@ -121,6 +127,7 @@ type PublicSettings struct {
 	ChannelMonitorEnabled                bool
 	ChannelMonitorDefaultIntervalSeconds int
 	AvailableChannelsEnabled             bool
+	AffiliateEnabled                     bool
 
 	BackendModeEnabled bool
 	Version            string

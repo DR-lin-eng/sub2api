@@ -81,7 +81,7 @@ func runSingleProcess(cfg *config.Config, buildInfo handler.BuildInfo) error {
 		return errors.New("application ingress runtime is nil")
 	}
 
-	listener, err := net.Listen("tcp", runtime.Addr())
+	listener, err := serverruntime.ListenTCPOptimized("tcp", runtime.Addr())
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", runtime.Addr(), err)
 	}

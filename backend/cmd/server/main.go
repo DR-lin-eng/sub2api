@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"flag"
 	"log"
-	"net"
 	"strings"
 
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
@@ -115,7 +114,7 @@ func runSetupServer() {
 
 	httpServer := serverruntime.NewHTTPServer(cfg, serverruntime.BuildHTTPHandler(cfg, r))
 	runtime := serverruntime.ResolveIngressRuntime(cfg, httpServer)
-	listener, err := net.Listen("tcp", httpServer.Addr)
+	listener, err := serverruntime.ListenTCPOptimized("tcp", httpServer.Addr)
 	if err != nil {
 		log.Fatalf("Failed to start setup listener: %v", err)
 	}

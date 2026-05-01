@@ -226,6 +226,31 @@ func TestClassifyPrefaceDoesNotRouteResponsesWebSocketToSidecarWhenDisabled(t *t
 	require.Equal(t, protocolTargetHTTP1, target)
 }
 
+func TestClassifyPrefaceMatchesMixedCaseHeadersWithoutStringLowerAlloc(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	mux := newProtocolMux(ln, 0, true, false, true)
+	target := classifyPrefaceWithOptions([]byte("GeT /V1/Responses HTTP/1.1\r\nHost: example.com\r\nUpGrAdE: WebSocket\r\nConnection: Upgrade\r\n\r\n"), mux)
+	require.Equal(t, protocolTargetSidecar, target)
+}
+
+func TestHasHTTPHeaderTerminatorIncrementalDetectsBoundaryAcrossReadChunks(t *testing.T) {
+	buf := []byte("GET /health HTTP/1.1\r\nHost: example.com\r\n")
+	require.False(t, hasHTTPHeaderTerminatorIncremental(buf, 0))
+
+	buf = append(buf, '\r', '\n')
+	require.True(t, hasHTTPHeaderTerminatorIncremental(buf, len(buf)-2))
+}
+
+func TestClassifiedListenerBuffersBurstWithoutConcurrentAccept(t *testing.T) {
+	listener := newClassifiedListener(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	require.True(t, listener.enqueue(serverConn))
+}
+
 func TestHybridRuntimeRoutesResponsesWebSocketUpgradeToSidecar(t *testing.T) {
 	sidecarSocket := filepath.Join(t.TempDir(), "rust-sidecar.sock")
 	sidecarListener, err := net.Listen("unix", sidecarSocket)

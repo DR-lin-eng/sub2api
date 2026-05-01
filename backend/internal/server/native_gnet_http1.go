@@ -104,6 +104,15 @@ func (r *nativeGnetHTTPRuntime) Serve(listener net.Listener) error {
 			return err
 		}
 
+		enrollConn := rawConn
+		var initialInbound []byte
+		if prefixed, ok := rawConn.(*prefixedConn); ok {
+			initialInbound = prefixed.takePrefix()
+			if prefixed.Conn != nil {
+				enrollConn = prefixed.Conn
+			}
+		}
+
 		requestCtx, cancel := context.WithCancel(context.Background())
 		state := &nativeGnetConnState{
 			runtime: r,
@@ -111,13 +120,19 @@ func (r *nativeGnetHTTPRuntime) Serve(listener net.Listener) error {
 			ctx:     requestCtx,
 			cancel:  cancel,
 		}
-		if _, err := cli.EnrollContext(rawConn, state); err != nil {
+		state.appendInbound(initialInbound)
+		putClassifyPeekBuffer(initialInbound)
+		gconn, err := cli.EnrollContext(enrollConn, state)
+		if err != nil {
 			cancel()
 			_ = rawConn.Close()
 			if isExpectedListenerClose(err) {
 				return nil
 			}
 			return err
+		}
+		if len(initialInbound) > 0 {
+			_ = gconn.Wake(nil)
 		}
 	}
 }
@@ -243,7 +258,11 @@ func (s *nativeGnetConnState) startNext(c gnet.Conn) gnet.Action {
 		return gnet.None
 	}
 
-	s.buf = append([]byte(nil), s.buf[consumed:]...)
+	remaining := len(s.buf) - consumed
+	if remaining > 0 {
+		copy(s.buf[:remaining], s.buf[consumed:])
+	}
+	s.buf = s.buf[:remaining]
 	s.processing = true
 	upgrade := isWebSocketUpgrade(req)
 	if upgrade {
@@ -318,17 +337,23 @@ func decodeBufferedRequest(buffer []byte, baseCtx context.Context, remoteAddr ne
 		return nil, 0, false, err
 	}
 
-	bodyBytes, err := io.ReadAll(req.Body)
-	_ = req.Body.Close()
-	if err != nil {
-		if isPartialHTTPRequestError(err) {
-			return nil, 0, false, nil
+	if req.ContentLength == 0 && !headerContainsToken(req.Header, "Transfer-Encoding", "chunked") {
+		_ = req.Body.Close()
+		req.Body = http.NoBody
+		req.ContentLength = 0
+	} else {
+		bodyBytes, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			if isPartialHTTPRequestError(err) {
+				return nil, 0, false, nil
+			}
+			return nil, 0, false, err
 		}
-		return nil, 0, false, err
-	}
 
-	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	req.ContentLength = int64(len(bodyBytes))
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+	}
 	if baseCtx != nil {
 		req = req.WithContext(baseCtx)
 	}
@@ -388,10 +413,14 @@ type gnetHTTPResponseWriter struct {
 	mu         sync.Mutex
 	statusCode int
 	wroteHead  bool
+	headSent   bool
 	finished   bool
 	chunked    bool
 	size       int
 	writeErr   error
+	bodyBuffer []byte
+	bodyInline [512]byte
+	bodyLen    int
 
 	closeAfterResponse atomic.Bool
 }
@@ -430,7 +459,7 @@ func (w *gnetHTTPResponseWriter) Size() int {
 func (w *gnetHTTPResponseWriter) WriteHeader(statusCode int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.writeHeaderLocked(statusCode)
+	w.prepareHeaderLocked(statusCode)
 }
 
 func (w *gnetHTTPResponseWriter) Write(p []byte) (int, error) {
@@ -441,18 +470,22 @@ func (w *gnetHTTPResponseWriter) Write(p []byte) (int, error) {
 		return 0, http.ErrHandlerTimeout
 	}
 	if !w.wroteHead {
-		w.writeHeaderLocked(http.StatusOK)
+		w.prepareHeaderLocked(http.StatusOK)
 	}
 	if !responseHasBody(w.statusCode, w.request) {
 		return len(p), nil
 	}
 
-	payload := append([]byte(nil), p...)
-	if w.chunked {
-		payload = encodeChunk(payload)
-	}
-	if err := w.asyncWriteLocked(payload); err != nil {
-		return 0, err
+	if w.headSent {
+		payload := append([]byte(nil), p...)
+		if w.chunked {
+			payload = encodeChunk(payload)
+		}
+		if err := w.asyncWriteLocked(payload); err != nil {
+			return 0, err
+		}
+	} else {
+		w.appendBodyLocked(p)
 	}
 	if w.size < 0 {
 		w.size = 0
@@ -464,8 +497,31 @@ func (w *gnetHTTPResponseWriter) Write(p []byte) (int, error) {
 func (w *gnetHTTPResponseWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.finished {
+		return
+	}
 	if !w.wroteHead {
-		w.writeHeaderLocked(http.StatusOK)
+		w.prepareHeaderLocked(http.StatusOK)
+	}
+	if !responseHasBody(w.statusCode, w.request) {
+		if !w.headSent {
+			w.sendHeadLocked()
+		}
+		return
+	}
+	if w.headSent {
+		return
+	}
+	w.header.Del("Content-Length")
+	w.header.Set("Transfer-Encoding", "chunked")
+	w.chunked = true
+	if err := w.sendHeadLocked(); err != nil {
+		return
+	}
+	if w.bufferedBodyLenLocked() > 0 {
+		payload := encodeChunk(w.bodyBytesLocked())
+		w.resetBodyLocked()
+		_ = w.asyncWriteLocked(payload)
 	}
 }
 
@@ -477,7 +533,41 @@ func (w *gnetHTTPResponseWriter) finish() error {
 		return w.writeErr
 	}
 	if !w.wroteHead {
-		w.writeHeaderLocked(http.StatusOK)
+		w.prepareHeaderLocked(http.StatusOK)
+	}
+	if !w.headSent {
+		if responseHasBody(w.statusCode, w.request) {
+			if !w.chunked && !headerContainsToken(w.header, "Transfer-Encoding", "chunked") {
+				if w.header.Get("Content-Length") == "" {
+					w.header.Set("Content-Length", strconv.Itoa(w.bufferedBodyLenLocked()))
+				}
+				if err := w.sendBufferedResponseLocked(); err != nil {
+					w.finished = true
+					return err
+				}
+			} else {
+				w.header.Del("Content-Length")
+				w.header.Set("Transfer-Encoding", "chunked")
+				w.chunked = true
+				if err := w.sendHeadLocked(); err != nil {
+					w.finished = true
+					return err
+				}
+				if w.bufferedBodyLenLocked() > 0 {
+					payload := encodeChunk(w.bodyBytesLocked())
+					w.resetBodyLocked()
+					if err := w.asyncWriteLocked(payload); err != nil {
+						w.finished = true
+						return err
+					}
+				}
+			}
+		} else {
+			if err := w.sendBufferedResponseLocked(); err != nil {
+				w.finished = true
+				return err
+			}
+		}
 	}
 	if w.chunked {
 		if err := w.asyncWriteLocked([]byte("0\r\n\r\n")); err != nil {
@@ -494,7 +584,7 @@ func (w *gnetHTTPResponseWriter) finish() error {
 	return w.writeErr
 }
 
-func (w *gnetHTTPResponseWriter) writeHeaderLocked(statusCode int) {
+func (w *gnetHTTPResponseWriter) prepareHeaderLocked(statusCode int) {
 	if w.wroteHead {
 		return
 	}
@@ -510,10 +600,6 @@ func (w *gnetHTTPResponseWriter) writeHeaderLocked(statusCode int) {
 		if w.header.Get("Content-Length") == "" {
 			w.header.Set("Content-Length", "0")
 		}
-	} else {
-		w.header.Del("Content-Length")
-		w.header.Set("Transfer-Encoding", "chunked")
-		w.chunked = true
 	}
 
 	if shouldCloseAfterResponse(w.request) {
@@ -523,10 +609,47 @@ func (w *gnetHTTPResponseWriter) writeHeaderLocked(statusCode int) {
 	if w.header.Get("Date") == "" {
 		w.header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 	}
+}
 
-	if err := w.asyncWriteLocked(encodeHTTPResponseHead(statusCode, w.header)); err != nil {
+func (w *gnetHTTPResponseWriter) sendHeadLocked() error {
+	if w.headSent {
+		return w.writeErr
+	}
+	if w.writeErr != nil {
+		return w.writeErr
+	}
+	w.headSent = true
+	if err := w.asyncWriteLocked(encodeHTTPResponseHead(w.statusCode, w.header)); err != nil {
 		w.writeErr = err
 	}
+	return w.writeErr
+}
+
+func (w *gnetHTTPResponseWriter) sendBufferedResponseLocked() error {
+	if w.headSent {
+		return w.writeErr
+	}
+	if w.writeErr != nil {
+		return w.writeErr
+	}
+	head := encodeHTTPResponseHead(w.statusCode, w.header)
+	w.headSent = true
+	body := w.bodyBytesLocked()
+	if len(body) == 0 {
+		if err := w.asyncWriteLocked(head); err != nil {
+			w.writeErr = err
+		}
+		return w.writeErr
+	}
+
+	payload := make([]byte, 0, len(head)+len(body))
+	payload = append(payload, head...)
+	payload = append(payload, body...)
+	w.resetBodyLocked()
+	if err := w.asyncWriteLocked(payload); err != nil {
+		w.writeErr = err
+	}
+	return w.writeErr
 }
 
 func (w *gnetHTTPResponseWriter) asyncWriteLocked(payload []byte) error {
@@ -541,6 +664,61 @@ func (w *gnetHTTPResponseWriter) asyncWriteLocked(payload []byte) error {
 		w.writeErr = err
 	}
 	return w.writeErr
+}
+
+func (w *gnetHTTPResponseWriter) appendBodyLocked(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	if w.bodyBuffer != nil {
+		w.bodyBuffer = append(w.bodyBuffer, payload...)
+		return
+	}
+	if w.bodyLen+len(payload) <= len(w.bodyInline) {
+		copy(w.bodyInline[w.bodyLen:], payload)
+		w.bodyLen += len(payload)
+		return
+	}
+
+	w.bodyBuffer = make([]byte, 0, w.bodyLen+len(payload))
+	if w.bodyLen > 0 {
+		w.bodyBuffer = append(w.bodyBuffer, w.bodyInline[:w.bodyLen]...)
+	}
+	w.bodyLen = 0
+	w.bodyBuffer = append(w.bodyBuffer, payload...)
+}
+
+func (w *gnetHTTPResponseWriter) bodyBytesLocked() []byte {
+	if w.bodyBuffer != nil {
+		return w.bodyBuffer
+	}
+	return w.bodyInline[:w.bodyLen]
+}
+
+func (w *gnetHTTPResponseWriter) bufferedBodyLenLocked() int {
+	if w.bodyBuffer != nil {
+		return len(w.bodyBuffer)
+	}
+	return w.bodyLen
+}
+
+func (w *gnetHTTPResponseWriter) resetBodyLocked() {
+	w.bodyBuffer = nil
+	w.bodyLen = 0
+}
+
+func headerContainsToken(header http.Header, key, token string) bool {
+	if header == nil {
+		return false
+	}
+	for _, value := range header.Values(key) {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type detachedHTTPResponseWriter struct {
