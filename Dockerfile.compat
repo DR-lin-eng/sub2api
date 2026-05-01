@@ -9,7 +9,7 @@
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-bookworm
-ARG GOLANG_IMAGE=golang:1.26.1
+ARG GOLANG_IMAGE=golang:1.26.2
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 ARG POSTGRES_IMAGE=postgres:18-bookworm
 ARG GOPROXY=https://goproxy.cn,direct
