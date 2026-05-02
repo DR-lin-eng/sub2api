@@ -85,6 +85,10 @@ func (h *OpenAIGatewayHandler) ImagesGateway(c gatewayctx.GatewayContext) {
 		zap.Bool("multipart", parsed.Multipart),
 		zap.String("capability", string(parsed.RequiredCapability)),
 	)
+	if !apiKeyAllowsRequestedModel(apiKey, parsed.Model) {
+		h.errorResponseGateway(c, http.StatusBadRequest, "invalid_request_error", apiKeyModelNotAllowedMessage(parsed.Model))
+		return
+	}
 
 	if parsed.Multipart {
 		setOpsRequestContextGateway(c, parsed.Model, parsed.Stream, nil)

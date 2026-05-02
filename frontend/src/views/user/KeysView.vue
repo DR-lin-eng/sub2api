@@ -435,6 +435,45 @@
           </div>
         </div>
 
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.modelRestriction') }}</label>
+              <p class="mt-1 text-xs text-gray-500">
+                {{ t('admin.accounts.selectAllowedModels') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="formData.enable_model_restriction = !formData.enable_model_restriction"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                formData.enable_model_restriction ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  formData.enable_model_restriction ? 'translate-x-4' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="formData.enable_model_restriction" class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-dark-600 dark:bg-dark-800">
+            <ModelWhitelistSelector
+              v-model="formData.allowed_models"
+              :platforms="selectedGroupPlatforms"
+            />
+            <p class="mt-2 text-xs text-gray-500">
+              {{
+                formData.allowed_models.length > 0
+                  ? t('admin.accounts.selectedModels', { count: formData.allowed_models.length })
+                  : t('admin.accounts.supportsAllModels')
+              }}
+            </p>
+          </div>
+        </div>
+
         <!-- Custom Key Section (only for create) -->
         <div v-if="!showEditModal" class="space-y-3">
           <div class="flex items-center justify-between">
@@ -1063,6 +1102,7 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
+	import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 	import type { ApiKey, Group, PublicSettings } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
@@ -1157,6 +1197,8 @@ const toggleFormGroup = (groupId: number, checked: boolean) => {
 const formData = ref({
   name: '',
   group_ids: [] as number[],
+  enable_model_restriction: false,
+  allowed_models: [] as string[],
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1239,6 +1281,16 @@ const groupOptions = computed(() =>
     platform: group.platform
   }))
 )
+
+const selectedGroupPlatforms = computed(() => {
+  const platforms = new Set<string>()
+  for (const group of groups.value) {
+    if (formData.value.group_ids.includes(group.id) && group.platform) {
+      platforms.add(group.platform)
+    }
+  }
+  return Array.from(platforms)
+})
 
 // Group dropdown search
 const groupSearchQuery = ref('')
@@ -1372,6 +1424,8 @@ const editKey = (key: ApiKey) => {
     group_ids: key.group_ids && key.group_ids.length > 0
       ? [...key.group_ids]
       : (key.group_id ? [key.group_id] : []),
+    enable_model_restriction: (key.allowed_models?.length || 0) > 0,
+    allowed_models: [...(key.allowed_models || [])],
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1458,6 +1512,9 @@ const handleSubmit = async () => {
 
   // Calculate quota value (null/empty/0 = unlimited, stored as 0)
   const quota = formData.value.quota && formData.value.quota > 0 ? formData.value.quota : 0
+  const allowedModels = formData.value.enable_model_restriction
+    ? Array.from(new Set(formData.value.allowed_models.map(model => model.trim()).filter(Boolean)))
+    : []
 
   // Calculate expiration
   let expiresInDays: number | undefined
@@ -1492,6 +1549,7 @@ const handleSubmit = async () => {
         name: formData.value.name,
         group_id: formData.value.group_ids[0] ?? null,
         group_ids: formData.value.group_ids,
+        allowed_models: allowedModels,
         status: formData.value.status,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
@@ -1508,6 +1566,7 @@ const handleSubmit = async () => {
         formData.value.name,
         formData.value.group_ids[0] ?? null,
         formData.value.group_ids,
+        allowedModels,
         customKey,
         ipWhitelist,
         ipBlacklist,
@@ -1559,6 +1618,8 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_ids: [],
+    enable_model_restriction: false,
+    allowed_models: [],
     status: 'active',
     use_custom_key: false,
     custom_key: '',

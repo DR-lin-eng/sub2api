@@ -1396,6 +1396,170 @@ func TestOpenAIWSConnPool_TargetConnCountAndPrewarmBranches(t *testing.T) {
 	apFail.mu.Unlock()
 }
 
+func TestOpenAIWSConnPool_PrewarmConnsRunsGenerateProbeAndAddsPrewarmedConn(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = true
+	cfg.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS = 100
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+
+	probeConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_probe_ok","model":"gpt-5.1","usage":{"input_tokens":0,"output_tokens":0}}}`),
+		},
+	}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSSequenceDialer{conns: []openAIWSClientConn{probeConn}})
+	svc := &OpenAIGatewayService{cfg: cfg}
+	pool.setGenerateProbe(svc.performOpenAIWSBackgroundGenerateProbe)
+
+	account := &Account{ID: 6201, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	ap.mu.Lock()
+	ap.creating = 1
+	ap.mu.Unlock()
+
+	pool.prewarmConns(account.ID, openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		GenerateProbeModel: "gpt-5.1",
+	}, 1)
+
+	probeConn.mu.Lock()
+	writes := append([]map[string]any(nil), probeConn.writes...)
+	probeConn.mu.Unlock()
+	require.Len(t, writes, 1)
+	require.Equal(t, false, writes[0]["generate"])
+
+	ap.mu.Lock()
+	require.Len(t, ap.conns, 1)
+	var pooledConn *openAIWSConn
+	for _, conn := range ap.conns {
+		pooledConn = conn
+	}
+	require.Zero(t, ap.prewarmFails)
+	ap.mu.Unlock()
+	require.NotNil(t, pooledConn)
+	require.True(t, pooledConn.isPrewarmed())
+	require.Equal(t, int64(1), svc.SnapshotOpenAIWSRetryMetrics().PrewarmSuccessTotal)
+}
+
+func TestOpenAIWSConnPool_PrewarmConnsDropsConnOnGenerateProbeFailure(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = true
+	cfg.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS = 100
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+
+	probeConn := &openAIWSCaptureConn{}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSSequenceDialer{
+		conns: []openAIWSClientConn{
+			probeConn,
+			&openAIWSFakeConn{},
+		},
+	})
+	svc := &OpenAIGatewayService{cfg: cfg}
+	pool.setGenerateProbe(svc.performOpenAIWSBackgroundGenerateProbe)
+
+	account := &Account{ID: 6202, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	ap.mu.Lock()
+	ap.creating = 1
+	ap.mu.Unlock()
+	req := openAIWSAcquireRequest{
+		Account:            account,
+		WSURL:              "wss://example.com/v1/responses",
+		GenerateProbeModel: "gpt-5.1",
+	}
+
+	pool.prewarmConns(account.ID, req, 1)
+
+	probeConn.mu.Lock()
+	require.True(t, probeConn.closed)
+	require.Len(t, probeConn.writes, 1)
+	probeConn.mu.Unlock()
+	ap.mu.Lock()
+	require.Empty(t, ap.conns)
+	require.GreaterOrEqual(t, ap.prewarmFails, 1)
+	ap.mu.Unlock()
+	require.Equal(t, int64(1), svc.SnapshotOpenAIWSRetryMetrics().PrewarmFallbackTotal)
+
+	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account: account,
+		WSURL:   "wss://example.com/v1/responses",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	lease.Release()
+}
+
+func TestOpenAIWSConnPool_PrewarmConnsSkipsGenerateProbeWhenModelMissing(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled = true
+	cfg.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS = 100
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+
+	probeConn := &openAIWSCaptureConn{}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSSequenceDialer{conns: []openAIWSClientConn{probeConn}})
+	svc := &OpenAIGatewayService{cfg: cfg}
+	pool.setGenerateProbe(svc.performOpenAIWSBackgroundGenerateProbe)
+
+	account := &Account{ID: 6203, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	ap.mu.Lock()
+	ap.creating = 1
+	ap.mu.Unlock()
+
+	pool.prewarmConns(account.ID, openAIWSAcquireRequest{
+		Account: account,
+		WSURL:   "wss://example.com/v1/responses",
+	}, 1)
+
+	probeConn.mu.Lock()
+	require.False(t, probeConn.closed)
+	require.Empty(t, probeConn.writes)
+	probeConn.mu.Unlock()
+	ap.mu.Lock()
+	require.Len(t, ap.conns, 1)
+	var pooledConn *openAIWSConn
+	for _, conn := range ap.conns {
+		pooledConn = conn
+	}
+	require.Zero(t, ap.prewarmFails)
+	ap.mu.Unlock()
+	require.NotNil(t, pooledConn)
+	require.False(t, pooledConn.isPrewarmed())
+	require.Zero(t, svc.SnapshotOpenAIWSRetryMetrics().PrewarmFallbackTotal)
+}
+
+func TestSanitizeOpenAIWSAcquireRequestForBackgroundPrewarm_StripsSessionHeaders(t *testing.T) {
+	req := openAIWSAcquireRequest{
+		WSURL:              "wss://example.com/v1/responses",
+		PreferredConnID:    "conn_1",
+		ForceNewConn:       true,
+		ForcePreferredConn: true,
+		GenerateProbeModel: "gpt-5.1",
+		Headers: http.Header{
+			"session_id":               []string{"sess_1"},
+			"conversation_id":          []string{"conv_1"},
+			openAIWSTurnStateHeader:    []string{"turn_state"},
+			openAIWSTurnMetadataHeader: []string{"turn_meta"},
+			"Authorization":            []string{"Bearer test"},
+		},
+	}
+
+	sanitized := sanitizeOpenAIWSAcquireRequestForBackgroundPrewarm(req)
+	require.Equal(t, "gpt-5.1", sanitized.GenerateProbeModel)
+	require.Empty(t, sanitized.PreferredConnID)
+	require.False(t, sanitized.ForceNewConn)
+	require.False(t, sanitized.ForcePreferredConn)
+	require.Empty(t, sanitized.Headers.Get("session_id"))
+	require.Empty(t, sanitized.Headers.Get("conversation_id"))
+	require.Empty(t, sanitized.Headers.Get(openAIWSTurnStateHeader))
+	require.Empty(t, sanitized.Headers.Get(openAIWSTurnMetadataHeader))
+	require.Equal(t, "Bearer test", sanitized.Headers.Get("Authorization"))
+}
+
 func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 	var nilPool *openAIWSConnPool
 	_, err := nilPool.Acquire(context.Background(), openAIWSAcquireRequest{})
@@ -1456,6 +1620,31 @@ func (d *openAIWSFakeDialer) Dial(
 	_ = headers
 	_ = proxyURL
 	return &openAIWSFakeConn{}, 0, nil, nil
+}
+
+type openAIWSSequenceDialer struct {
+	mu    sync.Mutex
+	conns []openAIWSClientConn
+}
+
+func (d *openAIWSSequenceDialer) Dial(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+) (openAIWSClientConn, int, http.Header, error) {
+	_ = ctx
+	_ = wsURL
+	_ = headers
+	_ = proxyURL
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.conns) == 0 {
+		return nil, 503, nil, errors.New("no dialer connection available")
+	}
+	conn := d.conns[0]
+	d.conns = d.conns[1:]
+	return conn, 0, nil, nil
 }
 
 type openAIWSCountingDialer struct {

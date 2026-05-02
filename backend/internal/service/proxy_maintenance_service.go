@@ -164,14 +164,14 @@ func (s *ProxyMaintenanceService) run(ctx context.Context, sourceProxyIDs []int6
 	selected := selectProxyMaintenanceTargets(proxies, selectedIDs)
 	if len(selected) == 0 {
 		return &ProxyMaintenanceResult{
-			Status:       "success",
-			Summary:      "No proxies selected",
-			StartedAt:    startedAt,
-			FinishedAt:   time.Now().UTC(),
-			CreatedAt:    time.Now().UTC(),
-			Assignments:  []ProxyMaintenanceAssignment{},
-			Failures:     []ProxyMaintenanceFailure{},
-			Details:      map[string]any{},
+			Status:        "success",
+			Summary:       "No proxies selected",
+			StartedAt:     startedAt,
+			FinishedAt:    time.Now().UTC(),
+			CreatedAt:     time.Now().UTC(),
+			Assignments:   []ProxyMaintenanceAssignment{},
+			Failures:      []ProxyMaintenanceFailure{},
+			Details:       map[string]any{},
 			MovedAccounts: 0,
 		}, nil
 	}
@@ -239,10 +239,10 @@ func (s *ProxyMaintenanceService) run(ctx context.Context, sourceProxyIDs []int6
 }
 
 type proxyHealthInspection struct {
-	Proxy            ProxyWithAccountCount
-	Success          bool
-	Message          string
-	AffectedAccounts []ProxyAccountSummary
+	Proxy    ProxyWithAccountCount
+	Success  bool
+	Message  string
+	Accounts []ProxyAccountSummary
 }
 
 func (s *ProxyMaintenanceService) inspectProxyHealth(ctx context.Context, proxies []ProxyWithAccountCount) ([]proxyHealthInspection, error) {
@@ -264,7 +264,7 @@ func (s *ProxyMaintenanceService) inspectProxyHealth(ctx context.Context, proxie
 			} else if err != nil {
 				inspection.Message = err.Error()
 			}
-			if !inspection.Success && proxy.AccountCount > 0 {
+			if proxy.AccountCount > 0 {
 				accounts, accErr := s.adminSvc.GetProxyAccounts(egCtx, proxy.ID)
 				if accErr != nil {
 					if inspection.Message != "" {
@@ -272,7 +272,7 @@ func (s *ProxyMaintenanceService) inspectProxyHealth(ctx context.Context, proxie
 					}
 					inspection.Message += "failed to list accounts: " + accErr.Error()
 				} else {
-					inspection.AffectedAccounts = accounts
+					inspection.Accounts = accounts
 				}
 			}
 			results[i] = inspection
@@ -305,46 +305,69 @@ func selectProxyMaintenanceTargets(proxies []ProxyWithAccountCount, selectedIDs 
 func planProxyMaintenanceAssignments(checked []proxyHealthInspection) ([]ProxyMaintenanceAssignment, []ProxyMaintenanceFailure) {
 	healthy := make([]ProxyWithAccountCount, 0)
 	projectedUsage := make(map[int64]int)
+	sourceAccounts := make(map[int64][]ProxyAccountSummary, len(checked))
 	for _, check := range checked {
+		sourceAccounts[check.Proxy.ID] = cloneAndSortProxyAccounts(check.Accounts)
 		if check.Success {
 			healthy = append(healthy, check.Proxy)
-			projectedUsage[check.Proxy.ID] = int(check.Proxy.AccountCount)
+			projectedUsage[check.Proxy.ID] = proxyInspectionAccountCount(check)
 		}
 	}
+	targetUsage := computeBalancedProxyTargetUsage(checked, healthy, projectedUsage)
 	assignments := make([]ProxyMaintenanceAssignment, 0)
 	unassigned := make([]ProxyMaintenanceFailure, 0)
 	for _, check := range checked {
-		if check.Success || len(check.AffectedAccounts) == 0 {
+		if check.Success || proxyInspectionAccountCount(check) == 0 {
 			continue
 		}
-		target := pickProxyMaintenanceTarget(healthy, projectedUsage, check.Proxy.ID)
-		if target == nil {
+		if len(sourceAccounts[check.Proxy.ID]) == 0 {
 			unassigned = append(unassigned, ProxyMaintenanceFailure{
 				ProxyID:       check.Proxy.ID,
 				ProxyName:     check.Proxy.Name,
 				Message:       check.Message,
-				AffectedCount: len(check.AffectedAccounts),
+				AffectedCount: proxyInspectionAccountCount(check),
 			})
 			continue
 		}
-		accountIDs := make([]int64, 0, len(check.AffectedAccounts))
-		for _, account := range check.AffectedAccounts {
-			if account.ID > 0 {
-				accountIDs = append(accountIDs, account.ID)
-			}
-		}
-		if len(accountIDs) == 0 {
+		assignments, unassigned = appendProxyMaintenanceAssignments(
+			assignments,
+			unassigned,
+			check,
+			sourceAccounts[check.Proxy.ID],
+			healthy,
+			projectedUsage,
+			targetUsage,
+			len(sourceAccounts[check.Proxy.ID]),
+			true,
+		)
+	}
+	for _, check := range checked {
+		if !check.Success {
 			continue
 		}
-		projectedUsage[target.ID] += len(accountIDs)
-		assignments = append(assignments, ProxyMaintenanceAssignment{
-			SourceProxyID: check.Proxy.ID,
-			TargetProxyID: target.ID,
-			AccountIDs:    accountIDs,
-			AccountCount:  len(accountIDs),
-			SourceProxy:   check.Proxy.Name,
-			TargetProxy:   target.Name,
-		})
+		accounts := sourceAccounts[check.Proxy.ID]
+		if len(accounts) == 0 {
+			continue
+		}
+		excess := projectedUsage[check.Proxy.ID] - targetUsage[check.Proxy.ID]
+		if excess <= 0 {
+			continue
+		}
+		moveAccounts := accounts
+		if excess < len(accounts) {
+			moveAccounts = accounts[len(accounts)-excess:]
+		}
+		assignments, unassigned = appendProxyMaintenanceAssignments(
+			assignments,
+			unassigned,
+			check,
+			moveAccounts,
+			healthy,
+			projectedUsage,
+			targetUsage,
+			excess,
+			false,
+		)
 	}
 	sort.Slice(assignments, func(i, j int) bool {
 		if assignments[i].SourceProxyID != assignments[j].SourceProxyID {
@@ -355,7 +378,112 @@ func planProxyMaintenanceAssignments(checked []proxyHealthInspection) ([]ProxyMa
 	return assignments, unassigned
 }
 
-func pickProxyMaintenanceTarget(healthy []ProxyWithAccountCount, projectedUsage map[int64]int, excludeID int64) *ProxyWithAccountCount {
+func appendProxyMaintenanceAssignments(
+	assignments []ProxyMaintenanceAssignment,
+	unassigned []ProxyMaintenanceFailure,
+	check proxyHealthInspection,
+	accounts []ProxyAccountSummary,
+	healthy []ProxyWithAccountCount,
+	projectedUsage map[int64]int,
+	targetUsage map[int64]int,
+	movableCount int,
+	required bool,
+) ([]ProxyMaintenanceAssignment, []ProxyMaintenanceFailure) {
+	if movableCount <= 0 || len(accounts) == 0 {
+		return assignments, unassigned
+	}
+	remaining := movableCount
+	cursor := 0
+	for remaining > 0 && cursor < len(accounts) {
+		target := pickProxyMaintenanceTarget(healthy, projectedUsage, targetUsage, check.Proxy.ID)
+		if target == nil {
+			break
+		}
+		deficit := targetUsage[target.ID] - projectedUsage[target.ID]
+		if deficit <= 0 {
+			break
+		}
+		moveCount := deficit
+		if moveCount > remaining {
+			moveCount = remaining
+		}
+		accountIDs := make([]int64, 0, moveCount)
+		for cursor < len(accounts) && len(accountIDs) < moveCount {
+			accountID := accounts[cursor].ID
+			cursor++
+			if accountID <= 0 {
+				continue
+			}
+			accountIDs = append(accountIDs, accountID)
+		}
+		if len(accountIDs) == 0 {
+			break
+		}
+		projectedUsage[target.ID] += len(accountIDs)
+		if check.Success {
+			projectedUsage[check.Proxy.ID] -= len(accountIDs)
+		}
+		remaining -= len(accountIDs)
+		assignments = append(assignments, ProxyMaintenanceAssignment{
+			SourceProxyID: check.Proxy.ID,
+			TargetProxyID: target.ID,
+			AccountIDs:    accountIDs,
+			AccountCount:  len(accountIDs),
+			SourceProxy:   check.Proxy.Name,
+			TargetProxy:   target.Name,
+		})
+	}
+	if required && remaining > 0 {
+		unassigned = append(unassigned, ProxyMaintenanceFailure{
+			ProxyID:       check.Proxy.ID,
+			ProxyName:     check.Proxy.Name,
+			Message:       check.Message,
+			AffectedCount: remaining,
+		})
+	}
+	return assignments, unassigned
+}
+
+func computeBalancedProxyTargetUsage(
+	checked []proxyHealthInspection,
+	healthy []ProxyWithAccountCount,
+	projectedUsage map[int64]int,
+) map[int64]int {
+	targets := make(map[int64]int, len(healthy))
+	if len(healthy) == 0 {
+		return targets
+	}
+	totalAccounts := 0
+	for _, check := range checked {
+		totalAccounts += proxyInspectionAccountCount(check)
+	}
+	sortedHealthy := append([]ProxyWithAccountCount(nil), healthy...)
+	sort.Slice(sortedHealthy, func(i, j int) bool {
+		left := projectedUsage[sortedHealthy[i].ID]
+		right := projectedUsage[sortedHealthy[j].ID]
+		if left != right {
+			return left < right
+		}
+		return sortedHealthy[i].ID < sortedHealthy[j].ID
+	})
+	base := totalAccounts / len(sortedHealthy)
+	remainder := totalAccounts % len(sortedHealthy)
+	for i := range sortedHealthy {
+		target := base
+		if i < remainder {
+			target++
+		}
+		targets[sortedHealthy[i].ID] = target
+	}
+	return targets
+}
+
+func pickProxyMaintenanceTarget(
+	healthy []ProxyWithAccountCount,
+	projectedUsage map[int64]int,
+	targetUsage map[int64]int,
+	excludeID int64,
+) *ProxyWithAccountCount {
 	if len(healthy) == 0 {
 		return nil
 	}
@@ -364,12 +492,20 @@ func pickProxyMaintenanceTarget(healthy []ProxyWithAccountCount, projectedUsage 
 		if proxy.ID == excludeID {
 			continue
 		}
+		if targetUsage[proxy.ID]-projectedUsage[proxy.ID] <= 0 {
+			continue
+		}
 		candidates = append(candidates, proxy)
 	}
 	if len(candidates) == 0 {
 		return nil
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		leftDeficit := targetUsage[candidates[i].ID] - projectedUsage[candidates[i].ID]
+		rightDeficit := targetUsage[candidates[j].ID] - projectedUsage[candidates[j].ID]
+		if leftDeficit != rightDeficit {
+			return leftDeficit > rightDeficit
+		}
 		left := projectedUsage[candidates[i].ID]
 		right := projectedUsage[candidates[j].ID]
 		if left != right {
@@ -377,7 +513,32 @@ func pickProxyMaintenanceTarget(healthy []ProxyWithAccountCount, projectedUsage 
 		}
 		return candidates[i].ID < candidates[j].ID
 	})
-	return &candidates[0]
+	best := candidates[0]
+	return &best
+}
+
+func proxyInspectionAccountCount(check proxyHealthInspection) int {
+	if len(check.Accounts) > 0 {
+		return len(check.Accounts)
+	}
+	if check.Proxy.AccountCount > 0 {
+		return int(check.Proxy.AccountCount)
+	}
+	return 0
+}
+
+func cloneAndSortProxyAccounts(accounts []ProxyAccountSummary) []ProxyAccountSummary {
+	if len(accounts) == 0 {
+		return nil
+	}
+	out := append([]ProxyAccountSummary(nil), accounts...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 func int64Pointer(value int64) *int64 {

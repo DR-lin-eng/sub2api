@@ -294,6 +294,9 @@ func TestEnhanceCSPPolicy(t *testing.T) {
 
 		assert.Contains(t, enhanced, NonceTemplate)
 		assert.Contains(t, enhanced, CloudflareInsightsDomain)
+		assert.Contains(t, enhanced, StripeJSDomain)
+		assert.Contains(t, enhanced, StripeAPIDomain)
+		assert.Contains(t, enhanced, StripeHooksDomain)
 	})
 
 	t.Run("does_not_duplicate_nonce_placeholder", func(t *testing.T) {

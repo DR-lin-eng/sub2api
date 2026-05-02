@@ -22,6 +22,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+type flushTrackingWriter struct {
+	gin.ResponseWriter
+	recorder       *httptest.ResponseRecorder
+	flushSnapshots []string
+}
+
+func (w *flushTrackingWriter) Flush() {
+	if w.recorder != nil {
+		w.flushSnapshots = append(w.flushSnapshots, w.recorder.Body.String())
+	}
+	w.ResponseWriter.Flush()
+}
+
 func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -785,7 +798,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateAndMetadataReplayOnReconnect
 	require.Equal(t, "turn_state_first", secondHandshakeHeaders.Get("X-Codex-Turn-State"))
 }
 
-func TestOpenAIGatewayService_Forward_WSv2_GeneratePrewarm(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2_GeneratePrewarmEnabledDoesNotWriteForegroundProbe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -807,7 +820,6 @@ func TestOpenAIGatewayService_Forward_WSv2_GeneratePrewarm(t *testing.T) {
 
 	captureConn := &openAIWSCaptureConn{
 		events: [][]byte{
-			[]byte(`{"type":"response.completed","response":{"id":"resp_prewarm_1","model":"gpt-5.1","usage":{"input_tokens":0,"output_tokens":0}}}`),
 			[]byte(`{"type":"response.completed","response":{"id":"resp_main_1","model":"gpt-5.1","usage":{"input_tokens":4,"output_tokens":2}}}`),
 		},
 	}
@@ -846,12 +858,132 @@ func TestOpenAIGatewayService_Forward_WSv2_GeneratePrewarm(t *testing.T) {
 	require.NotNil(t, result)
 	require.Equal(t, "resp_main_1", result.RequestID)
 
-	require.Len(t, captureConn.writes, 2, "开启 generate=false 预热后应发送两次 WS 请求")
+	require.Len(t, captureConn.writes, 1, "前台真实请求不应再同步发送 generate=false 预热")
 	firstWrite := requestToJSONString(captureConn.writes[0])
-	secondWrite := requestToJSONString(captureConn.writes[1])
-	require.True(t, gjson.Get(firstWrite, "generate").Exists())
-	require.False(t, gjson.Get(firstWrite, "generate").Bool())
-	require.False(t, gjson.Get(secondWrite, "generate").Exists())
+	require.False(t, gjson.Get(firstWrite, "generate").Exists())
+}
+
+func TestBuildOpenAIWSGenerateProbeModel_SkipsStatefulPayloads(t *testing.T) {
+	require.Empty(t, buildOpenAIWSGenerateProbeModel(
+		map[string]any{"type": "response.create", "model": "gpt-5.1", "store": false},
+		map[string]any{"model": "gpt-5.1", "store": false},
+		"",
+	))
+	require.Empty(t, buildOpenAIWSGenerateProbeModel(
+		map[string]any{"type": "response.create", "model": "gpt-5.1", "previous_response_id": "resp_prev"},
+		map[string]any{"model": "gpt-5.1"},
+		"resp_prev",
+	))
+	require.Empty(t, buildOpenAIWSGenerateProbeModel(
+		map[string]any{"type": "response.create", "model": "gpt-5.1", "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok"}}},
+		map[string]any{"model": "gpt-5.1", "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok"}}},
+		"",
+	))
+	require.Empty(t, buildOpenAIWSGenerateProbeModel(
+		map[string]any{"type": "session.update", "model": "gpt-5.1"},
+		map[string]any{"model": "gpt-5.1"},
+		"",
+	))
+
+	model := buildOpenAIWSGenerateProbeModel(
+		map[string]any{"type": "response.create", "model": "gpt-5.1", "input": []any{map[string]any{"type": "input_text", "text": "hello"}}},
+		map[string]any{"model": "gpt-5.1"},
+		"",
+	)
+	require.Equal(t, "gpt-5.1", model)
+}
+
+func TestOpenAIGatewayService_Forward_WSv2_StreamFlushesFirstTokenImmediately(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	trackingWriter := &flushTrackingWriter{
+		ResponseWriter: ginCtx.Writer,
+		recorder:       rec,
+	}
+	ginCtx.Writer = trackingWriter
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	ginCtx.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+	cfg.Gateway.OpenAIWS.QueueLimitPerConn = 8
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
+	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	cfg.Gateway.OpenAIWS.EventFlushBatchSize = 4
+	cfg.Gateway.OpenAIWS.EventFlushIntervalMS = 0
+
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.created","response":{"id":"resp_stream_flush_1","model":"gpt-5.1"}}`),
+			[]byte(`{"type":"response.output_text.delta","delta":"hello-first","response":{"id":"resp_stream_flush_1"}}`),
+			[]byte(`{"type":"response.output_text.delta","delta":"second-token","response":{"id":"resp_stream_flush_1"}}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_stream_flush_1","model":"gpt-5.1","usage":{"input_tokens":2,"output_tokens":2}}}`),
+		},
+	}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     &httpUpstreamRecorder{},
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+		openaiWSPool:     pool,
+	}
+
+	account := &Account{
+		ID:          1601,
+		Name:        "openai-stream-flush",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":true,"input":[{"type":"input_text","text":"hello"}]}`)
+	result, err := svc.Forward(context.Background(), ginCtx, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.OpenAIWSMode)
+	require.True(t, result.Stream)
+	require.NotNil(t, result.FirstTokenMs)
+	require.Contains(t, rec.Body.String(), `"delta":"hello-first"`)
+	require.Contains(t, rec.Body.String(), `"delta":"second-token"`)
+
+	firstTokenFlushedBeforeLaterEvents := false
+	for _, snapshot := range trackingWriter.flushSnapshots {
+		if strings.Contains(snapshot, `"delta":"hello-first"`) &&
+			!strings.Contains(snapshot, `"delta":"second-token"`) &&
+			!strings.Contains(snapshot, `"type":"response.completed"`) {
+			firstTokenFlushedBeforeLaterEvents = true
+			break
+		}
+	}
+	require.True(
+		t,
+		firstTokenFlushedBeforeLaterEvents,
+		"首个 token 应在后续 token/terminal 事件之前单独 flush 到下游，避免被 batch 攒住",
+	)
 }
 
 func TestOpenAIGatewayService_PrewarmReadHonorsParentContext(t *testing.T) {

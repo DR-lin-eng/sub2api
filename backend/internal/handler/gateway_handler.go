@@ -184,6 +184,10 @@ func (h *GatewayHandler) MessagesGateway(transportCtx gatewayctx.GatewayContext)
 		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
+	if !apiKeyAllowsRequestedModel(apiKey, reqModel) {
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", apiKeyModelNotAllowedMessage(reqModel))
+		return
+	}
 
 	streamStarted := false
 
@@ -751,9 +755,19 @@ func (h *GatewayHandler) ModelsGateway(c gatewayctx.GatewayContext) {
 	}
 
 	if platform == service.PlatformSora {
+		models := service.DefaultSoraModels(h.cfg)
+		if apiKey != nil && len(apiKey.AllowedModels) > 0 {
+			filtered := make([]openai.Model, 0, len(models))
+			for _, model := range models {
+				if apiKeyAllowsRequestedModel(apiKey, model.ID) {
+					filtered = append(filtered, model)
+				}
+			}
+			models = filtered
+		}
 		c.WriteJSON(http.StatusOK, gin.H{
 			"object": "list",
-			"data":   service.DefaultSoraModels(h.cfg),
+			"data":   models,
 		})
 		return
 	}
@@ -766,6 +780,15 @@ func (h *GatewayHandler) ModelsGateway(c gatewayctx.GatewayContext) {
 	}
 
 	availableModels := h.gatewayService.GetAvailableModels(c.Request().Context(), groupID, platform)
+	if apiKey != nil && len(apiKey.AllowedModels) > 0 {
+		filtered := make([]string, 0, len(availableModels))
+		for _, modelID := range availableModels {
+			if apiKeyAllowsRequestedModel(apiKey, modelID) {
+				filtered = append(filtered, modelID)
+			}
+		}
+		availableModels = filtered
+	}
 
 	if len(availableModels) > 0 {
 		// Build model list from whitelist
@@ -787,16 +810,18 @@ func (h *GatewayHandler) ModelsGateway(c gatewayctx.GatewayContext) {
 
 	// Fallback to default models
 	if platform == "openai" {
+		models := filterOpenAIModelsForAPIKey(apiKey, openai.DefaultModels)
 		c.WriteJSON(http.StatusOK, gin.H{
 			"object": "list",
-			"data":   openai.DefaultModels,
+			"data":   models,
 		})
 		return
 	}
 
+	models := filterClaudeModelsForAPIKey(apiKey, claude.DefaultModels)
 	c.WriteJSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   claude.DefaultModels,
+		"data":   models,
 	})
 }
 
@@ -807,9 +832,10 @@ func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
 }
 
 func (h *GatewayHandler) AntigravityModelsGateway(c gatewayctx.GatewayContext) {
+	apiKey, _ := middleware2.GetAPIKeyFromGatewayContext(c)
 	c.WriteJSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   antigravity.DefaultModels(),
+		"data":   filterAntigravityClaudeModelsForAPIKey(apiKey, antigravity.DefaultModels()),
 	})
 }
 
@@ -1370,6 +1396,10 @@ func (h *GatewayHandler) CountTokensGateway(transportCtx gatewayctx.GatewayConte
 	// 验证 model 必填
 	if parsedReq.Model == "" {
 		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if !apiKeyAllowsRequestedModel(apiKey, parsedReq.Model) {
+		h.errorResponseGateway(transportCtx, http.StatusBadRequest, "invalid_request_error", apiKeyModelNotAllowedMessage(parsedReq.Model))
 		return
 	}
 

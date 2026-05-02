@@ -1605,6 +1605,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			wantErr: "gateway.openai_ws.fallback_cooldown_seconds",
 		},
 		{
+			name:    "prewarm_generate_timeout_ms 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS = -1 },
+			wantErr: "gateway.openai_ws.prewarm_generate_timeout_ms",
+		},
+		{
 			name:    "store_disabled_conn_mode 必须为 strict|adaptive|off",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.StoreDisabledConnMode = "invalid" },
 			wantErr: "gateway.openai_ws.store_disabled_conn_mode",

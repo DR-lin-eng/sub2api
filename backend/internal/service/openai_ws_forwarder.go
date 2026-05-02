@@ -56,6 +56,7 @@ const (
 	openAIWSIngressHeartbeatDefault       = 20 * time.Second
 	openAIWSIngressHeartbeatMin           = time.Second
 	openAIWSIngressHeartbeatPingTimeout   = 5 * time.Second
+	openAIWSGenerateProbeTimeoutDefault   = time.Second
 
 	openAIWSStoreDisabledConnModeStrict   = "strict"
 	openAIWSStoreDisabledConnModeAdaptive = "adaptive"
@@ -918,6 +919,9 @@ func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {
 			s.openaiWSPool = newOpenAIWSConnPool(s.cfg)
 		}
 	})
+	if s.openaiWSPool != nil && s.openaiWSPool.generateProbe == nil {
+		s.openaiWSPool.setGenerateProbe(s.performOpenAIWSBackgroundGenerateProbe)
+	}
 	return s.openaiWSPool
 }
 
@@ -1016,6 +1020,13 @@ func (s *OpenAIGatewayService) openAIWSWriteTimeout() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second
 	}
 	return 2 * time.Minute
+}
+
+func (s *OpenAIGatewayService) openAIWSGenerateProbeTimeout() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.PrewarmGenerateTimeoutMS) * time.Millisecond
+	}
+	return openAIWSGenerateProbeTimeoutDefault
 }
 
 func (s *OpenAIGatewayService) openAIWSIngressHeartbeatInterval() time.Duration {
@@ -1933,6 +1944,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
 	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(transportCtx, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	var generateProbeModel string
+	if !storeDisabled {
+		generateProbeModel = buildOpenAIWSGenerateProbeModel(payload, reqBody, previousResponseID)
+	}
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
 		account.ID,
@@ -1969,11 +1984,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	defer acquireCancel()
 
 	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
-		Account:         account,
-		WSURL:           wsURL,
-		Headers:         wsHeaders,
-		PreferredConnID: preferredConnID,
-		ForceNewConn:    forceNewConn,
+		Account:            account,
+		WSURL:              wsURL,
+		Headers:            wsHeaders,
+		PreferredConnID:    preferredConnID,
+		GenerateProbeModel: generateProbeModel,
+		ForceNewConn:       forceNewConn,
 		ProxyURL: func() string {
 			if account.ProxyID != nil && account.Proxy != nil {
 				return account.Proxy.URL()
@@ -2087,20 +2103,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if transportCtx != nil {
 			transportCtx.SetHeader(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
 		}
-	}
-
-	if err := s.performOpenAIWSGeneratePrewarm(
-		ctx,
-		lease,
-		decision,
-		payload,
-		previousResponseID,
-		reqBody,
-		account,
-		stateStore,
-		groupID,
-	); err != nil {
-		return nil, err
 	}
 
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
@@ -2268,6 +2270,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		isTokenEvent := frameSummary.IsTokenEvent
+		isFirstTokenEvent := false
 		if isTokenEvent {
 			tokenEventCount++
 		}
@@ -2278,6 +2281,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if firstTokenMs == nil && isTokenEvent {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
+			isFirstTokenEvent = true
 		}
 		if debugEnabled && shouldLogOpenAIWSEvent(eventCount, eventType) {
 			logOpenAIWSModeDebug(
@@ -2414,7 +2418,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 			} else {
 				flushBufferedStreamEvents(eventType)
-				emitStreamFrame(buildStreamFrame(message), isTerminalEvent)
+				// 首个 token 事件必须立即刷出，避免还没到 batch/interval 阈值时额外拖慢 TTFT。
+				emitStreamFrame(buildStreamFrame(message), isTerminalEvent || isFirstTokenEvent)
 			}
 		} else {
 			if frameSummary.ResponseRaw != "" {
@@ -2426,6 +2431,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			cleanExit = true
 			break
 		}
+	}
+
+	if cleanExit {
+		lease.MarkPrewarmed()
 	}
 
 	if !reqStream {
@@ -3202,6 +3211,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				// 客户端已断连时，上游连接的 session 状态不可信，标记 broken 避免回池复用。
 				if clientDisconnected {
 					lease.MarkBroken()
+				} else {
+					lease.MarkPrewarmed()
 				}
 				firstTokenMsValue := -1
 				if firstTokenMs != nil {
@@ -3844,8 +3855,7 @@ func (s *OpenAIGatewayService) isOpenAIWSGeneratePrewarmEnabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled
 }
 
-// performOpenAIWSGeneratePrewarm 在 WSv2 下执行可选的 generate=false 预热。
-// 预热默认关闭，仅在配置开启后生效；失败时按可恢复错误回退到 HTTP。
+// performOpenAIWSGeneratePrewarm 保留给旧测试/调用点使用；前台真实请求路径不再调用它。
 func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	ctx context.Context,
 	lease *openAIWSConnLease,
@@ -3857,6 +3867,8 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	stateStore OpenAIWSStateStore,
 	groupID int64,
 ) error {
+	_ = stateStore
+	_ = groupID
 	if s == nil {
 		return nil
 	}
@@ -3877,35 +3889,103 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		)
 		return nil
 	}
-	if strings.TrimSpace(previousResponseID) != "" {
+	if s.isOpenAIWSStoreDisabledInRequest(reqBody, account) {
+		logOpenAIWSModeInfo("prewarm_skip account_id=%d conn_id=%s reason=store_disabled", account.ID, connID)
+		return nil
+	}
+	probeModel := buildOpenAIWSGenerateProbeModel(payload, reqBody, previousResponseID)
+	if probeModel == "" {
 		logOpenAIWSModeInfo(
-			"prewarm_skip account_id=%d conn_id=%s reason=has_previous_response_id previous_response_id=%s",
+			"prewarm_skip account_id=%d conn_id=%s reason=payload_not_probeable previous_response_id=%s",
 			account.ID,
 			connID,
 			truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
 		)
 		return nil
 	}
-	if lease.IsPrewarmed() {
+	return s.performOpenAIWSBackgroundGenerateProbe(ctx, lease.conn, openAIWSAcquireRequest{
+		Account:            account,
+		GenerateProbeModel: probeModel,
+	})
+}
+
+func buildOpenAIWSGenerateProbeModel(payload map[string]any, reqBody map[string]any, previousResponseID string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	if strings.TrimSpace(previousResponseID) != "" || NeedsToolContinuation(reqBody) {
+		return ""
+	}
+	if storeDisabledValue, ok := payload["store"].(bool); ok && !storeDisabledValue {
+		return ""
+	}
+	raw := payloadAsJSONBytes(payload)
+	summary := ffi.ParseOpenAIWSRequestPayloadSummary(raw)
+	if strings.TrimSpace(summary.PreviousResponseID) != "" || summary.HasFunctionCallOutput {
+		return ""
+	}
+	eventType := strings.TrimSpace(summary.EventType)
+	if eventType != "" && eventType != "response.create" {
+		return ""
+	}
+	return strings.TrimSpace(summary.Model)
+}
+
+func (s *OpenAIGatewayService) performOpenAIWSBackgroundGenerateProbe(
+	ctx context.Context,
+	conn *openAIWSConn,
+	req openAIWSAcquireRequest,
+) error {
+	if s == nil || conn == nil || req.Account == nil {
+		logOpenAIWSModeInfo("prewarm_skip reason=invalid_state has_conn=%v has_account=%v", conn != nil, req.Account != nil)
+		return nil
+	}
+	account := req.Account
+	connID := strings.TrimSpace(conn.id)
+	if !s.isOpenAIWSGeneratePrewarmEnabled() {
+		return nil
+	}
+	if conn.isPrewarmed() {
 		logOpenAIWSModeInfo("prewarm_skip account_id=%d conn_id=%s reason=already_prewarmed", account.ID, connID)
 		return nil
 	}
-	if NeedsToolContinuation(reqBody) {
-		logOpenAIWSModeInfo("prewarm_skip account_id=%d conn_id=%s reason=tool_continuation", account.ID, connID)
+	probeModel := strings.TrimSpace(req.GenerateProbeModel)
+	if probeModel == "" {
+		logOpenAIWSModeDebug("prewarm_skip account_id=%d conn_id=%s reason=missing_probe_model", account.ID, connID)
 		return nil
 	}
-	prewarmStart := time.Now()
-	logOpenAIWSModeInfo("prewarm_start account_id=%d conn_id=%s", account.ID, connID)
+	probePayload := payloadAsJSONBytes(map[string]any{
+		"type":     "response.create",
+		"model":    probeModel,
+		"generate": false,
+		"input": []map[string]any{
+			{
+				"type": "input_text",
+				"text": "ping",
+			},
+		},
+	})
 
-	prewarmPayload := make(map[string]any, len(payload)+1)
-	for k, v := range payload {
-		prewarmPayload[k] = v
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	prewarmPayload["generate"] = false
-	prewarmPayloadJSON := payloadAsJSONBytes(prewarmPayload)
+	timeout := s.openAIWSGenerateProbeTimeout()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	prewarmStart := time.Now()
+	logOpenAIWSModeInfo(
+		"prewarm_start account_id=%d conn_id=%s model=%s payload_bytes=%d timeout_ms=%d",
+		account.ID,
+		connID,
+		truncateOpenAIWSLogValue(probeModel, openAIWSLogValueMaxLen),
+		len(probePayload),
+		timeout.Milliseconds(),
+	)
 
-	if err := lease.WriteJSONWithContextTimeout(ctx, prewarmPayload, s.openAIWSWriteTimeout()); err != nil {
-		lease.MarkBroken()
+	if err := conn.writeJSONWithTimeout(ctx, json.RawMessage(probePayload), timeout); err != nil {
 		logOpenAIWSModeInfo(
 			"prewarm_write_fail account_id=%d conn_id=%s cause=%s",
 			account.ID,
@@ -3915,15 +3995,14 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		s.recordOpenAIWSPrewarmFallback("prewarm_write")
 		return wrapOpenAIWSFallback("prewarm_write", err)
 	}
-	logOpenAIWSModeInfo("prewarm_write_sent account_id=%d conn_id=%s payload_bytes=%d", account.ID, connID, len(prewarmPayloadJSON))
+	logOpenAIWSModeInfo("prewarm_write_sent account_id=%d conn_id=%s payload_bytes=%d", account.ID, connID, len(probePayload))
 
 	prewarmResponseID := ""
 	prewarmEventCount := 0
 	prewarmTerminalCount := 0
 	for {
-		message, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
+		message, readErr := conn.readMessageWithContextTimeout(ctx, timeout)
 		if readErr != nil {
-			lease.MarkBroken()
 			closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
 			logOpenAIWSModeInfo(
 				"prewarm_read_fail account_id=%d conn_id=%s close_status=%s close_reason=%s cause=%s events=%d",
@@ -3962,7 +4041,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := frameSummary.Code, frameSummary.ErrType, frameSummary.Message
-			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, conn.handshakeHeaders, message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "OpenAI websocket prewarm error"
@@ -3980,7 +4059,6 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 				errType,
 				errMessage,
 			)
-			lease.MarkBroken()
 			if canFallback {
 				reason := "prewarm_" + fallbackReason
 				s.recordOpenAIWSPrewarmFallback(reason)
@@ -3996,12 +4074,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		}
 	}
 
-	lease.MarkPrewarmed()
-	if prewarmResponseID != "" && stateStore != nil {
-		ttl := s.openAIWSResponseStickyTTL()
-		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, prewarmResponseID, stateStore.BindResponseAccount(ctx, groupID, prewarmResponseID, account.ID, ttl))
-		stateStore.BindResponseConn(prewarmResponseID, lease.ConnID(), ttl)
-	}
+	conn.markPrewarmed()
 	logOpenAIWSModeInfo(
 		"prewarm_done account_id=%d conn_id=%s response_id=%s events=%d terminal_events=%d duration_ms=%d",
 		account.ID,

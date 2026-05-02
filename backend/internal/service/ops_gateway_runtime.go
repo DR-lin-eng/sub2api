@@ -7,6 +7,7 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeobs"
 	ffi "github.com/Wei-Shaw/sub2api/internal/rustbridge/ffi"
 	rustsidecar "github.com/Wei-Shaw/sub2api/internal/rustbridge/sidecar"
 )
@@ -51,6 +52,7 @@ type OpenAIWSRuntimeResponse struct {
 	Transport            OpenAIWSTransportMetricsSnapshot `json:"transport"`
 	Passthrough          map[string]int64                 `json:"passthrough,omitempty"`
 	Relay                OpenAIStreamRelayMetricsSnapshot `json:"relay"`
+	GnetHTTP1            runtimeobs.GnetHTTP1Snapshot     `json:"gnet_http1"`
 	RustFFI              ffi.MetricsSnapshot              `json:"rust_ffi"`
 	RustSidecar          *RustSidecarRuntimeResponse      `json:"rust_sidecar,omitempty"`
 	Circuits             OpenAICircuitRuntimeSnapshot     `json:"circuits"`
@@ -230,6 +232,7 @@ func (s *OpsService) GetOpenAIWSRuntime(
 			"incomplete_close_total":            snapshot.Passthrough.IncompleteCloseTotal,
 			"stream_closed_after_content_total": snapshot.Passthrough.StreamClosedAfterContentTotal,
 		},
+		GnetHTTP1:   runtimeobs.SnapshotGnetHTTP1(),
 		RustFFI:     snapshot.RustFFI,
 		RustSidecar: s.getRustSidecarRuntime(ctx),
 		Relay:       snapshot.Relay,

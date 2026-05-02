@@ -66,11 +66,15 @@ type openAIWSAcquireRequest struct {
 	Headers         http.Header
 	ProxyURL        string
 	PreferredConnID string
+	// GenerateProbeModel is an optional model id for background idle-conn generate=false probe.
+	GenerateProbeModel string
 	// ForceNewConn: 强制本次获取新连接（避免复用导致连接内续链状态互相污染）。
 	ForceNewConn bool
 	// ForcePreferredConn: 强制本次只使用 PreferredConnID，禁止漂移到其它连接。
 	ForcePreferredConn bool
 }
+
+type openAIWSGenerateProbeFunc func(ctx context.Context, conn *openAIWSConn, req openAIWSAcquireRequest) error
 
 type openAIWSConnLease struct {
 	pool      *openAIWSConnPool
@@ -554,7 +558,8 @@ type openAIWSPoolMetrics struct {
 type openAIWSConnPool struct {
 	cfg *config.Config
 	// 通过接口解耦底层 WS 客户端实现，默认使用 coder/websocket。
-	clientDialer openAIWSClientDialer
+	clientDialer  openAIWSClientDialer
+	generateProbe openAIWSGenerateProbeFunc
 
 	accounts sync.Map // key: int64(accountID), value: *openAIWSAccountPool
 	seq      atomic.Uint64
@@ -608,6 +613,13 @@ func (p *openAIWSConnPool) setClientDialerForTest(dialer openAIWSClientDialer) {
 		return
 	}
 	p.clientDialer = dialer
+}
+
+func (p *openAIWSConnPool) setGenerateProbe(probe openAIWSGenerateProbeFunc) {
+	if p == nil {
+		return
+	}
+	p.generateProbe = probe
 }
 
 // Close 停止后台 worker 并关闭所有空闲连接，应在优雅关闭时调用。
@@ -800,7 +812,8 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 	var evicted []*openAIWSConn
 	ap := p.getOrCreateAccountPool(accountID)
 	ap.mu.Lock()
-	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&req)
+	sanitizedReq := sanitizeOpenAIWSAcquireRequestForBackgroundPrewarm(req)
+	ap.lastAcquire = cloneOpenAIWSAcquireRequestPtr(&sanitizedReq)
 	now := time.Now()
 	if ap.lastCleanupAt.IsZero() || now.Sub(ap.lastCleanupAt) >= openAIWSAcquireCleanupInterval {
 		evicted = p.cleanupAccountLocked(ap, now, effectiveMaxConns)
@@ -1386,6 +1399,13 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 		ctx, cancel := context.WithTimeout(context.Background(), p.dialTimeout()+openAIWSConnPrewarmExtraDelay)
 		conn, err := p.dialConn(ctx, req)
 		cancel()
+		var probeErr error
+		if err == nil && conn != nil && p.generateProbe != nil {
+			probeErr = p.generateProbe(context.Background(), conn, req)
+			if probeErr != nil {
+				conn.close()
+			}
+		}
 
 		ap, ok := p.getAccountPool(accountID)
 		if !ok || ap == nil {
@@ -1399,6 +1419,12 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 			ap.creating--
 		}
 		if err != nil {
+			ap.prewarmFails++
+			ap.prewarmFailAt = time.Now()
+			ap.mu.Unlock()
+			continue
+		}
+		if probeErr != nil {
 			ap.prewarmFails++
 			ap.prewarmFailAt = time.Now()
 			ap.mu.Unlock()
@@ -1674,6 +1700,7 @@ func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequ
 	copied.WSURL = stringsTrim(req.WSURL)
 	copied.ProxyURL = stringsTrim(req.ProxyURL)
 	copied.PreferredConnID = stringsTrim(req.PreferredConnID)
+	copied.GenerateProbeModel = strings.TrimSpace(req.GenerateProbeModel)
 	return copied
 }
 
@@ -1683,6 +1710,20 @@ func cloneOpenAIWSAcquireRequestPtr(req *openAIWSAcquireRequest) *openAIWSAcquir
 	}
 	copied := cloneOpenAIWSAcquireRequest(*req)
 	return &copied
+}
+
+func sanitizeOpenAIWSAcquireRequestForBackgroundPrewarm(req openAIWSAcquireRequest) openAIWSAcquireRequest {
+	sanitized := cloneOpenAIWSAcquireRequest(req)
+	sanitized.ForceNewConn = false
+	sanitized.ForcePreferredConn = false
+	sanitized.PreferredConnID = ""
+	if sanitized.Headers != nil {
+		sanitized.Headers.Del("session_id")
+		sanitized.Headers.Del("conversation_id")
+		sanitized.Headers.Del(openAIWSTurnStateHeader)
+		sanitized.Headers.Del(openAIWSTurnMetadataHeader)
+	}
+	return sanitized
 }
 
 func cloneHeader(src http.Header) http.Header {

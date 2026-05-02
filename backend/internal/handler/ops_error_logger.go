@@ -1283,6 +1283,7 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	msgLower := strings.ToLower(message)
 	bodyLower := strings.ToLower(body)
+	combinedLower := msgLower + "\n" + bodyLower
 
 	// Check if count_tokens errors should be ignored
 	if settings.IgnoreCountTokensErrors && strings.Contains(requestPath, "/count_tokens") {
@@ -1305,7 +1306,12 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	// Check if invalid/missing API key errors should be ignored (user misconfiguration)
 	if settings.IgnoreInvalidApiKeyErrors {
-		if strings.Contains(bodyLower, opsErrInvalidAPIKey) || strings.Contains(bodyLower, opsErrAPIKeyRequired) {
+		if strings.Contains(combinedLower, opsErrInvalidAPIKey) ||
+			strings.Contains(combinedLower, opsErrAPIKeyRequired) ||
+			strings.Contains(combinedLower, "invalid api key") ||
+			strings.Contains(combinedLower, "api key is required") ||
+			strings.Contains(combinedLower, "api key required") ||
+			strings.Contains(combinedLower, "unauthenticated") {
 			return true
 		}
 	}

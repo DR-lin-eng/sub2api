@@ -7,11 +7,12 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeobs"
 	"golang.org/x/net/http2"
 )
 
@@ -387,20 +388,27 @@ func (m *protocolMux) Serve() error {
 func (m *protocolMux) dispatch(conn net.Conn) {
 	target, wrapped, err := classifyConn(conn, m.readTimeout, m)
 	if err != nil {
+		runtimeobs.RecordGnetClassifyError()
 		_ = conn.Close()
 		return
 	}
 	switch target {
 	case protocolTargetSidecar:
+		runtimeobs.RecordGnetSidecarClassified()
 		if !m.sidecar.enqueue(wrapped) {
+			runtimeobs.RecordGnetSidecarEnqueueDrop()
 			_ = wrapped.Close()
 		}
 	case protocolTargetH2C:
+		runtimeobs.RecordGnetH2CClassified()
 		if !m.h2c.enqueue(wrapped) {
+			runtimeobs.RecordGnetH2CEnqueueDrop()
 			_ = wrapped.Close()
 		}
 	default:
+		runtimeobs.RecordGnetHTTP1Classified()
 		if !m.http1.enqueue(wrapped) {
+			runtimeobs.RecordGnetHTTP1EnqueueDrop()
 			_ = wrapped.Close()
 		}
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeobs"
 	"github.com/panjf2000/gnet/v2"
 )
 
@@ -302,6 +303,7 @@ func (s *nativeGnetConnState) handleHTTPRequest(req *http.Request) {
 	if !dispatchExecutableRoute(s.runtime.execRuntime, req, writer, req.RemoteAddr) {
 		s.runtime.handler.ServeHTTP(writer, req)
 	}
+	runtimeobs.RecordGnetHTTP1Response()
 	_ = writer.finish()
 
 	s.mu.Lock()
@@ -477,6 +479,7 @@ func (w *gnetHTTPResponseWriter) Write(p []byte) (int, error) {
 	}
 
 	if w.headSent {
+		runtimeobs.RecordGnetHTTP1DirectWriteAfterFlush()
 		payload := append([]byte(nil), p...)
 		if w.chunked {
 			payload = encodeChunk(payload)
@@ -512,6 +515,7 @@ func (w *gnetHTTPResponseWriter) Flush() {
 	if w.headSent {
 		return
 	}
+	runtimeobs.RecordGnetHTTP1ChunkedFlushFallback()
 	w.header.Del("Content-Length")
 	w.header.Set("Transfer-Encoding", "chunked")
 	w.chunked = true
@@ -546,6 +550,7 @@ func (w *gnetHTTPResponseWriter) finish() error {
 					return err
 				}
 			} else {
+				runtimeobs.RecordGnetHTTP1ChunkedHeaderFallback()
 				w.header.Del("Content-Length")
 				w.header.Set("Transfer-Encoding", "chunked")
 				w.chunked = true
@@ -634,6 +639,7 @@ func (w *gnetHTTPResponseWriter) sendBufferedResponseLocked() error {
 	}
 	head := encodeHTTPResponseHead(w.statusCode, w.header)
 	w.headSent = true
+	runtimeobs.RecordGnetHTTP1BufferedResponse(w.bodyBuffer == nil, w.header.Get("Content-Length") != "")
 	body := w.bodyBytesLocked()
 	if len(body) == 0 {
 		if err := w.asyncWriteLocked(head); err != nil {
@@ -659,6 +665,7 @@ func (w *gnetHTTPResponseWriter) asyncWriteLocked(payload []byte) error {
 	if w.writeErr != nil {
 		return w.writeErr
 	}
+	runtimeobs.RecordGnetHTTP1AsyncWrite()
 	data := append([]byte(nil), payload...)
 	if err := w.conn.AsyncWrite(data, nil); err != nil {
 		w.writeErr = err
@@ -681,6 +688,7 @@ func (w *gnetHTTPResponseWriter) appendBodyLocked(payload []byte) {
 	}
 
 	w.bodyBuffer = make([]byte, 0, w.bodyLen+len(payload))
+	runtimeobs.RecordGnetHTTP1HeapBufferSpill()
 	if w.bodyLen > 0 {
 		w.bodyBuffer = append(w.bodyBuffer, w.bodyInline[:w.bodyLen]...)
 	}

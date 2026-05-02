@@ -29,6 +29,10 @@ const realtimeEnabled = computed(() => {
   return (concurrency.value?.enabled ?? true) && (availability.value?.enabled ?? true)
 })
 
+function extractErrorMessage(err: any): string {
+  return err?.response?.data?.detail || err?.message || t('admin.ops.concurrency.loadFailed')
+}
+
 function safeNumber(n: unknown): number {
   return typeof n === 'number' && Number.isFinite(n) ? n : 0
 }
@@ -271,7 +275,7 @@ async function loadData() {
       // 常规模式加载账号/平台/分组数据
       const includeAccountDetail = displayDimension.value === 'account'
       const accountLimit = includeAccountDetail ? 80 : 0
-      const [concData, availData] = await Promise.all([
+      const [concResult, availResult] = await Promise.allSettled([
         opsAPI.getConcurrencyStats(props.platformFilter, props.groupIdFilter, {
           includeAccount: includeAccountDetail,
           accountLimit
@@ -281,12 +285,29 @@ async function loadData() {
           accountLimit
         })
       ])
-      concurrency.value = concData
-      availability.value = availData
+      const failures: string[] = []
+
+      if (concResult.status === 'fulfilled') {
+        concurrency.value = concResult.value
+      } else {
+        concurrency.value = null
+        failures.push(`concurrency: ${extractErrorMessage(concResult.reason)}`)
+      }
+
+      if (availResult.status === 'fulfilled') {
+        availability.value = availResult.value
+      } else {
+        availability.value = null
+        failures.push(`availability: ${extractErrorMessage(availResult.reason)}`)
+      }
+
+      if (failures.length > 0) {
+        errorMessage.value = failures.join(' | ')
+      }
     }
   } catch (err: any) {
     console.error('[OpsConcurrencyCard] Failed to load data', err)
-    errorMessage.value = err?.response?.data?.detail || t('admin.ops.concurrency.loadFailed')
+    errorMessage.value = extractErrorMessage(err)
   } finally {
     loading.value = false
   }

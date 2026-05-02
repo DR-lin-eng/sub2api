@@ -52,7 +52,9 @@ func (h *GatewayHandler) GeminiV1BetaListModelsGateway(transportCtx gatewayctx.G
 
 	// 强制 antigravity 模式：返回 antigravity 支持的模型列表
 	if forcePlatform == service.PlatformAntigravity {
-		transportCtx.WriteJSON(http.StatusOK, antigravity.FallbackGeminiModelsList())
+		fallback := antigravity.FallbackGeminiModelsList()
+		fallback.Models = filterAntigravityGeminiModelsForAPIKey(apiKey, fallback.Models)
+		transportCtx.WriteJSON(http.StatusOK, fallback)
 		return
 	}
 
@@ -66,7 +68,9 @@ func (h *GatewayHandler) GeminiV1BetaListModelsGateway(transportCtx gatewayctx.G
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(transportCtx.Context(), apiKey.GroupID)
 		if hasAntigravity {
 			// antigravity 账户使用静态模型列表
-			transportCtx.WriteJSON(http.StatusOK, gemini.FallbackModelsList())
+			fallback := gemini.FallbackModelsList()
+			fallback.Models = filterGeminiModelsForAPIKey(apiKey, fallback.Models)
+			transportCtx.WriteJSON(http.StatusOK, fallback)
 			return
 		}
 		googleErrorContext(transportCtx, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
@@ -79,8 +83,19 @@ func (h *GatewayHandler) GeminiV1BetaListModelsGateway(transportCtx gatewayctx.G
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
-		transportCtx.WriteJSON(http.StatusOK, gemini.FallbackModelsList())
+		fallback := gemini.FallbackModelsList()
+		fallback.Models = filterGeminiModelsForAPIKey(apiKey, fallback.Models)
+		transportCtx.WriteJSON(http.StatusOK, fallback)
 		return
+	}
+	if apiKey != nil && len(apiKey.AllowedModels) > 0 {
+		var payload gemini.ModelsListResponse
+		if err := json.Unmarshal(res.Body, &payload); err == nil {
+			payload.Models = filterGeminiModelsForAPIKey(apiKey, payload.Models)
+			if body, marshalErr := json.Marshal(payload); marshalErr == nil {
+				res.Body = body
+			}
+		}
 	}
 	writeUpstreamResponseContext(transportCtx, res)
 }
@@ -107,6 +122,10 @@ func (h *GatewayHandler) GeminiV1BetaGetModelGateway(transportCtx gatewayctx.Gat
 	modelName := strings.TrimSpace(transportCtx.PathParam("model"))
 	if modelName == "" {
 		googleErrorContext(transportCtx, http.StatusBadRequest, "Missing model in URL")
+		return
+	}
+	if !apiKeyAllowsRequestedModel(apiKey, modelName) {
+		googleErrorContext(transportCtx, http.StatusBadRequest, apiKeyModelNotAllowedMessage(modelName))
 		return
 	}
 
@@ -183,6 +202,10 @@ func (h *GatewayHandler) GeminiV1BetaModelsGateway(transportCtx gatewayctx.Gatew
 	modelName, action, err := parseGeminiModelAction(strings.TrimPrefix(transportCtx.PathParam("modelAction"), "/"))
 	if err != nil {
 		googleErrorContext(transportCtx, http.StatusNotFound, err.Error())
+		return
+	}
+	if !apiKeyAllowsRequestedModel(apiKey, modelName) {
+		googleErrorContext(transportCtx, http.StatusBadRequest, apiKeyModelNotAllowedMessage(modelName))
 		return
 	}
 

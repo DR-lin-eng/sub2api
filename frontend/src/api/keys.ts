@@ -55,6 +55,7 @@ export async function create(
   name: string,
   groupId?: number | null,
   groupIds?: number[],
+  allowedModels?: string[],
   customKey?: string,
   ipWhitelist?: string[],
   ipBlacklist?: string[],
@@ -68,6 +69,9 @@ export async function create(
     payload.group_id = groupIds[0] ?? null
   } else if (groupId !== undefined) {
     payload.group_id = groupId
+  }
+  if (allowedModels && allowedModels.length > 0) {
+    payload.allowed_models = allowedModels
   }
   if (customKey) {
     payload.custom_key = customKey

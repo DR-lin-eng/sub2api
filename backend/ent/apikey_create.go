@@ -139,6 +139,12 @@ func (_c *APIKeyCreate) SetIPBlacklist(v []string) *APIKeyCreate {
 	return _c
 }
 
+// SetAllowedModels sets the "allowed_models" field.
+func (_c *APIKeyCreate) SetAllowedModels(v []string) *APIKeyCreate {
+	_c.mutation.SetAllowedModels(v)
+	return _c
+}
+
 // SetQuota sets the "quota" field.
 func (_c *APIKeyCreate) SetQuota(v float64) *APIKeyCreate {
 	_c.mutation.SetQuota(v)
@@ -547,6 +553,10 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 		_spec.SetField(apikey.FieldIPBlacklist, field.TypeJSON, value)
 		_node.IPBlacklist = value
 	}
+	if value, ok := _c.mutation.AllowedModels(); ok {
+		_spec.SetField(apikey.FieldAllowedModels, field.TypeJSON, value)
+		_node.AllowedModels = value
+	}
 	if value, ok := _c.mutation.Quota(); ok {
 		_spec.SetField(apikey.FieldQuota, field.TypeFloat64, value)
 		_node.Quota = value
@@ -844,6 +854,24 @@ func (u *APIKeyUpsert) UpdateIPBlacklist() *APIKeyUpsert {
 // ClearIPBlacklist clears the value of the "ip_blacklist" field.
 func (u *APIKeyUpsert) ClearIPBlacklist() *APIKeyUpsert {
 	u.SetNull(apikey.FieldIPBlacklist)
+	return u
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *APIKeyUpsert) SetAllowedModels(v []string) *APIKeyUpsert {
+	u.Set(apikey.FieldAllowedModels, v)
+	return u
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateAllowedModels() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldAllowedModels)
+	return u
+}
+
+// ClearAllowedModels clears the value of the "allowed_models" field.
+func (u *APIKeyUpsert) ClearAllowedModels() *APIKeyUpsert {
+	u.SetNull(apikey.FieldAllowedModels)
 	return u
 }
 
@@ -1280,6 +1308,27 @@ func (u *APIKeyUpsertOne) UpdateIPBlacklist() *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) ClearIPBlacklist() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearIPBlacklist()
+	})
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *APIKeyUpsertOne) SetAllowedModels(v []string) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetAllowedModels(v)
+	})
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateAllowedModels() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateAllowedModels()
+	})
+}
+
+// ClearAllowedModels clears the value of the "allowed_models" field.
+func (u *APIKeyUpsertOne) ClearAllowedModels() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearAllowedModels()
 	})
 }
 
@@ -1918,6 +1967,27 @@ func (u *APIKeyUpsertBulk) UpdateIPBlacklist() *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) ClearIPBlacklist() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearIPBlacklist()
+	})
+}
+
+// SetAllowedModels sets the "allowed_models" field.
+func (u *APIKeyUpsertBulk) SetAllowedModels(v []string) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetAllowedModels(v)
+	})
+}
+
+// UpdateAllowedModels sets the "allowed_models" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateAllowedModels() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateAllowedModels()
+	})
+}
+
+// ClearAllowedModels clears the value of the "allowed_models" field.
+func (u *APIKeyUpsertBulk) ClearAllowedModels() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearAllowedModels()
 	})
 }
 

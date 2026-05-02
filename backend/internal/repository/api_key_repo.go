@@ -44,6 +44,7 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 		SetKey(key.Key).
 		SetName(key.Name).
 		SetStatus(key.Status).
+		SetAllowedModels(service.NormalizeAPIKeyAllowedModels(key.AllowedModels)).
 		SetNillableGroupID(key.GroupID).
 		SetNillableLastUsedAt(key.LastUsedAt).
 		SetQuota(key.Quota).
@@ -137,6 +138,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			apikey.FieldID,
 			apikey.FieldUserID,
 			apikey.FieldGroupID,
+			apikey.FieldAllowedModels,
 			apikey.FieldStatus,
 			apikey.FieldIPWhitelist,
 			apikey.FieldIPBlacklist,
@@ -215,6 +217,7 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey) erro
 		Where(apikey.IDEQ(key.ID), apikey.DeletedAtIsNil()).
 		SetName(key.Name).
 		SetStatus(key.Status).
+		SetAllowedModels(service.NormalizeAPIKeyAllowedModels(key.AllowedModels)).
 		SetQuota(key.Quota).
 		SetQuotaUsed(key.QuotaUsed).
 		SetRateLimit5h(key.RateLimit5h).
@@ -842,6 +845,7 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		UserID:        m.UserID,
 		Key:           m.Key,
 		Name:          m.Name,
+		AllowedModels: service.NormalizeAPIKeyAllowedModels(m.AllowedModels),
 		Status:        m.Status,
 		IPWhitelist:   m.IPWhitelist,
 		IPBlacklist:   m.IPBlacklist,
@@ -876,30 +880,30 @@ func userEntityToService(u *dbent.User) *service.User {
 		return nil
 	}
 	return &service.User{
-		ID:                    u.ID,
-		Email:                 u.Email,
-		Username:              u.Username,
-		Notes:                 u.Notes,
-		PasswordHash:          u.PasswordHash,
-		Role:                  u.Role,
-		Balance:               u.Balance,
-		Concurrency:           u.Concurrency,
-		Status:                u.Status,
-		SignupSource:          u.SignupSource,
-		LastLoginAt:           u.LastLoginAt,
-		LastActiveAt:          u.LastActiveAt,
-		BalanceNotifyEnabled:  u.BalanceNotifyEnabled,
+		ID:                         u.ID,
+		Email:                      u.Email,
+		Username:                   u.Username,
+		Notes:                      u.Notes,
+		PasswordHash:               u.PasswordHash,
+		Role:                       u.Role,
+		Balance:                    u.Balance,
+		Concurrency:                u.Concurrency,
+		Status:                     u.Status,
+		SignupSource:               u.SignupSource,
+		LastLoginAt:                u.LastLoginAt,
+		LastActiveAt:               u.LastActiveAt,
+		BalanceNotifyEnabled:       u.BalanceNotifyEnabled,
 		BalanceNotifyThresholdType: u.BalanceNotifyThresholdType,
 		BalanceNotifyThreshold:     u.BalanceNotifyThreshold,
 		BalanceNotifyExtraEmails:   service.ParseNotifyEmails(u.BalanceNotifyExtraEmails),
 		TotalRecharged:             u.TotalRecharged,
-		SoraStorageQuotaBytes: u.SoraStorageQuotaBytes,
-		SoraStorageUsedBytes:  u.SoraStorageUsedBytes,
-		TotpSecretEncrypted:   u.TotpSecretEncrypted,
-		TotpEnabled:           u.TotpEnabled,
-		TotpEnabledAt:         u.TotpEnabledAt,
-		CreatedAt:             u.CreatedAt,
-		UpdatedAt:             u.UpdatedAt,
+		SoraStorageQuotaBytes:      u.SoraStorageQuotaBytes,
+		SoraStorageUsedBytes:       u.SoraStorageUsedBytes,
+		TotpSecretEncrypted:        u.TotpSecretEncrypted,
+		TotpEnabled:                u.TotpEnabled,
+		TotpEnabledAt:              u.TotpEnabledAt,
+		CreatedAt:                  u.CreatedAt,
+		UpdatedAt:                  u.UpdatedAt,
 	}
 }
 

@@ -16,6 +16,7 @@ const { t } = useI18n()
 const loading = ref(false)
 const errorMessage = ref('')
 const runtime = ref<OpenAIWSRuntimeResponse | null>(null)
+const gnetRuntime = computed(() => runtime.value?.gnet_http1 ?? null)
 
 const fallbackRows = computed(() =>
   Object.entries(runtime.value?.fallback_reason_counts ?? {})
@@ -36,6 +37,8 @@ const hasAnyRuntimeData = computed(() => {
     current.scale_down_total > 0 ||
     current.prewarm_success_total > 0 ||
     current.prewarm_fallback_total > 0 ||
+    (current.gnet_http1?.http1_classified_total ?? 0) > 0 ||
+    (current.gnet_http1?.response_total ?? 0) > 0 ||
     (current.relay?.incomplete_close_total ?? 0) > 0 ||
     (current.circuits?.open_proxy_count ?? 0) > 0 ||
     (current.circuits?.open_account_count ?? 0) > 0
@@ -158,11 +161,73 @@ onMounted(() => {
           class="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-dark-700 dark:bg-dark-700 dark:text-gray-300"
         >
           <template v-if="hasAnyRuntimeData">
-            Showing current OpenAI WebSocket pool activity. Fallback reasons appear below when they occur.
+            Showing current OpenAI WebSocket pool activity and gnet HTTP/1 ingress behavior. Fallback reasons appear below when they occur.
           </template>
           <template v-else>
-            No OpenAI WS runtime activity recorded yet.
+            No OpenAI WS or gnet HTTP/1 runtime activity recorded yet.
           </template>
+        </div>
+
+        <div>
+          <div class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">gnet HTTP/1 Ingress</div>
+          <div class="grid grid-cols-2 gap-3 text-sm xl:grid-cols-4">
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Classify Share</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatPercent(gnetRuntime?.http1_classification_ratio) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Buffered Path</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatPercent(gnetRuntime?.buffered_response_ratio) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Inline Buffer Hit</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatPercent(gnetRuntime?.inline_buffer_hit_ratio) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Chunked Fallback</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatPercent(gnetRuntime?.chunked_fallback_ratio) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Classified</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+                H1 {{ formatInt(gnetRuntime?.http1_classified_total) }} / H2C {{ formatInt(gnetRuntime?.h2c_classified_total) }}
+              </div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Sidecar Routed</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(gnetRuntime?.sidecar_classified_total) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Responses</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+                {{ formatInt(gnetRuntime?.buffered_response_total) }} / {{ formatInt(gnetRuntime?.response_total) }}
+              </div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Chunked Path</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+                F {{ formatInt(gnetRuntime?.chunked_flush_total) }} / H {{ formatInt(gnetRuntime?.chunked_header_total) }}
+              </div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Content-Length Auto</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(gnetRuntime?.content_length_auto_total) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Heap Spill</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(gnetRuntime?.heap_buffer_spill_total) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Post-Flush Writes</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">{{ formatInt(gnetRuntime?.direct_write_after_flush_total) }}</div>
+            </div>
+            <div class="rounded-2xl bg-gray-50 p-3 dark:bg-dark-700">
+              <div class="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Errors / Drops</div>
+              <div class="mt-1 text-base font-bold text-gray-900 dark:text-white">
+                {{ formatInt(gnetRuntime?.classify_error_total) }} / {{ formatInt(gnetRuntime?.enqueue_drop_total) }}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div>

@@ -485,6 +485,30 @@ export interface OpenAIWSRuntimeResponse {
     http2_dial_total?: number
     fallback_to_http1_total?: number
   }
+  gnet_http1?: {
+    http1_classified_total?: number
+    h2c_classified_total?: number
+    sidecar_classified_total?: number
+    classify_error_total?: number
+    enqueue_drop_total?: number
+    http1_enqueue_drop_total?: number
+    h2c_enqueue_drop_total?: number
+    sidecar_enqueue_drop_total?: number
+    response_total?: number
+    buffered_response_total?: number
+    inline_buffer_hit_total?: number
+    heap_buffer_spill_total?: number
+    content_length_auto_total?: number
+    chunked_fallback_total?: number
+    chunked_flush_total?: number
+    chunked_header_total?: number
+    direct_write_after_flush_total?: number
+    async_write_total?: number
+    buffered_response_ratio?: number
+    inline_buffer_hit_ratio?: number
+    chunked_fallback_ratio?: number
+    http1_classification_ratio?: number
+  }
   timestamp: string
 }
 

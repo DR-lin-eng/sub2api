@@ -19,6 +19,16 @@ const (
 	NonceTemplate = "__CSP_NONCE__"
 	// CloudflareInsightsDomain is the domain for Cloudflare Web Analytics
 	CloudflareInsightsDomain = "https://static.cloudflareinsights.com"
+	// StripeJSDomain is required by @stripe/stripe-js.
+	StripeJSDomain = "https://js.stripe.com"
+	// StripeHooksDomain is used by Stripe hosted payment frames.
+	StripeHooksDomain = "https://hooks.stripe.com"
+	// StripeAPIDomain is used by Stripe Elements.
+	StripeAPIDomain = "https://api.stripe.com"
+	// StripeQDomain is used by Stripe telemetry.
+	StripeQDomain = "https://q.stripe.com"
+	// StripeRDomain is used by Stripe telemetry.
+	StripeRDomain = "https://r.stripe.com"
 )
 
 // GenerateNonce generates a cryptographically secure random nonce.
@@ -119,7 +129,7 @@ func isAPIRoutePath(c *gin.Context) bool {
 	return isAPIRoutePathContext(gatewayctx.FromGin(c))
 }
 
-// enhanceCSPPolicy ensures the CSP policy includes nonce support and Cloudflare Insights domain.
+// enhanceCSPPolicy ensures the CSP policy includes nonce support and required third-party domains.
 // This allows the application to work correctly even if the config file has an older CSP policy.
 func enhanceCSPPolicy(policy string) string {
 	// Add nonce placeholder to script-src if not present
@@ -130,6 +140,22 @@ func enhanceCSPPolicy(policy string) string {
 	// Add Cloudflare Insights domain to script-src if not present
 	if !strings.Contains(policy, CloudflareInsightsDomain) {
 		policy = addToDirective(policy, "script-src", CloudflareInsightsDomain)
+	}
+	if !strings.Contains(policy, StripeJSDomain) {
+		policy = addToDirective(policy, "script-src", StripeJSDomain)
+		policy = addToDirective(policy, "frame-src", StripeJSDomain)
+	}
+	if !strings.Contains(policy, StripeHooksDomain) {
+		policy = addToDirective(policy, "frame-src", StripeHooksDomain)
+	}
+	if !strings.Contains(policy, StripeAPIDomain) {
+		policy = addToDirective(policy, "connect-src", StripeAPIDomain)
+	}
+	if !strings.Contains(policy, StripeQDomain) {
+		policy = addToDirective(policy, "connect-src", StripeQDomain)
+	}
+	if !strings.Contains(policy, StripeRDomain) {
+		policy = addToDirective(policy, "connect-src", StripeRDomain)
 	}
 
 	return policy
