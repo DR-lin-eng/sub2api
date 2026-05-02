@@ -32,6 +32,16 @@ func (s *proxyFailoverAccountRepoStub) GetByID(_ context.Context, id int64) (*Ac
 	return cloneAccountForProxyFailoverTest(account), nil
 }
 
+func (s *proxyFailoverAccountRepoStub) GetByIDs(_ context.Context, ids []int64) ([]*Account, error) {
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if account, ok := s.accounts[id]; ok {
+			out = append(out, cloneAccountForProxyFailoverTest(account))
+		}
+	}
+	return out, nil
+}
+
 func (s *proxyFailoverAccountRepoStub) Update(_ context.Context, account *Account) error {
 	cloned := cloneAccountForProxyFailoverTest(account)
 	s.accounts[account.ID] = cloned
@@ -95,6 +105,10 @@ type proxyFailoverSchedulerCacheStub struct {
 
 	lastAccount *Account
 	setCalls    int
+}
+
+func (s *proxyFailoverSchedulerCacheStub) GetAccount(_ context.Context, _ int64) (*Account, error) {
+	return nil, nil
 }
 
 func (s *proxyFailoverSchedulerCacheStub) SetAccount(_ context.Context, account *Account) error {
@@ -166,6 +180,8 @@ func TestGatewayServiceTempUnscheduleRetryableError_ReassignsFailedProxy(t *test
 
 	failoverErr := newProxyRequestFailoverError(accountRepo.accounts[1], "http://failed-proxy:8080", errors.New("dial tcp timeout"))
 	svc.TempUnscheduleRetryableError(context.Background(), 1, failoverErr)
+	svc.flushQueuedGatewayRuntimeStateSync(context.Background())
+	svc.CloseBackgroundWorkers()
 
 	require.Len(t, accountRepo.updatedAccounts, 1)
 	require.Empty(t, accountRepo.tempUnschedule)
@@ -311,6 +327,8 @@ func TestGatewayServiceTempUnscheduleRetryableError_IgnoresStaleFailedProxy(t *t
 		FailedProxyURL:       "http://failed-proxy:8080",
 	}
 	svc.TempUnscheduleRetryableError(context.Background(), 1, failoverErr)
+	svc.flushQueuedGatewayRuntimeStateSync(context.Background())
+	svc.CloseBackgroundWorkers()
 
 	require.Empty(t, accountRepo.updatedAccounts)
 	require.Empty(t, accountRepo.tempUnschedule)

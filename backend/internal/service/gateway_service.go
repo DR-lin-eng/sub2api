@@ -748,7 +748,7 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 		if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
 			logger.LegacyPrintf("service.gateway", "[handler] clear_stale_temp_unschedule_failed account=%d error=%v", account.ID, err)
 		}
-		s.queueGatewayRuntimeStateSync(account.ID)
+		s.syncGatewayRuntimeStatesToSchedulerCache(ctx, []int64{account.ID})
 		return true
 	}
 
@@ -796,7 +796,7 @@ func (s *GatewayService) tryAutoReassignFailedProxy(ctx context.Context, account
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
 		logger.LegacyPrintf("service.gateway", "[handler] clear_temp_unschedule_after_proxy_reassign_failed account=%d error=%v", account.ID, err)
 	}
-	s.queueGatewayRuntimeStateSync(account.ID)
+	s.syncGatewayRuntimeStatesToSchedulerCache(ctx, []int64{account.ID})
 
 	qualityStatus := ""
 	if info := latencies[newProxyID]; info != nil {

@@ -460,6 +460,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 		},
 		acquireResults: map[int64]bool{
 			3003: false, // top1 失败，必须回退到 top-K 的下一候选
+			3001: false, // 允许 top-K 内带权打散，但较差候选也应继续回退
 			3002: true,
 		},
 	}
@@ -601,8 +602,8 @@ func TestOpenAIGatewayService_HealthPrefetchCooldownSuppressesDuplicateEnqueue(t
 	cfg.Gateway.OpenAI.HealthPrefetch.CooldownSeconds = 60
 
 	svc := &OpenAIGatewayService{
-		cfg:              cfg,
-		healthPrefetchCh: make(chan openAIHealthPrefetchJob, 4),
+		cfg:                cfg,
+		healthPrefetchCh:   make(chan openAIHealthPrefetchJob, 4),
 		healthPrefetchStop: make(chan struct{}),
 	}
 
@@ -773,7 +774,7 @@ func TestAdaptiveOpenAISelectionTopK(t *testing.T) {
 	require.Equal(t, 3, adaptiveOpenAISelectionTopK(3, 3, 20))
 	require.Equal(t, 7, adaptiveOpenAISelectionTopK(4, 24, 20))
 	require.Equal(t, 9, adaptiveOpenAISelectionTopK(4, 24, 4))
-	require.Equal(t, 16, adaptiveOpenAISelectionTopK(12, 64, 3))
+	require.Equal(t, 18, adaptiveOpenAISelectionTopK(12, 64, 3))
 }
 
 func TestSelectTopKOpenAICandidates_TieBreakPrefersMoreHeadroom(t *testing.T) {

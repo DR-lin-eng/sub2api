@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -417,7 +418,7 @@ func TestSplitOpenAIModelReasoningVariant(t *testing.T) {
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *testing.T) {
-	// Codex CLI 场景：已有 instructions 时不修改
+	// Codex CLI 场景：保留已有 instructions，并追加 image_generation bridge
 
 	reqBody := map[string]any{
 		"model":        "gpt-5.1",
@@ -428,9 +429,10 @@ func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *test
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Equal(t, "existing instructions", instructions)
-	// Modified 仍可能为 true（因为其他字段被修改），但 instructions 应保持不变
-	_ = result
+	require.Contains(t, instructions, "existing instructions")
+	require.True(t, strings.HasPrefix(instructions, "existing instructions"))
+	require.Contains(t, instructions, codexImageGenerationBridgeMarker)
+	require.True(t, result.Modified)
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T) {

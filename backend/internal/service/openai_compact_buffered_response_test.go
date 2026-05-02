@@ -69,7 +69,7 @@ func TestHandleNonStreamingResponse_CompactSSEPartialFallback(t *testing.T) {
 	}
 
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
-	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -96,7 +96,7 @@ func TestHandleNonStreamingResponse_CompactSSEDisconnectWithoutOutputReturnsFail
 	}
 
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
-	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
 	require.Nil(t, usage)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
@@ -163,7 +163,7 @@ func TestHandleNonStreamingResponse_CompactKeepaliveWritesBlankLineBeforeFinalJS
 	}()
 
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
-	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, "gpt-5.3-codex", "gpt-5.3-codex")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 1, usage.InputTokens)
